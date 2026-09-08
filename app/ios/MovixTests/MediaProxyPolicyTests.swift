@@ -1,4 +1,5 @@
 import XCTest
+import Testing
 @testable import Movix
 
 final class MediaProxyPolicyTests: XCTestCase {
@@ -328,7 +329,6 @@ final class MediaProxyPolicyTests: XCTestCase {
     ])
 
     XCTAssertEqual(sanitized, [
-      "Accept": "application/vnd.apple.mpegurl",
       "Range": "bytes=20-",
     ])
   }
@@ -357,4 +357,41 @@ final class MediaProxyPolicyTests: XCTestCase {
 
 private enum ResolverFailure: Error {
   case expected
+}
+
+struct MediaProxyEncodingTests {
+  @Test(arguments: [
+    "r1.fsvid.lol", "fsvid.lol", "u14.vidzy.cc", "vidzy.org",
+    "strm4.uqload.vc", "strm1.uqload.bz", "STRM4.UQLOAD.VC.",
+  ], ["master.m3u8", "seg-1.ts", "video.mp4"])
+  func serializesBrowserEncodingWithoutCompression(host: String, resource: String) throws {
+    let path = "/hls/\(resource)?t=example%2Btoken&sp=0"
+    let url = try #require(URL(string: "https://\(host)\(path)"))
+    let request = MediaProxyUpstreamTransportRequest(
+      url: url,
+      method: "GET",
+      headers: ["Accept-Encoding": "gzip", "Range": "bytes=100-199"],
+      pinnedAddresses: []
+    )
+    let data = try MediaProxyPinnedHTTPExchange.serialize(request)
+    let text = try #require(String(data: data, encoding: .utf8))
+    #expect(text.hasPrefix("GET \(path) HTTP/1.1\r\n"))
+    #expect(text.contains("\r\nAccept-Encoding: identity, gzip;q=0, deflate;q=0, br;q=0, zstd;q=0\r\n"))
+    #expect(text.contains("\r\nRange: bytes=100-199\r\n"))
+  }
+
+  @Test(arguments: [
+    "media.example", "vidzy.cc.attacker.example", "notuqload.vc",
+    "fsvid.lol.attacker.example", "uqload.vc.attacker.example",
+  ])
+  func keepsIdentityForUnrelatedHosts(host: String) throws {
+    let url = try #require(URL(string: "https://\(host)/master.m3u8?source=vidzy.cc"))
+    let request = MediaProxyUpstreamTransportRequest(
+      url: url, method: "HEAD", headers: ["Accept-Encoding": "zstd"], pinnedAddresses: []
+    )
+    let data = try MediaProxyPinnedHTTPExchange.serialize(request)
+    let text = try #require(String(data: data, encoding: .utf8))
+    #expect(text.contains("\r\nAccept-Encoding: identity\r\n"))
+    #expect(!text.contains("zstd"))
+  }
 }

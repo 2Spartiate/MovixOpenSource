@@ -123,6 +123,7 @@ final class MediaProxyUpstream: @unchecked Sendable {
         headers.removeValue(forKey: "Referer")
       }
       headers = MediaProxyPolicy.sanitizeRequestHeaders(headers)
+      headers["Accept-Encoding"] = MediaProxyPolicy.playbackAcceptEncoding(for: currentURL)
       let response = try await transport.execute(MediaProxyUpstreamTransportRequest(
         url: currentURL,
         method: method,
@@ -505,7 +506,7 @@ final class MediaProxyPinnedHTTPExchange: MediaProxyPinnedHTTPExchangeTask,
     }
   }
 
-  private static func serialize(_ request: MediaProxyUpstreamTransportRequest) throws -> Data {
+  static func serialize(_ request: MediaProxyUpstreamTransportRequest) throws -> Data {
     guard let components = URLComponents(url: request.url, resolvingAgainstBaseURL: false),
           let rawHost = components.host else {
       throw MediaProxyUpstreamError.connectionFailed
@@ -522,7 +523,7 @@ final class MediaProxyPinnedHTTPExchange: MediaProxyPinnedHTTPExchangeTask,
     headers.removeValue(forKey: "Host")
     headers.removeValue(forKey: "Connection")
     headers.removeValue(forKey: "Accept-Encoding")
-    headers["Accept-Encoding"] = "identity"
+    headers["Accept-Encoding"] = MediaProxyPolicy.playbackAcceptEncoding(for: request.url)
     headers["Connection"] = "close"
     for name in headers.keys.sorted() {
       guard let value = headers[name],

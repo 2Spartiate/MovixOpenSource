@@ -229,6 +229,27 @@ class MediaProxyPolicyTest {
     }
 
     @Test
+    fun limitsExplicitEncodingToTheProviderDomains() {
+        for (host in listOf(
+            "r1.fsvid.lol", "fsvid.lol", "u14.vidzy.cc", "vidzy.org",
+            "strm4.uqload.vc", "strm1.uqload.bz", "STRM4.UQLOAD.VC.",
+        )) {
+            assertEquals(
+                "identity, gzip;q=0, deflate;q=0, br;q=0, zstd;q=0",
+                MediaProxyPolicy.playbackAcceptEncoding("https://$host/master.m3u8"),
+            )
+        }
+        for (url in listOf(
+            "https://vidzy.cc.attacker.example/master.m3u8",
+            "https://notuqload.vc/master.m3u8",
+            "https://media.example/master.m3u8?source=uqload.vc",
+            "not-a-url",
+        )) {
+            assertEquals(null, MediaProxyPolicy.playbackAcceptEncoding(url))
+        }
+    }
+
+    @Test
     fun buildsOpaqueLoopbackUrls() {
         val localUrl = MediaProxyPolicy.buildLoopbackUrl(
             port = 28123,

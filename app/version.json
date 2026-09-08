@@ -1,13 +1,13 @@
 {
-  "version": "2.5.26",
-  "buildNumber": 35,
+  "version": "2.5.27",
+  "buildNumber": 36,
   "apkUrl": "https://raw.githubusercontent.com/movixcorp/MovixOpenSource/main/app/movix-android.apk",
-  "apkSizeBytes": 72584113,
-  "apkSha256": "ea72bd438665fe195397e72a35c16dc5b300ffb359f37ab2b38225d03ac06b21",
+  "apkSizeBytes": 72584769,
+  "apkSha256": "9a4bed5628b011b81880818c8ead413f9447d867ad9c229141edc9236b4ca56c",
   "mandatory": false,
-  "releasedAt": "2026-08-31T00:00:00.000Z",
+  "releasedAt": "2026-09-08T13:47:24.820Z",
   "releaseNotes": {
-    "fr": "Live TV : certaines chaînes (serveurs en IP nue) ne se lançaient pas dans l'app — le flux était refusé avant même de partir. C'est corrigé, elles se lisent à nouveau via le proxy intégré.",
-    "en": "Live TV: some channels (bare-IP servers) would not start in the app — the stream was rejected before it even left. Fixed, they play again through the built-in proxy."
+    "fr": "Correction de l'extraction et du proxy pour les hébergeurs Fsvid, Vidzy et Uqload.",
+    "en": "Fixed extraction and proxying for Fsvid, Vidzy and Uqload."
   }
 }

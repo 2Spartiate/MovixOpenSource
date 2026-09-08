@@ -135,6 +135,23 @@ enum MediaProxyPolicy {
 
   private static let providerDecoyHostSuffixes = ["fsvid.lol", "vidzy.cc", "vidzy.org"]
 
+  // Vidzy exige le token zstd. q=0 conserve des corps identity : le transport
+  // HTTP natif ne décompresse pas les réponses et doit préserver les Range.
+  private static let providerMediaAcceptEncoding =
+    "identity, gzip;q=0, deflate;q=0, br;q=0, zstd;q=0"
+
+  static func playbackAcceptEncoding(for url: URL) -> String {
+    guard let host = url.host?.lowercased() else { return "identity" }
+    let normalizedHost = host.hasSuffix(".") ? String(host.dropLast()) : host
+    let isProviderHost = providerDecoyHostSuffixes.contains {
+      normalizedHost == $0 || normalizedHost.hasSuffix(".\($0)")
+    } || normalizedHost.range(
+      of: #"(?:^|\.)uqload\.[a-z]{2,24}$"#,
+      options: .regularExpression
+    ) != nil
+    return isProviderHost ? providerMediaAcceptEncoding : "identity"
+  }
+
   /// Vrai si l'URL est le flux leurre servi par Fsvid/Vidzy quand ils jugent la
   /// requête illégitime (302 vers .../troll/master.m3u8).
   static func isProviderDecoyURL(_ rawURL: String) -> Bool {

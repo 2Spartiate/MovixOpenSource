@@ -86,6 +86,12 @@ object MediaProxyPolicy {
     // sur la meme requete.
     const val PLAYBACK_SEC_CH_UA_MOBILE = "?0"
     const val PLAYBACK_SEC_CH_UA_PLATFORM = "\"Windows\""
+    // Le CDN exige le token zstd. q=0 demande identity et conserve les octets
+    // des playlists et des Range : OkHttp ne decompresse plus automatiquement
+    // gzip quand Accept-Encoding est fourni par l'appelant.
+    private const val PROVIDER_MEDIA_ACCEPT_ENCODING =
+        "identity, gzip;q=0, deflate;q=0, br;q=0, zstd;q=0"
+    private val uqloadHostPattern = Regex("(?:^|\\.)uqload\\.[a-z]{2,24}$")
     private val tokenPattern = Regex("^[A-Za-z0-9_-]{8,128}$")
     private val numericIpv4Pattern = Regex("^\\d{1,3}(?:\\.\\d{1,3}){3}$")
     private val uriAttributePattern = Regex("""URI=(["'])(.*?)\1""", RegexOption.IGNORE_CASE)
@@ -143,6 +149,15 @@ object MediaProxyPolicy {
 
     @Suppress("UNUSED_PARAMETER")
     fun playbackUserAgent(rawUrl: String): String = PLAYBACK_USER_AGENT
+
+    fun playbackAcceptEncoding(rawUrl: String): String? {
+        val host = runCatching { URI(rawUrl).host?.lowercase(Locale.US)?.trimEnd('.') }
+            .getOrNull() ?: return null
+        val providerHost = PROVIDER_DECOY_HOST_SUFFIXES.any {
+            host == it || host.endsWith(".$it")
+        } || uqloadHostPattern.containsMatchIn(host)
+        return if (providerHost) PROVIDER_MEDIA_ACCEPT_ENCODING else null
+    }
 
     fun validatePublicHttpsUrl(
         rawUrl: String,

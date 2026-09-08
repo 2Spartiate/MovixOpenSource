@@ -879,6 +879,12 @@ PROBLEMATIC_DOMAINS = frozenset([
 # (s1.fsvid.lol/troll/master.m3u8) on fsvid, or a bare 403 on vidzy.
 FSVID_VIDZY_SEC_CH_UA = '"Chromium";v="140", "Not=A?Brand";v="24", "Google Chrome";v="140"'
 
+# Le CDN Vidzy refuse l'absence du token zstd dans Accept-Encoding (403).
+# q=0 conserve les tokens du navigateur tout en demandant un corps identity :
+# aiohttp 3.11 ne décode pas zstd, et les plages MP4 doivent rester inchangées.
+# Réservé aux médias : les pages d'extraction renvoient du zstd même avec q=0.
+PROVIDER_MEDIA_ACCEPT_ENCODING = 'identity, gzip;q=0, deflate;q=0, br;q=0, zstd;q=0'
+
 # Un vrai Chrome n'émet jamais Sec-Ch-Ua seul : les trois indices client
 # partent ensemble, avec un User-Agent dont la version majeure correspond à
 # celle annoncée dans Sec-Ch-Ua. Les en-têtes d'ici annonçaient Chrome 140 dans
@@ -3218,7 +3224,7 @@ class ProxyServer:
             mp4_headers = self._prepare_headers(media_url, request)
             mp4_headers.update({
                 'Accept': '*/*',
-                'Accept-Encoding': 'identity;q=1, *;q=0',
+                'Accept-Encoding': PROVIDER_MEDIA_ACCEPT_ENCODING,
                 'Referer': f'{uqload_origin}/',
                 'Origin': uqload_origin,
             })
@@ -3341,6 +3347,7 @@ class ProxyServer:
         if self.RE_FSVID.search(target_url):
             return {
                 'Accept': 'application/vnd.apple.mpegurl,*/*',
+                'Accept-Encoding': PROVIDER_MEDIA_ACCEPT_ENCODING,
                 'Host': target_host,
                 'Origin': 'https://fsvid.lol',
                 'Referer': 'https://fsvid.lol/',
@@ -3357,7 +3364,7 @@ class ProxyServer:
                 uqload_origin = 'https://uqload.vc'
             return {
                 'Accept': '*/*',
-                'Accept-Encoding': 'identity;q=1, *;q=0',
+                'Accept-Encoding': PROVIDER_MEDIA_ACCEPT_ENCODING,
                 'Host': target_host,
                 'Origin': uqload_origin,
                 'Referer': f'{uqload_origin}/',
@@ -3367,6 +3374,7 @@ class ProxyServer:
         if self.RE_VIDZY.search(target_url):
             return {
                 'Accept': 'application/vnd.apple.mpegurl,*/*',
+                'Accept-Encoding': PROVIDER_MEDIA_ACCEPT_ENCODING,
                 'Host': target_host,
                 'Origin': 'https://vidzy.org',
                 'Referer': 'https://vidzy.org/',
@@ -5900,6 +5908,7 @@ class ProxyServer:
         """FSVID proxy"""
         return await self._service_proxy_via_random_socks(request, 'fsvid', {
             'Accept': 'application/vnd.apple.mpegurl,*/*',
+            'Accept-Encoding': PROVIDER_MEDIA_ACCEPT_ENCODING,
             'Origin': 'https://fsvid.lol',
             'Referer': 'https://fsvid.lol/',
             **FSVID_VIDZY_CLIENT_HINTS,
@@ -5987,6 +5996,7 @@ class ProxyServer:
         """Vidzy proxy"""
         return await self._service_proxy_via_random_socks(request, 'vidzy', {
             'Accept': 'application/vnd.apple.mpegurl,*/*',
+            'Accept-Encoding': PROVIDER_MEDIA_ACCEPT_ENCODING,
             'Origin': 'https://vidzy.org',
             'Referer': 'https://vidzy.org/',
             **FSVID_VIDZY_CLIENT_HINTS,
@@ -6023,7 +6033,7 @@ class ProxyServer:
 
         return await self._service_proxy(request, 'uqload', {
             'Accept': '*/*',
-            'Accept-Encoding': 'identity;q=1, *;q=0',
+            'Accept-Encoding': PROVIDER_MEDIA_ACCEPT_ENCODING,
             'Origin': uqload_origin,
             'Referer': f'{uqload_origin}/',
             'User-Agent': 'Mozilla/5.0 Chrome/142.0.0.0'

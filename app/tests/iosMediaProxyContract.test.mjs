@@ -13,6 +13,11 @@ const validIOSLocalURL = port =>
   `http://127.0.0.1:${port}/p/${token43('A')}/${token43('b')}/${token43('_')}`;
 
 async function loadBridge({ platform = 'ios', openResult = validIOSLocalURL(28123) } = {}) {
+  const mediaHeaderSource = await read('src/services/mediaProxyHeaders.ts');
+  const mediaHeaderModule = { exports: {} };
+  vm.runInNewContext(ts.transpileModule(mediaHeaderSource, {
+    compilerOptions: { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2022 },
+  }).outputText, { module: mediaHeaderModule, exports: mediaHeaderModule.exports });
   const source = await read('src/services/bridge.ts');
   const { outputText } = ts.transpileModule(source, {
     compilerOptions: {
@@ -46,7 +51,7 @@ async function loadBridge({ platform = 'ios', openResult = validIOSLocalURL(2812
         return { NativeModules: nativeModules, Platform: { OS: platform } };
       }
       if (specifier === './mediaProxyHeaders') {
-        return { applyMediaProxyHeaderRules: (_url, headers) => headers };
+        return mediaHeaderModule.exports;
       }
       if (specifier === './castLoadSingleFlight') {
         return {
@@ -402,6 +407,30 @@ test('iOS rejects subframe, untrusted, mismatched, and stale capabilities immedi
   await openMedia(bridge, ref, nextNavigation, freshAuthorization);
   assert.equal(openCalls.length, 1);
   assert.equal(responses.at(-1)?.success, true);
+});
+
+test('iOS sends the provider encoding and origin to the native media proxy', async () => {
+  const { bridge, openCalls } = await loadBridge();
+  const { ref, responses } = makeWebViewHarness();
+  await registerIOSCapability(bridge, ref);
+
+  for (const [host, origin] of [
+    ['r1.fsvid.lol', 'https://fsvid.lol'],
+    ['u14.vidzy.cc', 'https://vidzy.org'],
+    ['strm4.uqload.vc', 'https://uqload.vc'],
+    ['strm1.uqload.bz', 'https://uqload.bz'],
+  ]) {
+    await openMedia(bridge, ref, trustedContext(), {
+      url: `https://${host}/master.m3u8`,
+      headers: { Origin: 'https://movix.tax', Referer: 'https://movix.tax/', Range: 'bytes=0-1023' },
+    });
+    assert.equal(responses.at(-1)?.success, true);
+    const headers = openCalls.at(-1)[2];
+    assert.equal(headers.Origin, origin);
+    assert.equal(headers.Referer, `${origin}/`);
+    assert.equal(headers.Range, 'bytes=0-1023');
+    assert.equal(headers['Accept-Encoding'], 'identity, gzip;q=0, deflate;q=0, br;q=0, zstd;q=0');
+  }
 });
 
 test('iOS accepts only canonical 43-token loopback URLs and bounded ports', async () => {

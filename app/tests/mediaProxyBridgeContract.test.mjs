@@ -14,11 +14,13 @@ const providerSecChUa = '"Chromium";v="140", "Not=A?Brand";v="24", "Google Chrom
 // Les trois indices client partent ensemble chez un vrai Chrome, avec une
 // version majeure identique à celle de l'User-Agent.
 const providerClientHints = {
+  'Accept-Encoding': 'identity, gzip;q=0, deflate;q=0, br;q=0, zstd;q=0',
   'Accept-Language': 'fr-FR,fr;q=0.9,en-US;q=0.8,en;q=0.7',
   'Sec-Ch-Ua': providerSecChUa,
   'Sec-Ch-Ua-Mobile': '?0',
   'Sec-Ch-Ua-Platform': '"Windows"',
 };
+const { 'Accept-Encoding': mediaEncoding, ...providerExtractionClientHints } = providerClientHints;
 
 async function read(relativePath) {
   return readFile(new URL(relativePath, root), 'utf8');
@@ -85,7 +87,7 @@ test('Fsvid media headers preserve the user agent used to sign playback URLs', a
     {
       Origin: 'https://fs13.lol',
       Referer: 'https://fs13.lol/',
-      ...providerClientHints,
+      ...providerExtractionClientHints,
       'Sec-Fetch-Site': 'cross-site',
       'Sec-Fetch-Mode': 'cors',
       'Sec-Fetch-Dest': 'empty',
@@ -128,6 +130,7 @@ test('Vidzy playback preserves the user agent used to sign playback URLs', async
   assert.deepEqual(
     applyMediaProxyHeaderRules('https://u14.vidzy.cc/hls/master.m3u8', {}),
     {
+      Origin: 'https://vidzy.org',
       Referer: 'https://vidzy.org/',
       ...providerClientHints,
       'Sec-Fetch-Site': 'cross-site',
@@ -136,6 +139,61 @@ test('Vidzy playback preserves the user agent used to sign playback URLs', async
       'User-Agent': providerSignedUserAgent,
     },
   );
+});
+
+test('Fsvid, Vidzy and Uqload keep browser encoding tokens without requesting compressed bodies', async () => {
+  const { applyMediaProxyHeaderRules } = await importTypeScript(
+    'src/services/mediaProxyHeaders.ts',
+  );
+  for (const [host, origin] of [
+    ['r1.fsvid.lol', 'https://fsvid.lol'],
+    ['u14.vidzy.cc', 'https://vidzy.org'],
+    ['strm4.uqload.vc', 'https://uqload.vc'],
+    ['strm1.uqload.bz', 'https://uqload.bz'],
+  ]) {
+    for (const resource of ['master.m3u8', 'seg-1.ts', 'video.mp4']) {
+      const input = {
+        origin: 'https://movix.tax',
+        referer: 'https://movix.tax/',
+        'accept-encoding': 'gzip',
+        Range: 'bytes=0-1023',
+      };
+      const headers = applyMediaProxyHeaderRules(`https://${host}/hls/${resource}?t=example`, input);
+      assert.equal(headers['Accept-Encoding'], providerClientHints['Accept-Encoding'], host);
+      assert.equal(headers.Origin, origin, host);
+      assert.equal(headers.Referer, `${origin}/`, host);
+      assert.equal(headers.Range, input.Range);
+      assert.equal(headers['accept-encoding'], undefined);
+      assert.equal(input['accept-encoding'], 'gzip', 'input is not mutated');
+    }
+  }
+  for (const host of ['uqload.vc.attacker.example', 'notuqload.vc', 'media.example']) {
+    const input = { 'Accept-Encoding': 'gzip', Referer: 'https://movix.tax/' };
+    assert.deepEqual(applyMediaProxyHeaderRules(`https://${host}/master.m3u8`, input), input);
+  }
+});
+
+test('extraction pages never advertise zstd, including after redirects or with media-looking query strings', async () => {
+  const { applyMediaProxyHeaderRules } = await importTypeScript(
+    'src/services/mediaProxyHeaders.ts',
+  );
+  for (const url of [
+    'https://fsvid.lol/embed-example.html',
+    'https://vidzy.cc/embed-example.html',
+    'https://vidzy.org/embed-example.html',
+    'https://uqload.is/embed-example.html',
+    'https://uqload.vc/embed-example.html',
+    'https://uqload.vc/example.html?next=master.m3u8',
+  ]) {
+    for (const input of [{}, { 'accept-encoding': mediaEncoding }]) {
+      const headers = applyMediaProxyHeaderRules(url, input);
+      assert.equal(
+        Object.keys(headers).some(name => name.toLowerCase() === 'accept-encoding'),
+        false,
+        `let the extraction transport negotiate a supported encoding: ${url}`,
+      );
+    }
+  }
 });
 
 test('media header rules never depend on the URL global', async () => {
