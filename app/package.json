@@ -37,6 +37,7 @@
     "@react-native/metro-config": "0.75.4",
     "@types/react": "^18.3.18",
     "patch-package": "^8.0.1",
+    "react-native-dotenv": "4.1.1",
     "typescript": "^5.7.3"
   }
 }
