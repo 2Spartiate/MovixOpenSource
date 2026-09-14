@@ -7,9 +7,10 @@ import {
   Platform,
 } from 'react-native';
 import { SafeAreaProvider } from 'react-native-safe-area-context';
+import { NavigationContainer, DarkTheme } from '@react-navigation/native';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 
-import BrowserScreen from './screens/BrowserScreen';
+import RootNavigator from './navigation/RootNavigator';
 import UpdateScreen from './screens/UpdateScreen';
 import UpdateDialog from './components/UpdateDialog';
 import { useAppUpdate } from './hooks/useAppUpdate';
@@ -177,7 +178,9 @@ function AppShell({ dnsSettled }: { dnsSettled: boolean }) {
 
   return (
     <>
-      <BrowserScreen />
+      <NavigationContainer theme={navigationTheme}>
+        <RootNavigator />
+      </NavigationContainer>
       {dnsSettled && state.stage === 'offered' && state.manifest && (
         <UpdateDialog
           manifest={state.manifest}
@@ -189,3 +192,14 @@ function AppShell({ dnsSettled }: { dnsSettled: boolean }) {
     </>
   );
 }
+
+const navigationTheme = {
+  ...DarkTheme,
+  colors: {
+    ...DarkTheme.colors,
+    background: '#0a0a0a',
+    card: '#0a0a0a',
+    border: '#1f1f1f',
+    primary: '#8b5cf6',
+  },
+};

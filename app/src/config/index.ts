@@ -8,6 +8,10 @@ export const CONFIG = {
     'Mozilla/5.0 (Linux; Android 14; Pixel 8) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Mobile Safari/537.36',
   USER_AGENT_IOS:
     'Mozilla/5.0 (iPhone; CPU iPhone OS 18_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/18.0 Mobile/15E148 Safari/604.1',
+  // Meme niveau d'exposition cote client que VITE_TMDB_API_KEY sur le web.
+  TMDB_API_KEY: 'af4766c8438baa0fbc024b49f1a7b042',
+  TMDB_API_URL: 'https://api.themoviedb.org/3',
+  TMDB_IMAGE_URL: 'https://image.tmdb.org/t/p',
 };
 
 export const UPDATE_CHECK = {
