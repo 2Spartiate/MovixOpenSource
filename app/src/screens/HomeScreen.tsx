@@ -19,6 +19,7 @@ const CATEGORY_LINKS: { label: string; route: keyof RootStackParamList }[] = [
   { label: 'Series', route: 'TVShows' },
   { label: 'Anime', route: 'Anime' },
   { label: 'Top 10', route: 'Top10' },
+  { label: 'Live TV', route: 'LiveTV' },
 ];
 
 export default function HomeScreen() {

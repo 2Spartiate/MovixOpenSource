@@ -10,6 +10,7 @@ import GenreScreen from '../screens/GenreScreen';
 import Top10Screen from '../screens/Top10Screen';
 import PersonScreen from '../screens/PersonScreen';
 import CollectionScreen from '../screens/CollectionScreen';
+import LiveTVScreen from '../screens/LiveTVScreen';
 import type { RootStackParamList } from './types';
 
 const Stack = createNativeStackNavigator<RootStackParamList>();
@@ -31,6 +32,7 @@ export default function RootNavigator() {
       <Stack.Screen name="Top10" component={Top10Screen} />
       <Stack.Screen name="Person" component={PersonScreen} />
       <Stack.Screen name="Collection" component={CollectionScreen} />
+      <Stack.Screen name="LiveTV" component={LiveTVScreen} />
     </Stack.Navigator>
   );
 }

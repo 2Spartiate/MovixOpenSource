@@ -22,4 +22,6 @@ export type RootStackParamList = {
   Top10: undefined;
   Person: { id: number; name: string };
   Collection: { id: number; name: string };
+  // Goal 6 — Live TV
+  LiveTV: undefined;
 };
