@@ -13,6 +13,7 @@ import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useNavigation } from '@react-navigation/native';
 import type { NativeStackNavigationProp } from '@react-navigation/native-stack';
 import { useAddress } from '../context/AddressContext';
+import { CONFIG } from '../config';
 import {
   buildLiveTvWatchUrl,
   getCatalog,
@@ -43,9 +44,8 @@ export default function LiveTVScreen() {
   const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
-    if (!config) return;
     let cancelled = false;
-    getManifest(config.primaryUrl)
+    getManifest(CONFIG.API_BASE_URL)
       .then(result => {
         if (cancelled) return;
         setCatalogs(result);
@@ -61,7 +61,7 @@ export default function LiveTVScreen() {
     return () => {
       cancelled = true;
     };
-  }, [config]);
+  }, []);
 
   const sources = useMemo(() => {
     const seen = new Set<LiveTvSource>();
@@ -82,13 +82,13 @@ export default function LiveTVScreen() {
   }, [catalogsForActiveSource]);
 
   useEffect(() => {
-    if (!config || !activeCatalog) {
+    if (!activeCatalog) {
       setChannels([]);
       return;
     }
     let cancelled = false;
     setLoadingChannels(true);
-    getCatalog(config.primaryUrl, activeCatalog.type, activeCatalog.id)
+    getCatalog(CONFIG.API_BASE_URL, activeCatalog.type, activeCatalog.id)
       .then(result => {
         if (!cancelled) setChannels(result);
       })
@@ -101,7 +101,7 @@ export default function LiveTVScreen() {
     return () => {
       cancelled = true;
     };
-  }, [config, activeCatalog]);
+  }, [activeCatalog]);
 
   const openChannel = useCallback(
     (channel: LiveTvChannel) => {

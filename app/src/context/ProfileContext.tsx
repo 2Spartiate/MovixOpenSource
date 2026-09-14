@@ -3,7 +3,7 @@ import AsyncStorage from '@react-native-async-storage/async-storage';
 import * as profilesService from '../services/profiles';
 import type { Profile } from '../services/profiles';
 import { useAuth } from './AuthContext';
-import { useAddress } from './AddressContext';
+import { CONFIG } from '../config';
 
 const ACTIVE_PROFILE_KEY = 'movix_active_profile_id';
 
@@ -23,12 +23,11 @@ const ProfileContext = createContext<ProfileContextValue | null>(null);
 
 export function ProfileProvider({ children }: { children: React.ReactNode }) {
   const { session } = useAuth();
-  const { config } = useAddress();
   const [profiles, setProfiles] = useState<Profile[]>([]);
   const [activeProfileId, setActiveProfileId] = useState<string | null>(null);
   const [isLoading, setIsLoading] = useState(false);
 
-  const apiBase = config?.primaryUrl;
+  const apiBase = CONFIG.API_BASE_URL;
 
   const refresh = useCallback(async () => {
     if (!apiBase || !session) {

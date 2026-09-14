@@ -1,5 +1,5 @@
 import * as Keychain from 'react-native-keychain';
-import { useAddress } from '../context/AddressContext';
+import { CONFIG } from '../config';
 
 // Meme contrat que authRoutes.js cote web (src/pages/LoginBip39.tsx,
 // CreateAccount.tsx) : phrase BIP39 generee/verifiee serveur, Turnstile
@@ -97,9 +97,8 @@ export async function clearSession(): Promise<void> {
   await Keychain.resetGenericPassword({ service: KEYCHAIN_SERVICE });
 }
 
-// Ne sert qu'a fabriquer l'URL d'API a partir du meme host que le site
-// (AddressContext), pas de host d'API distinct aujourd'hui.
-export function useAuthApiBase(): string | null {
-  const { config } = useAddress();
-  return config?.primaryUrl ?? null;
+// Host du backend Mainapi (CONFIG.API_BASE_URL), distinct du site
+// (AddressContext ne resout que le miroir anti-blocage du site lui-meme).
+export function useAuthApiBase(): string {
+  return CONFIG.API_BASE_URL;
 }

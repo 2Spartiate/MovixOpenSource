@@ -13,6 +13,7 @@ import { useNavigation, useRoute, type RouteProp } from '@react-navigation/nativ
 import type { NativeStackNavigationProp } from '@react-navigation/native-stack';
 import { Heart } from 'lucide-react-native';
 import { backdropUrl, getDetails, posterUrl, type TmdbDetails } from '../services/tmdb';
+import { CONFIG } from '../config';
 import { useAddress } from '../context/AddressContext';
 import { useAuth } from '../context/AuthContext';
 import { useProfile } from '../context/ProfileContext';
@@ -68,8 +69,8 @@ export default function DetailScreen() {
       addedAt: new Date().toISOString(),
     });
     setFavorite(nowFavorite);
-    if (session && activeProfile && config) {
-      pushSync(config.primaryUrl, session.token, session.userType, activeProfile.id).catch(() => {});
+    if (session && activeProfile) {
+      pushSync(CONFIG.API_BASE_URL, session.token, session.userType, activeProfile.id).catch(() => {});
     }
   };
 

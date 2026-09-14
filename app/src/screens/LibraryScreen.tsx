@@ -78,15 +78,15 @@ export default function LibraryScreen() {
   }, [loadTab]);
 
   useEffect(() => {
-    if (!session || !activeProfile || !config) return;
+    if (!session || !activeProfile) return;
     setSyncing(true);
-    pullSync(config.primaryUrl, session.token, activeProfile.id)
+    pullSync(CONFIG.API_BASE_URL, session.token, activeProfile.id)
       .then(loadTab)
       .catch(() => {})
       .finally(() => setSyncing(false));
     // Uniquement au login/changement de profil — pas a chaque changement d'onglet.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [session, activeProfile, config]);
+  }, [session, activeProfile]);
 
   const openDetail = useCallback(
     (item: TmdbListItem) => navigation.navigate('Detail', { id: item.id, mediaType: item.media_type }),

@@ -2,6 +2,11 @@ import { TMDB_API_KEY, TURNSTILE_SITE_KEY } from '@env';
 
 export const CONFIG = {
   SITE_URL: 'https://movix.tax',
+  // Host reel du backend Mainapi (VITE_MAIN_API cote web) — distinct du site
+  // (Cloudflare Pages) qui, lui, a besoin du systeme de miroirs anti-blocage
+  // (AddressContext). Pas de preuve que l'API ait besoin du meme systeme de
+  // secours, donc constante fixe plutot que resolue dynamiquement.
+  API_BASE_URL: 'https://api.movix.men',
   DNS_PRIMARY: '1.1.1.1',
   DNS_SECONDARY: '1.0.0.1',
   DNS_DOH_URL: 'https://cloudflare-dns.com/dns-query',

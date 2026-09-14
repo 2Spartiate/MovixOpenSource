@@ -4,7 +4,7 @@ import { useNavigation } from '@react-navigation/native';
 import type { NativeStackNavigationProp } from '@react-navigation/native-stack';
 import ScreenHeader from '../components/ScreenHeader';
 import PosterGrid from '../components/PosterGrid';
-import { useAddress } from '../context/AddressContext';
+import { CONFIG } from '../config';
 import { getTop10, type Top10Kind, type Top10Period } from '../services/top10';
 import type { TmdbListItem } from '../services/tmdb';
 import type { RootStackParamList } from '../navigation/types';
@@ -24,7 +24,6 @@ const PERIOD_OPTIONS: { value: Top10Period; label: string }[] = [
 
 export default function Top10Screen() {
   const navigation = useNavigation<NativeStackNavigationProp<RootStackParamList>>();
-  const { config } = useAddress();
   const [kind, setKind] = useState<Top10Kind>('movies');
   const [period, setPeriod] = useState<Top10Period>('week');
   const [items, setItems] = useState<TmdbListItem[]>([]);
@@ -32,10 +31,9 @@ export default function Top10Screen() {
   const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
-    if (!config) return;
     let cancelled = false;
     setLoading(true);
-    getTop10(config.primaryUrl, kind, period)
+    getTop10(CONFIG.API_BASE_URL, kind, period)
       .then(results => {
         if (!cancelled) setItems(results);
       })
@@ -48,7 +46,7 @@ export default function Top10Screen() {
     return () => {
       cancelled = true;
     };
-  }, [config, kind, period]);
+  }, [kind, period]);
 
   const openDetail = useCallback(
     (item: TmdbListItem) => navigation.navigate('Detail', { id: item.id, mediaType: item.media_type }),
