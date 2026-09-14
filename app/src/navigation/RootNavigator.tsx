@@ -15,6 +15,8 @@ import LoginScreen from '../screens/auth/LoginScreen';
 import CreateAccountScreen from '../screens/auth/CreateAccountScreen';
 import ProfileSelectScreen from '../screens/auth/ProfileSelectScreen';
 import ProfileEditScreen from '../screens/auth/ProfileEditScreen';
+import WatchPartyScreen from '../screens/WatchPartyScreen';
+import WatchPartyLobbyScreen from '../screens/WatchPartyLobbyScreen';
 import type { RootStackParamList } from './types';
 
 const Stack = createNativeStackNavigator<RootStackParamList>();
@@ -41,6 +43,8 @@ export default function RootNavigator() {
       <Stack.Screen name="CreateAccount" component={CreateAccountScreen} options={{ presentation: 'modal' }} />
       <Stack.Screen name="ProfileSelect" component={ProfileSelectScreen} options={{ presentation: 'modal' }} />
       <Stack.Screen name="ProfileEdit" component={ProfileEditScreen} options={{ presentation: 'modal' }} />
+      <Stack.Screen name="WatchParty" component={WatchPartyScreen} />
+      <Stack.Screen name="WatchPartyLobby" component={WatchPartyLobbyScreen} options={{ gestureEnabled: false }} />
     </Stack.Navigator>
   );
 }

@@ -11,7 +11,7 @@ import {
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useNavigation, useRoute, type RouteProp } from '@react-navigation/native';
 import type { NativeStackNavigationProp } from '@react-navigation/native-stack';
-import { Heart } from 'lucide-react-native';
+import { Heart, Users } from 'lucide-react-native';
 import { backdropUrl, getDetails, posterUrl, type TmdbDetails } from '../services/tmdb';
 import { CONFIG } from '../config';
 import { useAddress } from '../context/AddressContext';
@@ -129,6 +129,20 @@ export default function DetailScreen() {
               </TouchableOpacity>
               <TouchableOpacity style={styles.favoriteButton} onPress={onToggleFavorite}>
                 <Heart size={20} color={favorite ? '#8b5cf6' : '#ffffff'} fill={favorite ? '#8b5cf6' : 'transparent'} />
+              </TouchableOpacity>
+              <TouchableOpacity
+                style={styles.favoriteButton}
+                onPress={() =>
+                  navigation.navigate('WatchParty', {
+                    mediaContext: {
+                      id: details.id,
+                      mediaType: details.media_type,
+                      title: details.title,
+                      poster: details.poster_path,
+                    },
+                  })
+                }>
+                <Users size={20} color="#ffffff" />
               </TouchableOpacity>
             </View>
           </View>

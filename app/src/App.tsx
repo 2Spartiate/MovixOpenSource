@@ -17,6 +17,7 @@ import { useAppUpdate } from './hooks/useAppUpdate';
 import { AddressProvider, useAddress } from './context/AddressContext';
 import { AuthProvider } from './context/AuthContext';
 import { ProfileProvider } from './context/ProfileContext';
+import { WatchPartyProvider } from './context/WatchPartyContext';
 import { loadNetworkJournalPreference } from './services/networkJournal';
 
 const { DnsModule } = NativeModules;
@@ -141,7 +142,9 @@ export default function App() {
       <AddressProvider>
         <AuthProvider>
           <ProfileProvider>
-            <AppShell dnsSettled={dnsSettled} />
+            <WatchPartyProvider>
+              <AppShell dnsSettled={dnsSettled} />
+            </WatchPartyProvider>
           </ProfileProvider>
         </AuthProvider>
       </AddressProvider>

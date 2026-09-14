@@ -29,4 +29,7 @@ export type RootStackParamList = {
   CreateAccount: undefined;
   ProfileSelect: undefined;
   ProfileEdit: { profileId?: string };
+  // Goal 5 — WatchParty (lobby uniquement, pas de lecture synchronisee)
+  WatchParty: { mediaContext?: { id: number; mediaType: MediaType; title: string; poster?: string | null } } | undefined;
+  WatchPartyLobby: undefined;
 };
