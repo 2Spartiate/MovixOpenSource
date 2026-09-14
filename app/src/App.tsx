@@ -15,6 +15,8 @@ import UpdateScreen from './screens/UpdateScreen';
 import UpdateDialog from './components/UpdateDialog';
 import { useAppUpdate } from './hooks/useAppUpdate';
 import { AddressProvider, useAddress } from './context/AddressContext';
+import { AuthProvider } from './context/AuthContext';
+import { ProfileProvider } from './context/ProfileContext';
 import { loadNetworkJournalPreference } from './services/networkJournal';
 
 const { DnsModule } = NativeModules;
@@ -137,7 +139,11 @@ export default function App() {
     <SafeAreaProvider>
       <StatusBar barStyle="light-content" backgroundColor="#0a0a0a" />
       <AddressProvider>
-        <AppShell dnsSettled={dnsSettled} />
+        <AuthProvider>
+          <ProfileProvider>
+            <AppShell dnsSettled={dnsSettled} />
+          </ProfileProvider>
+        </AuthProvider>
       </AddressProvider>
     </SafeAreaProvider>
   );

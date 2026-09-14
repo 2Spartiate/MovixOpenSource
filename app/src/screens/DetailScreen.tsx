@@ -11,8 +11,13 @@ import {
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useNavigation, useRoute, type RouteProp } from '@react-navigation/native';
 import type { NativeStackNavigationProp } from '@react-navigation/native-stack';
+import { Heart } from 'lucide-react-native';
 import { backdropUrl, getDetails, posterUrl, type TmdbDetails } from '../services/tmdb';
 import { useAddress } from '../context/AddressContext';
+import { useAuth } from '../context/AuthContext';
+import { useProfile } from '../context/ProfileContext';
+import { isFavorite, toggleFavorite } from '../services/library';
+import { pushSync } from '../services/librarySync';
 import type { RootStackParamList } from '../navigation/types';
 
 // Chemins de lecture du site (src/routing/registry.tsx) : pas de selecteur
@@ -29,8 +34,11 @@ export default function DetailScreen() {
   const navigation = useNavigation<NativeStackNavigationProp<RootStackParamList>>();
   const route = useRoute<RouteProp<RootStackParamList, 'Detail'>>();
   const { config } = useAddress();
+  const { session } = useAuth();
+  const { activeProfile } = useProfile();
   const [details, setDetails] = useState<TmdbDetails | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [favorite, setFavorite] = useState(false);
 
   useEffect(() => {
     let cancelled = false;
@@ -45,6 +53,25 @@ export default function DetailScreen() {
       cancelled = true;
     };
   }, [route.params.id, route.params.mediaType]);
+
+  useEffect(() => {
+    isFavorite(route.params.mediaType, route.params.id).then(setFavorite);
+  }, [route.params.id, route.params.mediaType]);
+
+  const onToggleFavorite = async () => {
+    if (!details) return;
+    const nowFavorite = await toggleFavorite(details.media_type, {
+      id: details.id,
+      type: details.media_type,
+      title: details.title,
+      poster_path: details.poster_path,
+      addedAt: new Date().toISOString(),
+    });
+    setFavorite(nowFavorite);
+    if (session && activeProfile && config) {
+      pushSync(config.primaryUrl, session.token, session.userType, activeProfile.id).catch(() => {});
+    }
+  };
 
   const onPlay = () => {
     if (!details || !config) return;
@@ -95,9 +122,14 @@ export default function DetailScreen() {
             {details.genres.length > 0 && (
               <Text style={styles.meta}>{details.genres.map(g => g.name).join(', ')}</Text>
             )}
-            <TouchableOpacity style={styles.playButton} onPress={onPlay}>
-              <Text style={styles.playButtonText}>Lecture</Text>
-            </TouchableOpacity>
+            <View style={styles.actionRow}>
+              <TouchableOpacity style={styles.playButton} onPress={onPlay}>
+                <Text style={styles.playButtonText}>Lecture</Text>
+              </TouchableOpacity>
+              <TouchableOpacity style={styles.favoriteButton} onPress={onToggleFavorite}>
+                <Heart size={20} color={favorite ? '#8b5cf6' : '#ffffff'} fill={favorite ? '#8b5cf6' : 'transparent'} />
+              </TouchableOpacity>
+            </View>
           </View>
         </View>
 
@@ -208,12 +240,28 @@ const styles = StyleSheet.create({
     fontSize: 13,
     marginTop: 4,
   },
-  playButton: {
+  actionRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
     marginTop: 10,
+    gap: 10,
+  },
+  playButton: {
+    flex: 1,
     backgroundColor: '#8b5cf6',
     borderRadius: 8,
     paddingVertical: 10,
     alignItems: 'center',
+  },
+  favoriteButton: {
+    width: 40,
+    height: 40,
+    borderRadius: 8,
+    borderWidth: 1,
+    borderColor: '#1f1f1f',
+    backgroundColor: '#151515',
+    alignItems: 'center',
+    justifyContent: 'center',
   },
   playButtonText: {
     color: '#ffffff',

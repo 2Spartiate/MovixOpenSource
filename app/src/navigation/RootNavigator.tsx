@@ -11,6 +11,10 @@ import Top10Screen from '../screens/Top10Screen';
 import PersonScreen from '../screens/PersonScreen';
 import CollectionScreen from '../screens/CollectionScreen';
 import LiveTVScreen from '../screens/LiveTVScreen';
+import LoginScreen from '../screens/auth/LoginScreen';
+import CreateAccountScreen from '../screens/auth/CreateAccountScreen';
+import ProfileSelectScreen from '../screens/auth/ProfileSelectScreen';
+import ProfileEditScreen from '../screens/auth/ProfileEditScreen';
 import type { RootStackParamList } from './types';
 
 const Stack = createNativeStackNavigator<RootStackParamList>();
@@ -33,6 +37,10 @@ export default function RootNavigator() {
       <Stack.Screen name="Person" component={PersonScreen} />
       <Stack.Screen name="Collection" component={CollectionScreen} />
       <Stack.Screen name="LiveTV" component={LiveTVScreen} />
+      <Stack.Screen name="Login" component={LoginScreen} options={{ presentation: 'modal' }} />
+      <Stack.Screen name="CreateAccount" component={CreateAccountScreen} options={{ presentation: 'modal' }} />
+      <Stack.Screen name="ProfileSelect" component={ProfileSelectScreen} options={{ presentation: 'modal' }} />
+      <Stack.Screen name="ProfileEdit" component={ProfileEditScreen} options={{ presentation: 'modal' }} />
     </Stack.Navigator>
   );
 }

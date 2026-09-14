@@ -1,4 +1,4 @@
-import { TMDB_API_KEY } from '@env';
+import { TMDB_API_KEY, TURNSTILE_SITE_KEY } from '@env';
 
 export const CONFIG = {
   SITE_URL: 'https://movix.tax',
@@ -16,6 +16,9 @@ export const CONFIG = {
   TMDB_API_KEY,
   TMDB_API_URL: 'https://api.themoviedb.org/3',
   TMDB_IMAGE_URL: 'https://image.tmdb.org/t/p',
+  // Cle publique Cloudflare Turnstile (equivalent VITE_TURNSTILE_INVISIBLE_SITEKEY
+  // cote web) — pas un secret par nature, mais routee par @env comme le reste.
+  TURNSTILE_SITE_KEY,
 };
 
 export const UPDATE_CHECK = {

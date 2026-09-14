@@ -24,4 +24,9 @@ export type RootStackParamList = {
   Collection: { id: number; name: string };
   // Goal 6 — Live TV
   LiveTV: undefined;
+  // Goal 4 — Compte & Bibliotheque
+  Login: undefined;
+  CreateAccount: undefined;
+  ProfileSelect: undefined;
+  ProfileEdit: { profileId?: string };
 };
