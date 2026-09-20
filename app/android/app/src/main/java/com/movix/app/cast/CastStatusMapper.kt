@@ -10,6 +10,7 @@ internal data class NativeCastStatus(
     val canSeek: Boolean,
     val idleReason: String? = null,
     val errorCode: String? = null,
+    val nativeErrorCode: String? = null,
 )
 
 internal data class CastStatusSnapshot(
@@ -22,6 +23,7 @@ internal data class CastStatusSnapshot(
     val canSeek: Boolean = false,
     val idleReason: String? = null,
     val errorCode: String? = null,
+    val nativeErrorCode: String? = null,
 )
 
 internal object CastStatusMapper {
@@ -32,6 +34,30 @@ internal object CastStatusMapper {
         "ERROR",
     )
     private val safeErrorPattern = Regex("^MOVIX_[A-Z0-9_]{3,80}$")
+    private val safeNativeErrorPattern = Regex("^[A-Z][A-Z0-9_-]{0,127}$")
+
+    fun withoutOwnedLoad(
+        connected: Boolean,
+        deviceName: String?,
+        loading: Boolean,
+        orphanedRelay: Boolean,
+        lastError: String? = null,
+        nativeErrorCode: String? = null,
+    ): NativeCastStatus {
+        val error = if (loading) null else (lastError
+            ?: "MOVIX_RELAY_RELOAD_REQUIRED".takeIf { connected && orphanedRelay })
+        return map(CastStatusSnapshot(
+            connected = connected,
+            deviceName = deviceName,
+            playbackState = when {
+                loading -> NativeCastPlaybackState.LOADING
+                error != null -> NativeCastPlaybackState.ERROR
+                else -> NativeCastPlaybackState.IDLE
+            },
+            errorCode = error,
+            nativeErrorCode = nativeErrorCode.takeIf { error != null },
+        ))
+    }
 
     fun map(snapshot: CastStatusSnapshot): NativeCastStatus {
         val state = when (snapshot.playbackState) {
@@ -57,6 +83,7 @@ internal object CastStatusMapper {
                 ?.uppercase()
                 ?.takeIf(stableIdleReasons::contains),
             errorCode = snapshot.errorCode?.takeIf(safeErrorPattern::matches),
+            nativeErrorCode = snapshot.nativeErrorCode?.takeIf(safeNativeErrorPattern::matches),
         )
     }
 

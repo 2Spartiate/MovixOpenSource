@@ -348,6 +348,7 @@ const FAILED_MARKER_TTL_BY_CODE = {
   sqlite_miss: 0,                        // 0 — always recheck sqlite (covers post-deploy snapshot additions like links_small)
   live_no_directdl: 2 * 60 * 60 * 1000,  // 2h — hydracker returned no usable URL, persistent
   live_hydracker_error: 5 * 60 * 1000,   // 5min — transient upstream blip
+  live_hydracker_blackout: 0,            // 0 — blocage volontaire, rien à figer
 };
 // Keep the legacy export name for backwards compatibility with consumers
 // that read it as a single-value cap; equals the longest TTL in the map.

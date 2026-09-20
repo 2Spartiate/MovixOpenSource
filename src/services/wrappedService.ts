@@ -3,6 +3,8 @@
  * Fetches and manages Movix Wrapped data from the API
  */
 
+import type { WrappedSession } from '@/types/wrapped';
+
 const MAIN_API = import.meta.env.VITE_MAIN_API;
 
 export interface WrappedSlide {
@@ -85,6 +87,8 @@ export interface WrappedFirstLastWatch {
 
 export interface WrappedData {
     year: number;
+    /** Fixture frontend : simule une année terminée, sans modifier l'horloge réelle. */
+    isDemo?: boolean;
     persona: WrappedPersona;
     slides: WrappedSlide[];
     stats: WrappedStats;
@@ -102,6 +106,15 @@ export interface WrappedData {
     weekday?: { dow: number; minutes: number }[];
     rewatch?: { title: string; type: string; count: number } | null;
     watchAgeYear?: number | null;
+    story?: import('@/types/wrappedStory').WrappedStoryData | null;
+    community?: {
+        commentsPosted: number;
+        repliesPosted: number;
+        discussedTitles: number;
+        calendarTimezone: 'UTC';
+        highlight?: import('@/types/wrappedStory').WrappedCommentHighlight | null;
+        topTitles: { type: 'movie' | 'tv' | 'anime'; tmdbId: number; title: string; poster_path: string | null; contributions: number }[];
+    } | null;
 }
 
 export interface WrappedProgress {
@@ -139,9 +152,9 @@ export interface WrappedResponse {
 /**
  * Fetch Wrapped data for a specific year
  */
-export async function fetchWrappedData(year: number): Promise<WrappedResponse> {
-    const authToken = localStorage.getItem('auth_token');
-    const profileId = localStorage.getItem('selected_profile_id');
+export async function fetchWrappedData(year: number, options: { signal?: AbortSignal; session?: WrappedSession } = {}): Promise<WrappedResponse> {
+    const authToken = options.session ? options.session.token : localStorage.getItem('auth_token');
+    const profileId = options.session ? options.session.profileId : localStorage.getItem('selected_profile_id');
 
     if (!authToken) {
         return {
@@ -163,7 +176,8 @@ export async function fetchWrappedData(year: number): Promise<WrappedResponse> {
 
         const response = await fetch(`${MAIN_API}/api/wrapped/generate/${year}`, {
             method: 'GET',
-            headers
+            headers,
+            signal: options.signal,
         });
 
         if (!response.ok) {
@@ -174,7 +188,7 @@ export async function fetchWrappedData(year: number): Promise<WrappedResponse> {
         const data = await response.json();
         return data as WrappedResponse;
     } catch (error) {
-        console.error('[Wrapped] Error fetching data:', error);
+        if (!options.signal?.aborted) console.error('[Wrapped] Error fetching data:', error);
         return {
             success: false,
             wrapped: null,

@@ -16,6 +16,7 @@ const {
   decodeSignedToken,
   signingConfigured,
 } = require('../utils/mediaSigning');
+const { createSingleFlight } = require('../utils/singleFlight');
 
 // ===========================================================================================
 // ===== FRANCE.TV (FTV) SOURCE — Recherche + épisodes d'une série/collection =====
@@ -97,6 +98,11 @@ router.use((req, res, next) => {
 // --- FTV: Cache du next-action hash (TTL 30 min) ---
 let ftvNextActionHash = null;
 let ftvNextActionExpiry = 0;
+let ftvNextActionRetryAt = 0;
+const runFtvHashRefresh = createSingleFlight();
+const FTV_HASH_TTL_MS = 30 * 60 * 1000;
+const FTV_HASH_FAILURE_BACKOFF_MS = 30 * 1000;
+const FTV_CHUNK_CONCURRENCY = 4;
 
 // Headers complets pour simuler un vrai navigateur Chrome sur france.tv
 const FTV_BROWSER_HEADERS = {
@@ -153,6 +159,76 @@ async function getFtvNextActionHash() {
     return ftvNextActionHash;
   }
 
+  if (now < ftvNextActionRetryAt) return null;
+
+  return runFtvHashRefresh('next-action-hash', async () => {
+    // Un autre appel a pu terminer pendant l'attente de la promesse commune.
+    const refreshedNow = Date.now();
+    if (ftvNextActionHash && refreshedNow < ftvNextActionExpiry) return ftvNextActionHash;
+    if (refreshedNow < ftvNextActionRetryAt) return null;
+    const hash = await refreshFtvNextActionHash();
+    if (hash) {
+      ftvNextActionHash = hash;
+      ftvNextActionExpiry = Date.now() + FTV_HASH_TTL_MS;
+      ftvNextActionRetryAt = 0;
+      return hash;
+    }
+    ftvNextActionRetryAt = Date.now() + FTV_HASH_FAILURE_BACKOFF_MS;
+    return null;
+  });
+}
+
+async function findHashInChunks(chunkUrls, searchActionRe) {
+  let nextIndex = 0;
+  let found = null;
+  const controllers = new Set();
+  const workers = Array.from({ length: Math.min(FTV_CHUNK_CONCURRENCY, chunkUrls.length) }, async () => {
+    while (!found) {
+      const index = nextIndex++;
+      if (index >= chunkUrls.length) return;
+      const url = chunkUrls[index];
+      const controller = new AbortController();
+      controllers.add(controller);
+      try {
+        const res = await axios.get(`${FTV_BASE}${url}`, {
+          headers: {
+            'User-Agent': FTV_BROWSER_HEADERS['User-Agent'],
+            'Accept': '*/*',
+            'Accept-Language': 'fr-FR,fr;q=0.9',
+            'Accept-Encoding': 'gzip, deflate, br, zstd',
+            'Referer': `${FTV_BASE}/recherche/`,
+            'Sec-Ch-Ua': FTV_BROWSER_HEADERS['Sec-Ch-Ua'],
+            'Sec-Ch-Ua-Mobile': '?0',
+            'Sec-Ch-Ua-Platform': '"Windows"',
+            'Sec-Fetch-Dest': 'script',
+            'Sec-Fetch-Mode': 'no-cors',
+            'Sec-Fetch-Site': 'same-origin',
+          },
+          proxy: false,
+          timeout: 10000,
+          signal: controller.signal,
+        });
+        const match = (typeof res.data === 'string' ? res.data : '').match(searchActionRe);
+        if (match && !found) {
+          found = match[1];
+          // Les chunks déjà en vol ne doivent pas prolonger la préparation du hash.
+          for (const pendingController of controllers) {
+            if (pendingController !== controller) pendingController.abort();
+          }
+        }
+      } catch {
+        // Un chunk indisponible ne doit pas arrêter le scan des autres chunks.
+      } finally {
+        controllers.delete(controller);
+      }
+    }
+  });
+  await Promise.all(workers);
+  return found;
+}
+
+async function refreshFtvNextActionHash() {
+
   const MAX_RETRIES = 3;
   const SEARCH_ACTION_RE = /createServerReference\)?\s*\(\s*"([a-f0-9]{40,})"[^)]*?"searchAction"/;
 
@@ -185,40 +261,11 @@ async function getFtvNextActionHash() {
         )];
         console.log(`[FTV] Scanning ${chunkUrls.length} chunks for searchAction reference...`);
 
-        const results = await Promise.allSettled(chunkUrls.map(async (url) => {
-          const res = await axios.get(`${FTV_BASE}${url}`, {
-            headers: {
-              'User-Agent': FTV_BROWSER_HEADERS['User-Agent'],
-              'Accept': '*/*',
-              'Accept-Language': 'fr-FR,fr;q=0.9',
-              'Accept-Encoding': 'gzip, deflate, br, zstd',
-              'Referer': `${FTV_BASE}/recherche/`,
-              'Sec-Ch-Ua': FTV_BROWSER_HEADERS['Sec-Ch-Ua'],
-              'Sec-Ch-Ua-Mobile': '?0',
-              'Sec-Ch-Ua-Platform': '"Windows"',
-              'Sec-Fetch-Dest': 'script',
-              'Sec-Fetch-Mode': 'no-cors',
-              'Sec-Fetch-Site': 'same-origin',
-            },
-            proxy: false,
-            timeout: 10000,
-          });
-          const m = (typeof res.data === 'string' ? res.data : '').match(SEARCH_ACTION_RE);
-          return m ? m[1] : null;
-        }));
-
-        for (const r of results) {
-          if (r.status === 'fulfilled' && r.value) {
-            hash = r.value;
-            console.log(`[FTV] Found next-action hash in chunk: ${hash}`);
-            break;
-          }
-        }
+        hash = await findHashInChunks(chunkUrls, SEARCH_ACTION_RE);
+        if (hash) console.log(`[FTV] Found next-action hash in chunk: ${hash}`);
       }
 
       if (hash) {
-        ftvNextActionHash = hash;
-        ftvNextActionExpiry = now + 30 * 60 * 1000; // Cache 30 min
         return hash;
       }
 

@@ -922,6 +922,7 @@ const CommentItem = React.memo<CommentItemProps>((props) => {
   if (prev.comment.content !== next.comment.content) return false;
   if (prev.comment.is_spoiler !== next.comment.is_spoiler) return false;
   if (prev.comment.is_edited !== next.comment.is_edited) return false;
+  if (prev.comment.is_admin !== next.comment.is_admin) return false;
   // user identity
   if (prev.profileId !== next.profileId) return false;
   if (prev.isAdmin !== next.isAdmin) return false;
@@ -1057,7 +1058,7 @@ const CommentsSection: React.FC<CommentsSectionProps> = ({ contentType, contentI
       axios.get(`${MAIN_API}/api/admin/check`, {
         headers: { Authorization: `Bearer ${token}` }
       })
-        .then(() => setIsAdmin(true))
+        .then(({ data }) => setIsAdmin(data?.success === true && data?.admin?.role === 'admin'))
         .catch(() => setIsAdmin(false));
     }
   }, []);
@@ -1150,13 +1151,17 @@ const CommentsSection: React.FC<CommentsSectionProps> = ({ contentType, contentI
         }
       );
 
+      const nextComments = response.data?.comments;
+      if (!Array.isArray(nextComments)) {
+        throw new Error('Réponse de commentaires invalide');
+      }
       if (pageNum === 1) {
-        setComments(response.data.comments);
+        setComments(nextComments);
       } else {
-        setComments(prev => [...prev, ...response.data.comments]);
+        setComments(prev => [...prev, ...nextComments]);
       }
 
-      setHasMore(response.data.hasMore);
+      setHasMore(response.data.hasMore === true);
       setLoading(false);
 
       // Délai de 0.3 secondes avant d'afficher les commentaires

@@ -4,8 +4,86 @@ import i18n from '../i18n';
 import { searchIndexedMedia, type IndexedMedia } from '../utils/mediaSearchIndex';
 import { getTmdbLanguage } from '../i18n';
 import { TmdbKeyword, fetchTmdbMediaKeywordIds, searchTmdbKeywords } from '../utils/tmdbKeywords';
+import { hasUsefulContent, isReleased } from '../utils/searchResultFilters';
 
 const TMDB_API_KEY = import.meta.env.VITE_TMDB_API_KEY || '';
+
+// TMDB ne renvoie pas l'overview original en fallback : une fiche jamais
+// traduite dans la langue d'interface arrive avec overview vide. On double
+// donc chaque requête de recherche avec une langue secondaire (en-US quand
+// l'interface est en français, fr-FR sinon) pour compléter les trous.
+const getAltTmdbLanguage = () =>
+  getTmdbLanguage().startsWith('en') ? 'fr-FR' : 'en-US';
+
+// Requête identique dans la langue secondaire ; ne casse jamais la requête
+// principale (un échec renvoie simplement une liste vide).
+const fetchAltLanguageResults = async (url: string, params: Record<string, any>): Promise<any[]> => {
+  try {
+    const response = await axios.get(url, {
+      params: { ...params, language: getAltTmdbLanguage() }
+    });
+    return response.data.results || [];
+  } catch {
+    return [];
+  }
+};
+
+// Complète les overviews vides de la liste principale avec ceux de la langue
+// secondaire (même id = même œuvre, seule la traduction change).
+const mergeAltOverviews = (primary: any[], alt: any[]): any[] => {
+  if (!alt.length) return primary;
+  const altById = new Map(alt.map((item: any) => [item.id, item]));
+  return primary.map((item: any) => {
+    if (item.overview && item.overview.trim().length > 0) return item;
+    const altItem = altById.get(item.id);
+    return altItem?.overview ? { ...item, overview: altItem.overview } : item;
+  });
+};
+
+// Une fiche « notée 10 » par un seul votant n'est pas bien notée. Dès que la
+// note entre en jeu (filtre ou tri), on exige un minimum de votes : mesuré sur
+// TMDB, « documentaires, note ≥ 8, français » renvoyait 187 pages dont la
+// médiane était à 1 vote par fiche.
+export const MIN_VOTE_COUNT_WHEN_RATING_MATTERS = 5;
+
+// Une recherche texte combinée à des filtres (genre, note, langue, année,
+// pays) ne peut pas être filtrée par TMDB : `search/*` n'accepte aucun de ces
+// paramètres. On parcourt donc jusqu'à N pages TMDB d'un coup, on filtre, puis
+// on pagine le résultat nous-mêmes.
+const CLIENT_FILTERED_QUERY_MAX_PAGES = 10;
+const RESULTS_PER_PAGE = 20;
+
+const todayIsoDate = () => new Date().toISOString().slice(0, 10);
+
+// Parcourt jusqu'à CLIENT_FILTERED_QUERY_MAX_PAGES pages d'un endpoint
+// `search/*` (langue principale + secondaire pour les synopsis) et renvoie
+// les résultats à plat. Une page qui échoue après la première est ignorée.
+const fetchSearchPages = async (
+  endpoint: 'search/movie' | 'search/tv',
+  params: Record<string, string | number>,
+  mediaType: 'movie' | 'tv',
+) => {
+  const url = `https://api.themoviedb.org/3/${endpoint}`;
+  const fetchPage = async (page: number) => {
+    const [response, alt] = await Promise.all([
+      axios.get(url, { params: { ...params, page } }),
+      fetchAltLanguageResults(url, { ...params, page }),
+    ]);
+    return {
+      results: mergeAltOverviews(response.data.results || [], alt),
+      totalPages: response.data.total_pages || 0,
+    };
+  };
+  const first = await fetchPage(1);
+  const pageCount = Math.min(first.totalPages, CLIENT_FILTERED_QUERY_MAX_PAGES);
+  const others = await Promise.all(
+    Array.from({ length: Math.max(pageCount - 1, 0) }, (_, index) =>
+      fetchPage(index + 2).catch(() => ({ results: [], totalPages: 0 }))),
+  );
+  return [first, ...others]
+    .flatMap((page) => page.results)
+    .map((result) => ({ ...result, media_type: mediaType }));
+};
 
 export interface WatchProvider {
   provider_id: number;
@@ -26,6 +104,8 @@ export interface SearchResult { // Added export keyword
   release_date?: string;
   first_air_date?: string;
   vote_average: number;
+  vote_count?: number;
+  popularity?: number;
   genre_ids: number[];
   overview?: string;
   original_language?: string;
@@ -102,6 +182,15 @@ interface SearchContextType {
   loadingProviders: boolean;
   sortBy: SortByOption;
   setSortBy: (sortBy: SortByOption) => void;
+  /** Masquer les titres pas encore sortis (appliqué côté TMDB en mode filtres). */
+  filterUnreleased: boolean;
+  setFilterUnreleased: (value: boolean) => void;
+  /** Masquer les titres sans synopsis. */
+  filterNoContent: boolean;
+  setFilterNoContent: (value: boolean) => void;
+  /** Ignorer les notes portées par moins de MIN_VOTE_COUNT_WHEN_RATING_MATTERS votes. */
+  filterLowVotes: boolean;
+  setFilterLowVotes: (value: boolean) => void;
   /**
    * Déclenche le chargement (une seule fois) des genres + providers TMDB.
    * Appelé par la page Search au montage — perf : ces 4 requêtes ne partent
@@ -199,6 +288,12 @@ export const SearchProvider: React.FC<{ children: React.ReactNode }> = ({ childr
   const [watchProvidersList, setWatchProvidersList] = useState<WatchProvider[]>([]);
   const [loadingProviders, setLoadingProviders] = useState(false);
   const [sortBy, setSortBy] = useState<SortByOption>('popularity.desc');
+  const [filterUnreleased, setFilterUnreleased] = useState(true);
+  const [filterNoContent, setFilterNoContent] = useState(true);
+  const [filterLowVotes, setFilterLowVotes] = useState(true);
+  // Pool d'une recherche texte filtrée côté client (voir performSearch) :
+  // conservé tant que la signature de la recherche ne change pas.
+  const queryPoolRef = useRef<{ signature: string; items: SearchResult[] } | null>(null);
 
   const toggleProvider = (providerId: number) => {
     setSelectedProviders(prev =>
@@ -308,18 +403,48 @@ export const SearchProvider: React.FC<{ children: React.ReactNode }> = ({ childr
 
     setLoadingAutocomplete(true);
     try {
-      const response = await axios.get(`https://api.themoviedb.org/3/search/multi`, {
-        params: {
-          api_key: TMDB_API_KEY,
-          query: searchQuery,
-          language: getTmdbLanguage(),
-          page: 1,
-          sort_by: 'popularity.desc'
-        }
-      });
+      const params = {
+        api_key: TMDB_API_KEY,
+        query: searchQuery,
+        language: getTmdbLanguage(),
+        page: 1,
+        sort_by: 'popularity.desc'
+      };
 
-      const suggestions = response.data.results
-        .filter((item: any) => (item.media_type === 'movie' || item.media_type === 'tv') && item.poster_path)
+      const [response, altResults] = await Promise.all([
+        axios.get(`https://api.themoviedb.org/3/search/multi`, { params }),
+        fetchAltLanguageResults(`https://api.themoviedb.org/3/search/multi`, params)
+      ]);
+
+      let rawResults = mergeAltOverviews(response.data.results, altResults)
+        .filter((item: any) => (item.media_type === 'movie' || item.media_type === 'tv') && item.poster_path);
+
+      // Fallback : search/multi est plus strict que search/movie et search/tv
+      // (ex. « Spider-Man 3 : Editor's Cut » ne sort qu'en search/movie).
+      // Si multi ne trouve rien, on retente les deux endpoints dédiés.
+      if (rawResults.length === 0) {
+        const [movieResponse, tvResponse, movieAltResults, tvAltResults] = await Promise.allSettled([
+          axios.get(`https://api.themoviedb.org/3/search/movie`, { params }),
+          axios.get(`https://api.themoviedb.org/3/search/tv`, { params }),
+          fetchAltLanguageResults(`https://api.themoviedb.org/3/search/movie`, params),
+          fetchAltLanguageResults(`https://api.themoviedb.org/3/search/tv`, params)
+        ]);
+        const movieResults = movieResponse.status === 'fulfilled'
+          ? mergeAltOverviews(
+              movieResponse.value.data.results,
+              movieAltResults.status === 'fulfilled' ? movieAltResults.value : []
+            ).map((item: any) => ({ ...item, media_type: 'movie' }))
+          : [];
+        const tvResults = tvResponse.status === 'fulfilled'
+          ? mergeAltOverviews(
+              tvResponse.value.data.results,
+              tvAltResults.status === 'fulfilled' ? tvAltResults.value : []
+            ).map((item: any) => ({ ...item, media_type: 'tv' }))
+          : [];
+        rawResults = [...movieResults, ...tvResults].filter((item: any) => item.poster_path);
+      }
+
+      const suggestions = rawResults
         // Tri par popularité décroissante pour afficher d'abord les plus populaires
         .sort((a: any, b: any) => b.popularity - a.popularity)
         .slice(0, 5); // Limit to 5 suggestions
@@ -464,8 +589,57 @@ export const SearchProvider: React.FC<{ children: React.ReactNode }> = ({ childr
       let tmdbInitialResults: any[] = [];
       let currentTotalPages = 0;
 
-      // Get TMDB results first for both movies and TV shows
-      if (query) {
+      // Filtres que TMDB n'applique pas sur `search/*` : vérifiés côté client.
+      const matchesQueryFilters = (result: SearchResult): boolean => {
+        if (!result.poster_path) return false;
+        if (selectedLanguage && result.original_language !== selectedLanguage) return false;
+        if (selectedGenres.length > 0
+          && !(result.genre_ids || []).some((id: number) => selectedGenres.includes(id))) return false;
+        if (minRating > 0) {
+          if ((result.vote_average ?? 0) < minRating) return false;
+          if (filterLowVotes && (result.vote_count ?? 0) < MIN_VOTE_COUNT_WHEN_RATING_MATTERS) return false;
+        }
+        if (year) {
+          const date = result.release_date || result.first_air_date;
+          if (!date || date.substring(0, 4) !== year) return false;
+        }
+        if (selectedCountry && !(result.origin_country || []).includes(selectedCountry)) return false;
+        if (filterUnreleased && !isReleased(result)) return false;
+        if (filterNoContent && !hasUsefulContent(result)) return false;
+        return true;
+      };
+      const usesClientSideFilters = selectedGenres.length > 0 || minRating > 0
+        || !!selectedLanguage || !!year || !!selectedCountry;
+
+      if (query && usesClientSideFilters) {
+        // `search/*` ignore genre, note, langue, année et pays. Paginer TMDB
+        // puis filtrer chaque page annonçait des centaines de pages, presque
+        // toutes vides ou à 1-2 fiches (mesuré : « guerre » + documentaire +
+        // note ≥ 8 + français = 64 pages TMDB, 1 à 6 fiches par page). On
+        // récupère donc d'un coup jusqu'à CLIENT_FILTERED_QUERY_MAX_PAGES
+        // pages, on filtre, et on pagine ce pool nous-mêmes. Le pool survit
+        // aux changements de page : naviguer ne refait aucune requête.
+        const poolSignature = JSON.stringify({
+          query, selectedType, selectedGenres, minRating, selectedLanguage, year,
+          selectedCountry, filterUnreleased, filterNoContent, filterLowVotes, language: getTmdbLanguage(),
+        });
+        const cached = queryPoolRef.current;
+        let pool = cached && cached.signature === poolSignature ? cached.items : null;
+        if (!pool) {
+          const searchParams = { api_key: TMDB_API_KEY, query, language: getTmdbLanguage() };
+          const [movieResults, tvResults] = await Promise.all([
+            selectedType === 'tv' ? [] : fetchSearchPages('search/movie', searchParams, 'movie'),
+            selectedType === 'movie' ? [] : fetchSearchPages('search/tv', searchParams, 'tv'),
+          ]);
+          pool = [...movieResults, ...tvResults]
+            .filter(matchesQueryFilters)
+            .sort((a, b) => (b.popularity ?? 0) - (a.popularity ?? 0));
+          queryPoolRef.current = { signature: poolSignature, items: pool };
+        }
+        currentTotalPages = Math.ceil(pool.length / RESULTS_PER_PAGE);
+        setTotalPages(currentTotalPages);
+        tmdbInitialResults = pool.slice((pageNum - 1) * RESULTS_PER_PAGE, pageNum * RESULTS_PER_PAGE);
+      } else if (query) {
         try {
           console.log('Getting initial TMDB results for:', query);
 
@@ -532,12 +706,13 @@ export const SearchProvider: React.FC<{ children: React.ReactNode }> = ({ childr
               }
             }
 
-            const tvResponse = await axios.get(`https://api.themoviedb.org/3/${tvEndpoint}`, {
-              params: tvParams
-            });
+            const [tvResponse, tvAltResults] = await Promise.all([
+              axios.get(`https://api.themoviedb.org/3/${tvEndpoint}`, { params: tvParams }),
+              fetchAltLanguageResults(`https://api.themoviedb.org/3/${tvEndpoint}`, tvParams)
+            ]);
 
             // Format TV results
-            tvResults = tvResponse.data.results
+            tvResults = mergeAltOverviews(tvResponse.data.results, tvAltResults)
               .filter((result: any) => {
                 // Ne filtrer côté client que si on n'utilise pas discover
                 if (!shouldUseDiscover && selectedGenres.length > 0) {
@@ -572,12 +747,13 @@ export const SearchProvider: React.FC<{ children: React.ReactNode }> = ({ childr
               }
             }
 
-            const movieResponse = await axios.get(`https://api.themoviedb.org/3/${movieEndpoint}`, {
-              params: movieParams
-            });
+            const [movieResponse, movieAltResults] = await Promise.all([
+              axios.get(`https://api.themoviedb.org/3/${movieEndpoint}`, { params: movieParams }),
+              fetchAltLanguageResults(`https://api.themoviedb.org/3/${movieEndpoint}`, movieParams)
+            ]);
 
             // Format movie results
-            movieResults = movieResponse.data.results
+            movieResults = mergeAltOverviews(movieResponse.data.results, movieAltResults)
               .filter((result: any) => {
                 // Ne filtrer côté client que si on n'utilise pas discover
                 if (!shouldUseDiscover && selectedGenres.length > 0) {
@@ -621,43 +797,15 @@ export const SearchProvider: React.FC<{ children: React.ReactNode }> = ({ childr
           console.error('Error getting initial TMDB results:', error);
         }
 
-        // Filter for valid results and language (client-side filtering for search query)
-        tmdbInitialResults = tmdbInitialResults.filter(result => {
-          if (!result.poster_path) return false;
+        tmdbInitialResults = tmdbInitialResults.filter(matchesQueryFilters);
+      }
 
-          if (query) {
-            // Filtrage CLIENT-SIDE complet pour le mode Recherche (Query)
-
-            // Language
-            if (selectedLanguage && result.original_language !== selectedLanguage) return false;
-
-            // Genres
-            if (selectedGenres.length > 0) {
-              if (!result.genre_ids || !result.genre_ids.some((id: number) => selectedGenres.includes(id))) return false;
-            }
-
-            // Rating
-            if (minRating > 0 && result.vote_average < minRating) return false;
-
-            // Year
-            if (year) {
-              const date = result.release_date || result.first_air_date;
-              if (!date || date.substring(0, 4) !== year) return false;
-            }
-
-            // Country
-            if (selectedCountry) {
-              if (!result.origin_country || !result.origin_country.includes(selectedCountry)) return false;
-            }
-          }
-
-          return true;
-        });
-
+      // Mots-clés et plateformes se vérifient fiche par fiche (une requête
+      // TMDB chacune) : uniquement sur la page affichée.
+      if (query) {
         if (selectedKeywords.length > 0) {
           tmdbInitialResults = await filterResultsByKeywords(tmdbInitialResults);
         }
-
         if (selectedProviders.length > 0) {
           tmdbInitialResults = await filterResultsByProviders(tmdbInitialResults);
         }
@@ -675,9 +823,20 @@ export const SearchProvider: React.FC<{ children: React.ReactNode }> = ({ childr
           with_genres: selectedGenres.join(','),
           page: isGenreSearch ? pageNum : 1,
           language: getTmdbLanguage(),
-          vote_average_gte: minRating,
           sort_by: sortBy
         };
+        // TMDB attend `vote_average.gte` (avec un point). L'ancienne clé
+        // `vote_average_gte` était ignorée : TMDB renvoyait jusqu'à 500 pages
+        // non filtrées, puis le filtre client vidait la plupart des pages.
+        if (minRating > 0) {
+          baseParams['vote_average.gte'] = minRating;
+        }
+        // Sans minimum de votes, « note ≥ 8 » ou « tri par note » remonte
+        // des fiches à un seul vote, sans affiche ni synopsis, que le filtre
+        // client élimine ensuite page après page. Désactivable dans l'UI.
+        if (filterLowVotes && (minRating > 0 || sortBy.startsWith('vote_average'))) {
+          baseParams['vote_count.gte'] = MIN_VOTE_COUNT_WHEN_RATING_MATTERS;
+        }
         if (selectedLanguage) {
           baseParams.with_original_language = selectedLanguage;
         }
@@ -691,28 +850,44 @@ export const SearchProvider: React.FC<{ children: React.ReactNode }> = ({ childr
         if (selectedKeywords.length > 0) {
           baseParams.with_keywords = selectedKeywords.map((keyword) => keyword.id).join(',');
         }
-        if (year) {
-          if (selectedType === 'movie' || selectedType === 'all') baseParams.primary_release_year = year;
-          else if (selectedType === 'tv') baseParams.first_air_date_year = year;
-        }
-        if (selectedType === 'movie' || selectedType === 'all') baseParams.with_release_type = '2|3';
         if (director || actor) {
           const peopleIds = await getPeopleIds(director, actor);
           if (peopleIds) baseParams.with_people = peopleIds;
         }
+        // Paramètres propres à chaque endpoint : TMDB ignore en silence
+        // `primary_release_year` et `with_release_type` sur discover/tv, donc
+        // en mode « tout » les séries n'étaient pas filtrées par année.
+        const movieParams: Record<string, unknown> = { ...baseParams, with_release_type: '2|3' };
+        const tvParams: Record<string, unknown> = { ...baseParams };
+        if (year) {
+          movieParams.primary_release_year = year;
+          tvParams.first_air_date_year = year;
+        }
+        // « Masquer les non sortis » côté TMDB : sinon un tri par date de
+        // sortie remplit les premières pages de titres à venir, que le filtre
+        // client vide ensuite entièrement (mesuré : 10 premières pages à 0).
+        if (filterUnreleased) {
+          movieParams['primary_release_date.lte'] = todayIsoDate();
+          tvParams['first_air_date.lte'] = todayIsoDate();
+        }
+        if (sortBy.startsWith('primary_release_date')) {
+          tvParams.sort_by = sortBy.replace('primary_release_date', 'first_air_date');
+        }
         let endpoint = 'search/multi';
-        const params: any = { ...baseParams };
+        const params: any = selectedType === 'tv' ? tvParams : movieParams;
         if (!query && isGenreSearch) {
           if (selectedType === 'all') {
             try {
-              const tvParams = { ...baseParams };
-              if (sortBy.startsWith('primary_release_date')) {
-                tvParams.sort_by = sortBy.replace('primary_release_date', 'first_air_date');
-              }
-              const movieResponse = await axios.get(`https://api.themoviedb.org/3/discover/movie`, { params: { ...baseParams } });
-              const tvResponse = await axios.get(`https://api.themoviedb.org/3/discover/tv`, { params: tvParams });
-              const movieResults = movieResponse.data.results.map((result: any) => ({ ...result, media_type: 'movie' }));
-              const tvResults = tvResponse.data.results.map((result: any) => ({ ...result, media_type: 'tv' }));
+              const [movieResponse, tvResponse, movieAltResults, tvAltResults] = await Promise.all([
+                axios.get(`https://api.themoviedb.org/3/discover/movie`, { params: movieParams }),
+                axios.get(`https://api.themoviedb.org/3/discover/tv`, { params: tvParams }),
+                fetchAltLanguageResults(`https://api.themoviedb.org/3/discover/movie`, movieParams),
+                fetchAltLanguageResults(`https://api.themoviedb.org/3/discover/tv`, tvParams)
+              ]);
+              const movieResults = mergeAltOverviews(movieResponse.data.results, movieAltResults)
+                .map((result: any) => ({ ...result, media_type: 'movie' }));
+              const tvResults = mergeAltOverviews(tvResponse.data.results, tvAltResults)
+                .map((result: any) => ({ ...result, media_type: 'tv' }));
               const combinedResults = [...movieResults, ...tvResults].sort((a, b) => b.popularity - a.popularity);
               currentTotalPages = Math.max(movieResponse.data.total_pages || 0, tvResponse.data.total_pages || 0);
               setTotalPages(currentTotalPages);
@@ -744,15 +919,15 @@ export const SearchProvider: React.FC<{ children: React.ReactNode }> = ({ childr
           params.query = query;
         }
         if (endpoint && endpoint.startsWith('discover')) {
-          if (endpoint === 'discover/tv' && sortBy.startsWith('primary_release_date')) {
-            params.sort_by = sortBy.replace('primary_release_date', 'first_air_date');
-          }
-          const response = await axios.get(`https://api.themoviedb.org/3/${endpoint}`, { params });
+          const [response, altResults] = await Promise.all([
+            axios.get(`https://api.themoviedb.org/3/${endpoint}`, { params }),
+            fetchAltLanguageResults(`https://api.themoviedb.org/3/${endpoint}`, params)
+          ]);
           if (response.data.total_pages && (!currentTotalPages || isGenreSearch)) {
             currentTotalPages = response.data.total_pages;
             setTotalPages(currentTotalPages);
           }
-          let tmdbResults = response.data.results.filter((result: any) => {
+          let tmdbResults = mergeAltOverviews(response.data.results, altResults).filter((result: any) => {
             if (!result.poster_path) return false;
             if (endpoint.includes('discover')) return result.vote_average >= minRating;
             return (result.media_type === 'movie' || result.media_type === 'tv') && result.vote_average >= minRating;
@@ -766,8 +941,9 @@ export const SearchProvider: React.FC<{ children: React.ReactNode }> = ({ childr
       // Le catalogue local prolonge TMDB là où il est aveugle : mots-clés,
       // titres alternatifs, thèmes et personnages des fiches déjà ouvertes.
       // Uniquement en première page, et derrière les résultats de TMDB — ce
-      // sont des repêchages, pas des réponses plus pertinentes.
-      if (isNewSearch && query) {
+      // sont des repêchages, pas des réponses plus pertinentes. (Chaque
+      // changement de page passe par isNewSearch : tester le numéro de page.)
+      if (pageNum === 1 && query) {
         const alreadyThere = new Set(searchResults.map((result) => `${result.media_type}:${result.id}`));
         const fromIndex = searchIndexedMedia(query)
           .filter((entry) => !alreadyThere.has(`${entry.mediaType}:${entry.id}`))
@@ -1027,7 +1203,7 @@ export const SearchProvider: React.FC<{ children: React.ReactNode }> = ({ childr
   // commit triggers at most one extra setPage. — perf
   useEffect(() => {
     setPage(1);
-  }, [minRating, query, selectedLanguage, selectedCountry, selectedProviders, sortBy, selectedKeywords]);
+  }, [minRating, query, selectedLanguage, selectedCountry, selectedProviders, sortBy, selectedKeywords, filterUnreleased, filterNoContent, filterLowVotes]);
 
   // Memoize the context value with state-only deps. The previous bare object
   // literal here meant every keystroke (which already setStates `query`) also
@@ -1096,6 +1272,12 @@ export const SearchProvider: React.FC<{ children: React.ReactNode }> = ({ childr
     loadingProviders,
     sortBy,
     setSortBy,
+    filterUnreleased,
+    setFilterUnreleased,
+    filterNoContent,
+    setFilterNoContent,
+    filterLowVotes,
+    setFilterLowVotes,
     ensureFiltersLoaded,
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }), [
@@ -1105,7 +1287,7 @@ export const SearchProvider: React.FC<{ children: React.ReactNode }> = ({ childr
     loadingSuggestions, autocompleteSuggestions, loadingAutocomplete,
     selectedKeywords, keywordSuggestions, loadingKeywordSuggestions,
     selectedLanguage, selectedCountry, selectedProviders, watchProvidersList,
-    loadingProviders, sortBy
+    loadingProviders, sortBy, filterUnreleased, filterNoContent, filterLowVotes
   ]);
 
   return (

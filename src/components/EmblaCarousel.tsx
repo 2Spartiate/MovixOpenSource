@@ -1,3 +1,4 @@
+import { useLightMode } from '@/context/LightModeContext';
 import React, { useCallback, useEffect, useRef, useState, useMemo } from 'react';
 import useEmblaCarousel from 'embla-carousel-react';
 import { Star, Calendar, Trash, Trash2, ChevronLeft, ChevronRight } from 'lucide-react';
@@ -396,6 +397,7 @@ const EmblaCarousel: React.FC<EmblaCarouselProps> = ({
   onViewAll
 }) => {
   const { t } = useTranslation();
+  const { effectivePrefs } = useLightMode();
   const [emblaRef, emblaApi] = useEmblaCarousel({
     align: 'start',
     dragFree: true,
@@ -405,7 +407,7 @@ const EmblaCarousel: React.FC<EmblaCarouselProps> = ({
     // P7 — 25 → 15 : snap plus rapide = moins de frames pendant lesquelles
     // le browser doit composer + react au scroll. Si le visuel devient trop
     // saccadé sur trackpad/molette, remonter à 20.
-    duration: 15,
+    duration: effectivePrefs.transitions ? 15 : 0,
     startIndex: 0,
     loop: false,
     slides: '.embla-slide'
@@ -551,24 +553,29 @@ const EmblaCarousel: React.FC<EmblaCarouselProps> = ({
   // Effect 2: track arrow-button state via 'select' + 'reInit' only.
   useEffect(() => {
     if (!emblaApi) return;
-    const updateArrows = () => {
+    let disposed = false;
+    let frameId = 0;
+    const runUpdate = () => {
+      if (disposed) return;
       try {
-        const runUpdate = () => {
-          if (!emblaApi) return;
-          const isScrollable = checkIfScrollable();
-          setCanScrollPrev(isScrollable && emblaApi.canScrollPrev());
-          setCanScrollNext(isScrollable && emblaApi.canScrollNext());
-        };
-        runUpdate();
-        requestAnimationFrame(runUpdate);
+        const isScrollable = checkIfScrollable();
+        setCanScrollPrev(isScrollable && emblaApi.canScrollPrev());
+        setCanScrollNext(isScrollable && emblaApi.canScrollNext());
       } catch (_) {
-        // no-op
+        // Le document peut avoir été détaché entre select et la frame suivante.
       }
+    };
+    const updateArrows = () => {
+      runUpdate();
+      cancelAnimationFrame(frameId);
+      frameId = requestAnimationFrame(runUpdate);
     };
     updateArrows();
     emblaApi.on('select', updateArrows);
     emblaApi.on('reInit', updateArrows);
     return () => {
+      disposed = true;
+      cancelAnimationFrame(frameId);
       emblaApi.off('select', updateArrows);
       emblaApi.off('reInit', updateArrows);
     };
@@ -591,13 +598,13 @@ const EmblaCarousel: React.FC<EmblaCarouselProps> = ({
       const now = performance.now();
       if (now - lastWheel < THROTTLE_MS) return;
       lastWheel = now;
-      if (e.deltaX > 0) emblaApi.scrollNext();
-      else emblaApi.scrollPrev();
+      if (e.deltaX > 0) emblaApi.scrollNext(!effectivePrefs.transitions);
+      else emblaApi.scrollPrev(!effectivePrefs.transitions);
     };
 
     rootNode.addEventListener('wheel', onWheel, { passive: false });
     return () => rootNode.removeEventListener('wheel', onWheel);
-  }, [emblaApi]);
+  }, [emblaApi, effectivePrefs.transitions]);
 
   // Suppression hover pendant scroll horizontal du carousel (drag pointerUp lift,
   // settle pour wheel/scrollPrev/Next). Pose body.embla-scrolling -> CSS rule
@@ -620,11 +627,11 @@ const EmblaCarousel: React.FC<EmblaCarouselProps> = ({
     try {
       const current = emblaApi.selectedScrollSnap();
       const target = Math.max(0, current - getStep());
-      emblaApi.scrollTo(target);
+      emblaApi.scrollTo(target, !effectivePrefs.transitions);
     } catch (_) {
-      emblaApi.scrollPrev();
+      emblaApi.scrollPrev(!effectivePrefs.transitions);
     }
-  }, [emblaApi, getStep]);
+  }, [emblaApi, getStep, effectivePrefs.transitions]);
 
   const handleNext = useCallback((e?: React.MouseEvent) => {
     if (e) { e.preventDefault(); e.stopPropagation(); }
@@ -633,11 +640,11 @@ const EmblaCarousel: React.FC<EmblaCarouselProps> = ({
       const current = emblaApi.selectedScrollSnap();
       const snaps = emblaApi.scrollSnapList().length;
       const target = Math.min(snaps - 1, current + getStep());
-      emblaApi.scrollTo(target);
+      emblaApi.scrollTo(target, !effectivePrefs.transitions);
     } catch (_) {
-      emblaApi.scrollNext();
+      emblaApi.scrollNext(!effectivePrefs.transitions);
     }
-  }, [emblaApi, getStep]);
+  }, [emblaApi, getStep, effectivePrefs.transitions]);
 
   // Open in new tab on middle-click
   const handleAuxOpen = useCallback((e: React.MouseEvent, path: string) => {

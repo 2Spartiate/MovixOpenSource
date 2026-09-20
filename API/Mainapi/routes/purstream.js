@@ -22,6 +22,7 @@ const PURSTREAM_BASE = 'https://api.purstream.id/api/v1';
 const PURSTREAM_STATUS_URL = 'https://purstream.wiki/api/status';
 const PURSTREAM_CACHE_DIR = CACHE_DIR.PURSTREAM;
 const PURSTREAM_STATUS_TTL_MS = 5 * 60 * 1000;
+const PURSTREAM_CACHE_REFRESH_MS = 6 * 60 * 60 * 1000;
 
 // ---------------------------------------------------------------------------
 // Dependencies injected via configure()
@@ -149,36 +150,44 @@ async function purstreamRequest(urlPath) {
 
 // Marqueur pour les résultats négatifs cachés
 const NOT_FOUND_MARKER = { __not_found: true };
+const ongoingCacheUpdates = new Map();
+
+// Partager les actualisations simultanées d'une même entrée dans ce worker.
+function refreshCache(cacheKey, update) {
+  if (ongoingCacheUpdates.has(cacheKey)) return ongoingCacheUpdates.get(cacheKey);
+
+  const promise = Promise.resolve().then(update).finally(() => {
+    ongoingCacheUpdates.delete(cacheKey);
+  });
+  ongoingCacheUpdates.set(cacheKey, promise);
+  return promise;
+}
 
 // ---------------------------------------------------------------------------
 // Résolution TMDB ID → PurStream ID
 // ---------------------------------------------------------------------------
-async function resolvePurstreamId(tmdbId, type) {
+async function resolvePurstreamId(tmdbId, type, { waitForRefresh = false } = {}) {
   const cacheKey = generateCacheKey(`purstream_map_${type}_${tmdbId}`);
 
   const cached = await getFromCacheNoExpiration(PURSTREAM_CACHE_DIR, cacheKey);
 
   if (cached) {
+    const stale = await shouldUpdateCache(PURSTREAM_CACHE_DIR, cacheKey, PURSTREAM_CACHE_REFRESH_MS);
     if (cached.__not_found) {
-      const stale = await shouldUpdateCache(PURSTREAM_CACHE_DIR, cacheKey);
       if (stale) {
-        backgroundUpdateMapping(tmdbId, type, cacheKey).catch(() => {});
+        const refresh = refreshCache(cacheKey, () => backgroundUpdateMapping(tmdbId, type, cacheKey));
+        if (waitForRefresh) return await refresh;
+        refresh.catch(() => {});
       }
-      // Sans cette ligne, un négatif en cache se rejoue en silence : la route
-      // répond 404 sans qu'aucune trace ne dise d'où vient l'absence.
-      console.warn(
-        `[PURSTREAM] ${type}:${tmdbId} absent (négatif en cache${stale ? ', rafraîchissement en tâche de fond' : ''})`
-      );
       return null;
     }
-    const stale = await shouldUpdateCache(PURSTREAM_CACHE_DIR, cacheKey);
     if (stale) {
-      backgroundUpdateMapping(tmdbId, type, cacheKey).catch(() => {});
+      refreshCache(cacheKey, () => backgroundUpdateMapping(tmdbId, type, cacheKey)).catch(() => {});
     }
     return cached;
   }
 
-  return await fetchAndCacheMapping(tmdbId, type, cacheKey);
+  return await refreshCache(cacheKey, () => fetchAndCacheMapping(tmdbId, type, cacheKey));
 }
 
 /** Recherche et cache le mapping TMDB → PurStream */
@@ -317,11 +326,13 @@ async function backgroundUpdateMapping(tmdbId, type, cacheKey) {
     if (!result && hasValidMapping) {
       await saveToCache(PURSTREAM_CACHE_DIR, cacheKey, existing);
     }
+    return result || (hasValidMapping ? existing : null);
   } catch (err) {
     console.warn(`[PURSTREAM] BG mapping ${type}:${tmdbId} erreur: ${err.message}`);
     if (hasValidMapping) {
       await saveToCache(PURSTREAM_CACHE_DIR, cacheKey, existing);
     }
+    return hasValidMapping ? existing : null;
   }
 }
 
@@ -354,13 +365,11 @@ router.get('/movie/:tmdbId/stream', async (req, res) => {
     const cached = await getFromCacheNoExpiration(PURSTREAM_CACHE_DIR, cacheKey);
 
     if (cached) {
+      const stale = await shouldUpdateCache(PURSTREAM_CACHE_DIR, cacheKey, PURSTREAM_CACHE_REFRESH_MS);
+      if (stale) refreshCache(cacheKey, () => backgroundUpdateStreamMovie(tmdbId, cacheKey)).catch(() => {});
       if (cached.__not_found) {
-        const stale = await shouldUpdateCache(PURSTREAM_CACHE_DIR, cacheKey);
-        if (stale) backgroundUpdateStreamMovie(tmdbId, cacheKey).catch(() => {});
         return res.status(404).json({ error: 'Film non trouvé sur PurStream' });
       }
-      const stale = await shouldUpdateCache(PURSTREAM_CACHE_DIR, cacheKey);
-      if (stale) backgroundUpdateStreamMovie(tmdbId, cacheKey).catch(() => {});
       // Appliquer le proxy VIP au moment de la réponse (le cache stocke les URLs brutes)
       const response = { ...cached, sources: cached.sources.map(s => ({ ...s, url: wrapSourceUrl(s.url, isVip) })) };
       return res.json(response);
@@ -368,7 +377,6 @@ router.get('/movie/:tmdbId/stream', async (req, res) => {
 
     const mapping = await resolvePurstreamId(tmdbId, 'movie');
     if (!mapping) {
-      console.warn(`[PURSTREAM] 404 /movie/${tmdbId}/stream — aucun mapping TMDB → PurStream`);
       return res.status(404).json({ error: 'Film non trouvé sur PurStream' });
     }
 
@@ -428,22 +436,17 @@ router.get('/tv/:tmdbId/stream', async (req, res) => {
     const cached = await getFromCacheNoExpiration(PURSTREAM_CACHE_DIR, cacheKey);
 
     if (cached) {
+      const stale = await shouldUpdateCache(PURSTREAM_CACHE_DIR, cacheKey, PURSTREAM_CACHE_REFRESH_MS);
+      if (stale) refreshCache(cacheKey, () => backgroundUpdateStreamTv(tmdbId, season, episode, cacheKey)).catch(() => {});
       if (cached.__not_found) {
-        const stale = await shouldUpdateCache(PURSTREAM_CACHE_DIR, cacheKey);
-        if (stale) backgroundUpdateStreamTv(tmdbId, season, episode, cacheKey).catch(() => {});
         return res.status(404).json({ error: 'Épisode non trouvé sur PurStream' });
       }
-      const stale = await shouldUpdateCache(PURSTREAM_CACHE_DIR, cacheKey);
-      if (stale) backgroundUpdateStreamTv(tmdbId, season, episode, cacheKey).catch(() => {});
       const response = { ...cached, sources: cached.sources.map(s => ({ ...s, url: wrapSourceUrl(s.url, isVip) })) };
       return res.json(response);
     }
 
     const mapping = await resolvePurstreamId(tmdbId, 'tv');
     if (!mapping) {
-      console.warn(
-        `[PURSTREAM] 404 /tv/${tmdbId}/stream s${season}e${episode} — aucun mapping TMDB → PurStream`
-      );
       return res.status(404).json({ error: 'Série non trouvée sur PurStream' });
     }
 
@@ -491,18 +494,20 @@ async function backgroundUpdateStreamMovie(tmdbId, cacheKey) {
   const hasValidCache = existing && !existing.__not_found && existing.sources?.length > 0;
 
   try {
-    const mapping = await resolvePurstreamId(tmdbId, 'movie');
+    const mapping = await resolvePurstreamId(tmdbId, 'movie', { waitForRefresh: true });
     if (!mapping) return;
 
     const streamData = await fetchStream(mapping.purstream_id, `/stream/${mapping.purstream_id}`);
 
+    if (streamData?.__error && streamData.status === 404) {
+      // Espacer les nouvelles tentatives sans perdre les derniers liens utilisables.
+      await saveToCache(PURSTREAM_CACHE_DIR, cacheKey, hasValidCache ? existing : NOT_FOUND_MARKER);
+    }
     if (!streamData || streamData.__error) return;
 
     const sources = streamData.sources || [];
-    if (sources.length === 0 && hasValidCache) return;
-
     if (sources.length === 0) {
-      await saveToCache(PURSTREAM_CACHE_DIR, cacheKey, NOT_FOUND_MARKER);
+      await saveToCache(PURSTREAM_CACHE_DIR, cacheKey, hasValidCache ? existing : NOT_FOUND_MARKER);
       return;
     }
 
@@ -521,18 +526,20 @@ async function backgroundUpdateStreamTv(tmdbId, season, episode, cacheKey) {
   const hasValidCache = existing && !existing.__not_found && existing.sources?.length > 0;
 
   try {
-    const mapping = await resolvePurstreamId(tmdbId, 'tv');
+    const mapping = await resolvePurstreamId(tmdbId, 'tv', { waitForRefresh: true });
     if (!mapping) return;
 
     const streamData = await fetchStream(mapping.purstream_id, `/stream/${mapping.purstream_id}/episode?season=${Number(season)}&episode=${Number(episode)}`);
 
+    if (streamData?.__error && streamData.status === 404) {
+      // Espacer les nouvelles tentatives sans perdre les derniers liens utilisables.
+      await saveToCache(PURSTREAM_CACHE_DIR, cacheKey, hasValidCache ? existing : NOT_FOUND_MARKER);
+    }
     if (!streamData || streamData.__error) return;
 
     const sources = streamData.sources || [];
-    if (sources.length === 0 && hasValidCache) return;
-
     if (sources.length === 0) {
-      await saveToCache(PURSTREAM_CACHE_DIR, cacheKey, NOT_FOUND_MARKER);
+      await saveToCache(PURSTREAM_CACHE_DIR, cacheKey, hasValidCache ? existing : NOT_FOUND_MARKER);
       return;
     }
 

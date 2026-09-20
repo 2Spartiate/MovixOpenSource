@@ -88,6 +88,38 @@ test('unknown hash fails closed as provider_changed', async () => {
   await assert.rejects(registry.resolveApprovedAlgorithm(), (error) => error.code === 'provider_changed');
 });
 
+test('configured provider origin drives bundle URLs and rejects redirects to other domains', async () => {
+  const { createBundleRegistry, createPinnedHttpsFetcher } = require('../bundleRegistry');
+  const calls = [];
+  const deps = {
+    providerBaseUrl: 'https://kisskh.tv',
+    fetchText: async (url) => {
+      calls.push(url);
+      return url.includes('common.js') ? 'module' : 'bundle';
+    },
+    hashText: (value) => value === 'module' ? HASH_B : HASH_A,
+    approved: new Map([[HASH_A, { algorithmVersion: 'kkey-v1', moduleSha256: HASH_B }]]),
+    resolveDns: PUBLIC_DNS,
+  };
+  await createBundleRegistry(deps).resolveApprovedAlgorithm();
+  assert.deepEqual(calls, [
+    'https://kisskh.tv/502.33bac7b53e9897b8.js',
+    'https://kisskh.tv/common.js?v=9082123',
+  ]);
+  const redirected = createBundleRegistry({
+    ...deps,
+    fetchText: async () => response('', { status: 302, headers: { location: 'https://kisskh.do/other.js' } }),
+  });
+  await assert.rejects(redirected.resolveApprovedAlgorithm(), { code: 'provider_security' });
+
+  const harness = createHttpsHarness({ chunks: [Buffer.from('bundle')] });
+  const fetchText = createPinnedHttpsFetcher({ providerBaseUrl: deps.providerBaseUrl, request: harness.request });
+  await fetchText(calls[0], { addresses: ['104.21.48.1'] });
+  assert.equal(harness.state.options.hostname, 'kisskh.tv');
+  assert.equal(harness.state.options.servername, 'kisskh.tv');
+  assert.equal(harness.state.options.headers.Host, 'kisskh.tv');
+});
+
 test('approved records require a lowercase module SHA-256 and never skip the module fetch', async () => {
   const { createBundleRegistry } = require('../bundleRegistry');
   for (const moduleSha256 of [undefined, 'short', HASH_B.toUpperCase()]) {
@@ -110,8 +142,8 @@ test('known bundle requires the exact statically approved module hash', async ()
   const digest = (value) => crypto.createHash('sha256').update(value).digest('hex');
   const algorithm = Object.freeze({ algorithmVersion: 'kkey-v1', moduleSha256: digest(moduleText) });
   const registry = createBundleRegistry({
-    bundleUrl: 'https://kisskh.nl/route.js',
-    moduleUrl: 'https://kisskh.nl/common.js',
+    bundleUrl: 'https://kisskh.do/route.js',
+    moduleUrl: 'https://kisskh.do/common.js',
     fetchText: async (url) => response(url.endsWith('common.js') ? moduleText : bundle),
     approved: new Map([[digest(bundle), algorithm]]),
     resolveDns: PUBLIC_DNS,
@@ -119,8 +151,8 @@ test('known bundle requires the exact statically approved module hash', async ()
   assert.equal(await registry.resolveApprovedAlgorithm(), algorithm);
 
   const changedRegistry = createBundleRegistry({
-    bundleUrl: 'https://kisskh.nl/route.js',
-    moduleUrl: 'https://kisskh.nl/common.js',
+    bundleUrl: 'https://kisskh.do/route.js',
+    moduleUrl: 'https://kisskh.do/common.js',
     fetchText: async (url) => response(url.endsWith('common.js') ? 'changed module' : bundle),
     approved: new Map([[digest(bundle), algorithm]]),
     resolveDns: PUBLIC_DNS,
@@ -132,7 +164,7 @@ test('registry rejects invalid origins and mixed public/private DNS before fetch
   const { createBundleRegistry } = require('../bundleRegistry');
   let fetched = false;
   const invalidOrigin = createBundleRegistry({
-    bundleUrl: 'https://kisskh.nl.attacker.example/route.js',
+    bundleUrl: 'https://kisskh.do.attacker.example/route.js',
     fetchText: async () => { fetched = true; return 'bundle'; },
     approved: new Map(),
     resolveDns: PUBLIC_DNS,
@@ -157,7 +189,7 @@ test('registry manually revalidates DNS after every redirect', async () => {
   let dnsCalls = 0;
   let fetchCalls = 0;
   const registry = createBundleRegistry({
-    bundleUrl: 'https://kisskh.nl/first.js',
+    bundleUrl: 'https://kisskh.do/first.js',
     fetchText: async () => {
       fetchCalls += 1;
       return response('', { status: 302, headers: { location: '/second.js' } });
@@ -197,19 +229,19 @@ test('default HTTPS transport pins lookup while preserving TLS SNI and Host', as
   const { createPinnedHttpsFetcher } = require('../bundleRegistry');
   const harness = createHttpsHarness({ chunks: [Buffer.from('approved source')] });
   const fetchText = createPinnedHttpsFetcher({ request: harness.request, timeoutMs: 1_000 });
-  const result = await fetchText('https://kisskh.nl/route.js?v=1', {
+  const result = await fetchText('https://kisskh.do/route.js?v=1', {
     addresses: ['104.21.48.1', '2606:4700:3030::6815:3001'],
     maxBytes: MAX_SOURCE_BYTES,
   });
   assert.equal(result.body.toString('utf8'), 'approved source');
-  assert.equal(harness.state.options.hostname, 'kisskh.nl');
-  assert.equal(harness.state.options.servername, 'kisskh.nl');
-  assert.equal(harness.state.options.headers.Host, 'kisskh.nl');
+  assert.equal(harness.state.options.hostname, 'kisskh.do');
+  assert.equal(harness.state.options.servername, 'kisskh.do');
+  assert.equal(harness.state.options.headers.Host, 'kisskh.do');
   assert.equal(harness.state.options.agent, false);
   assert.equal(harness.state.options.path, '/route.js?v=1');
   assert.equal(harness.state.options.headers['Accept-Encoding'], 'identity');
   const lookupResult = await new Promise((resolve, reject) => {
-    harness.state.options.lookup('kisskh.nl', { family: 4 }, (error, address, family) => {
+    harness.state.options.lookup('kisskh.do', { family: 4 }, (error, address, family) => {
       if (error) reject(error); else resolve({ address, family });
     });
   });
@@ -221,7 +253,7 @@ test('default HTTPS transport refuses a non-public pinned address defensively', 
   const harness = createHttpsHarness({ chunks: [Buffer.from('must not be fetched')] });
   const fetchText = createPinnedHttpsFetcher({ request: harness.request, timeoutMs: 1_000 });
   await assert.rejects(
-    fetchText('https://kisskh.nl/route.js', { addresses: ['127.0.0.1'], maxBytes: MAX_SOURCE_BYTES }),
+    fetchText('https://kisskh.do/route.js', { addresses: ['127.0.0.1'], maxBytes: MAX_SOURCE_BYTES }),
     (error) => error.code === 'provider_security',
   );
   assert.equal(harness.state.options, null);
@@ -235,7 +267,7 @@ test('default HTTPS transport destroys chunked responses as soon as the wire lim
   });
   const fetchText = createPinnedHttpsFetcher({ request: harness.request, timeoutMs: 1_000 });
   await assert.rejects(
-    fetchText('https://kisskh.nl/route.js', { addresses: ['104.21.48.1'], maxBytes: MAX_SOURCE_BYTES }),
+    fetchText('https://kisskh.do/route.js', { addresses: ['104.21.48.1'], maxBytes: MAX_SOURCE_BYTES }),
     (error) => error.code === 'provider_security',
   );
   assert.equal(harness.state.responseDestroyed, true);
@@ -247,7 +279,7 @@ test('default HTTPS transport fails closed and destroys encoded responses', asyn
   const harness = createHttpsHarness({ headers: { 'content-encoding': 'gzip' }, chunks: [Buffer.from('encoded')] });
   const fetchText = createPinnedHttpsFetcher({ request: harness.request, timeoutMs: 1_000 });
   await assert.rejects(
-    fetchText('https://kisskh.nl/route.js', { addresses: ['104.21.48.1'], maxBytes: MAX_SOURCE_BYTES }),
+    fetchText('https://kisskh.do/route.js', { addresses: ['104.21.48.1'], maxBytes: MAX_SOURCE_BYTES }),
     (error) => error.code === 'provider_security',
   );
   assert.equal(harness.state.responseDestroyed, true);
@@ -258,7 +290,7 @@ test('default HTTPS transport destroys a request on timeout', async () => {
   const { createPinnedHttpsFetcher } = require('../bundleRegistry');
   const harness = createHttpsHarness({ respond: false });
   const fetchText = createPinnedHttpsFetcher({ request: harness.request, timeoutMs: 123 });
-  const pending = fetchText('https://kisskh.nl/route.js', { addresses: ['104.21.48.1'], maxBytes: MAX_SOURCE_BYTES });
+  const pending = fetchText('https://kisskh.do/route.js', { addresses: ['104.21.48.1'], maxBytes: MAX_SOURCE_BYTES });
   assert.equal(harness.state.timeoutMs, 123);
   harness.state.triggerTimeout();
   await assert.rejects(pending, (error) => error.code === 'provider_unavailable');

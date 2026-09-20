@@ -114,11 +114,14 @@ final class CastMediaInspector: CastMediaInspecting, @unchecked Sendable {
     guard (200...299).contains(response.statusCode) else {
       throw CastRelayError.upstreamUnavailable
     }
+    let responseType = try Self.contentType(in: response.headers)
+    // Une origine peut ignorer Range. Le type progressif connu suffit : ne pas
+    // lire tout le film avec la limite réservée aux manifestes.
+    if let profile = CastMediaProfile.progressive(responseType) { return profile }
     let bytes = try await readBounded(
       response.body,
       maximumBytes: Self.maximumManifestBytes
     )
-    let responseType = try Self.contentType(in: response.headers)
     if Self.looksLikeHLS(responseType, bytes: bytes) {
       if rangeProbe, response.statusCode == 206 {
         response.body.cancel()

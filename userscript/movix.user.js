@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Movix Proxy Extension (Tampermonkey)
 // @namespace    https://movix.cash
-// @version      1.5.2
+// @version      1.6.1
 // @description  Extension proxy pour Live TV Movix - Contourne CORS, injecte les headers et extrait les sources Nexus - version userscript Tampermonkey
 // @author       Movix
 // @updateURL    https://github.com/movixcorp/MovixOpenSource/raw/refs/heads/main/userscript/movix.user.js
@@ -30,6 +30,8 @@
 // @match        https://*.movix.show/*
 // @match        https://movix.men/*
 // @match        https://*.movix.men/*
+// @match        https://movix.college/*
+// @match        https://*.movix.college/*
 // @grant        GM_xmlhttpRequest
 // @grant        GM_getValue
 // @grant        GM_setValue
@@ -53,7 +55,7 @@
   const KISSKH_MAX_SUBTITLE_BYTES = 2097152;
   const KISSKH_MAX_EXCHANGE_BYTES = 32768;
   const KISSKH_MAX_EXCHANGE_LIFETIME_MS = 120000;
-  const KISSKH_ALLOWED_HEADER_ORIGIN = "https://kisskh.nl";
+  const KISSKH_ALLOWED_HEADER_HOST = /^(?:[a-z0-9-]+\.)*kisskh\.[a-z]{2,63}$/;
 
   function kisskhFailure(code) {
     return { success: false, code };
@@ -153,7 +155,7 @@
         parsed.password ||
         (parsed.port && parsed.port !== "443") ||
         parsed.hash ||
-        parsed.origin !== KISSKH_ALLOWED_HEADER_ORIGIN ||
+        !KISSKH_ALLOWED_HEADER_HOST.test(parsed.hostname) ||
         (name === "Origin" && (parsed.pathname !== "/" || parsed.search))
       ) {
         return null;
@@ -421,7 +423,7 @@
 
   const USERSCRIPT_MANIFEST = {
     name: "Movix Proxy Extension",
-      version: "1.4.15",
+    version: "1.6.1",
     description:
       "Extension proxy pour Live TV Movix - Contourne CORS, injecte les headers et extrait les sources Nexus",
   };
@@ -445,18 +447,39 @@
       : null;
   const proxiedMediaObjectUrls = new WeakMap();
 
-  function getGMRequest() {
-    if (typeof GM_xmlhttpRequest === "function") {
-      return GM_xmlhttpRequest;
+  // Tampermonkey 5 et Violentmonkey renvoient, en plus du handle `abort()`, un
+  // objet « thenable » qui REJETTE avec la réponse brute quand la requête
+  // échoue (réseau, délai dépassé, ou statut HTTP en erreur selon le moteur).
+  // Nos appelants n'écoutent que les callbacks onload/onerror : sans `.catch`,
+  // ce rejet devient un « unhandledrejection » dans la page — et comme le
+  // script tourne dans le contexte de la page, il finit chez le suivi
+  // d'erreurs de Movix (« Object captured as promise rejection with keys:
+  // context, finalUrl, readyState… »). On l'avale ici, une fois pour toutes ;
+  // le handle est rendu tel quel, `abort()` compris.
+  function silenceGMRequestHandle(handle) {
+    if (handle && typeof handle.then === "function") {
+      try {
+        handle.then(undefined, () => {});
+      } catch {}
     }
-    if (
+    return handle;
+  }
+
+  function getGMRequest() {
+    let request = null;
+    if (typeof GM_xmlhttpRequest === "function") {
+      request = GM_xmlhttpRequest;
+    } else if (
       typeof GM !== "undefined" &&
       GM &&
       typeof GM.xmlHttpRequest === "function"
     ) {
-      return GM.xmlHttpRequest.bind(GM);
+      request = GM.xmlHttpRequest.bind(GM);
     }
-    throw new Error("GM_xmlhttpRequest est indisponible.");
+    if (!request) {
+      throw new Error("GM_xmlhttpRequest est indisponible.");
+    }
+    return (details) => silenceGMRequestHandle(request(details));
   }
 
   async function gmGetValueCompat(key, fallbackValue) {
@@ -4245,8 +4268,8 @@
         Origin: "https://purstream.mx",
       },
       kisskh: {
-        Referer: "https://kisskh.nl/",
-        Origin: "https://kisskh.nl",
+        Referer: "https://kisskh.do/",
+        Origin: "https://kisskh.do",
       },
     };
 
@@ -4516,6 +4539,7 @@
             "movix.fun",
             "movix.show",
             "movix.men",
+            "movix.college",
           ],
           resourceTypes: [
             "xmlhttprequest",
@@ -4700,6 +4724,9 @@
       }
 
       // FCTV (matches) native: resolve ONE server locally (IP-bound) -> m3u8.
+      case "STREAMED_HANDSHAKE":
+        return await streamedHandshake(payload?.url);
+
       case "RESOLVE_FCTV": {
         const fctvUrl = await resolveFctvStream(payload || {});
         if (fctvUrl) return { success: true, url: fctvUrl };
@@ -4766,6 +4793,87 @@
   }
 
   // Helper to proxy HTTP requests via extension (to bypass Mixed Content)
+  // BEGIN STREAMED HANDSHAKE
+  async function streamedHandshake(embedUrl) {
+    if (extractionPrefs.livetv.streamed === false) throw new Error("Source Streamed désactivée");
+    const allowedPages = new Set(["embed.st", "rockystream.st", "embedhd.cc"]);
+    const safeUrl = value => {
+      const url = new URL(value);
+      if (url.protocol !== "https:" || url.username || url.password || url.port || !allowedPages.has(url.hostname)) {
+        throw new Error("URL Streamed invalide");
+      }
+      return url;
+    };
+    const parse = value => {
+      const url = safeUrl(value);
+      const parts = url.pathname.match(/^\/embed\/([a-z0-9-]{1,32})\/([^/]{1,500})\/(\d{1,3})\/?$/);
+      if (url.hostname !== "embed.st" || url.search || url.hash || !parts) throw new Error("Lecteur Streamed invalide");
+      return { source: parts[1], id: decodeURIComponent(parts[2]), stream: parts[3] };
+    };
+    let slot = parse(embedUrl);
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), 25000);
+    try {
+      if (slot.source === "golf") {
+        let page = embedUrl;
+        let referer = "https://embed.st/";
+        for (let hop = 0; hop < 4; hop++) {
+          safeUrl(page);
+          await addHeadersRule(`*://${new URL(page).host}${new URL(page).pathname}*`, { Referer: referer });
+          const response = await fetch(page, { headers: { Referer: referer }, redirect: "error", signal: controller.signal });
+          if (!response.ok) throw new Error("Lecteur golf indisponible");
+          const html = await response.text();
+          const fid = html.match(/\bfid\s*=\s*["\']([^"\']+)["\']/)?.[1];
+          if (fid) {
+            const player = `https://exposestrat.com/maestrohd1.php?player=desktop&live=${encodeURIComponent(fid)}`;
+            await addHeadersRule("*://exposestrat.com/maestrohd1.php*", { Referer: page });
+            const legacy = await fetch(player, { headers: { Referer: page }, redirect: "error", signal: controller.signal });
+            if (!legacy.ok) throw new Error("Lecteur golf indisponible");
+            const parts = (await legacy.text()).match(/return\s*\(\s*(\[\s*"[^"]+"(?:\s*,\s*"[^"]+")*\s*\])\.join\(\s*""\s*\)/)?.[1];
+            if (!parts) throw new Error("Adresse golf introuvable");
+            const media = new URL(JSON.parse(parts).join(""));
+            if (media.protocol !== "https:" || media.username || media.password || media.port ||
+              !(media.hostname === "zohanayaan.com" || media.hostname.endsWith(".zohanayaan.com"))) throw new Error("CDN golf inconnu");
+            return { url: media.href, referer: "https://exposestrat.com/" };
+          }
+          const iframe = html.match(/<iframe\b[^>]*\ssrc\s*=\s*(["'])(.*?)\1/is);
+          const encoded = html.match(/<iframe\b[^>]*\sdata-source\s*=\s*(["'])(.*?)\1/is) ||
+            html.match(/\.\s*src\s*=\s*atob\s*\(\s*(["'])([A-Za-z0-9+/]+={0,2})\1\s*\)/);
+          const next = iframe?.[2] || (encoded && atob(encoded[2]));
+          if (!next) throw new Error("Lecteur golf introuvable");
+          const target = safeUrl(new URL(next.replace(/&amp;/g, "&"), page).href);
+          if (target.hostname === "embed.st" && !target.pathname.startsWith("/embed/golf/")) {
+            embedUrl = target.href;
+            slot = parse(embedUrl);
+            break;
+          }
+          referer = page;
+          page = target.href;
+        }
+        if (slot.source === "golf") throw new Error("Lecteur golf natif indisponible");
+      }
+      const bytes = [];
+      ["source", "id", "stream"].forEach((key, index) => {
+        const data = new TextEncoder().encode(slot[key]);
+        bytes.push((index + 1) * 8 + 2);
+        let length = data.length;
+        while (length > 127) { bytes.push((length & 127) | 128); length >>>= 7; }
+        bytes.push(length, ...data);
+      });
+      const headers = { "Content-Type": "application/octet-stream", Origin: "https://embed.st", Referer: embedUrl };
+      await addHeadersRule("*://embed.st/fetch", headers);
+      const response = await fetch("https://embed.st/fetch", {
+        method: "POST", headers, body: new Uint8Array(bytes), redirect: "error", signal: controller.signal,
+      });
+      if (!response.ok) throw new Error("Source native Streamed indisponible");
+      const body = new Uint8Array(await response.arrayBuffer());
+      const goat = response.headers.get("goat");
+      if (!goat || body.length > 8192) throw new Error("Réponse Streamed invalide");
+      return { embedUrl, goat, body: proxyBytesToBase64(body) };
+    } finally { clearTimeout(timer); }
+  }
+  // END STREAMED HANDSHAKE
+
   async function proxyHttpRequest(url, headers = {}) {
     try {
       if (headers && Object.keys(headers).length > 0) {
@@ -5032,6 +5140,8 @@
         currentHostname.endsWith(".movix.show") ||
         currentHostname === "movix.men" ||
         currentHostname.endsWith(".movix.men") ||
+        currentHostname === "movix.college" ||
+        currentHostname.endsWith(".movix.college") ||
         currentHostname.endsWith(".movix.golf")
       ) {
         return (currentOrigin || "https://movix.fun").replace(/\/$/, "");

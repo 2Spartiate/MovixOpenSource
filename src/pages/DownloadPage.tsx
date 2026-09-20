@@ -9,9 +9,12 @@ import { getTmdbLanguage } from '../i18n';
 import { motion, AnimatePresence } from 'framer-motion';
 import { findDarkiWorldTitleId } from '@/utils/darkiWorldResultMatch';
 import { useAgeRestrictedContent } from '../hooks/useAgeRestrictedContent';
+import TurnstileWidget from '@/components/TurnstileWidget';
+import { decodeDownloadLink } from '@/services/downloadLinksService';
 
 const MAIN_API = import.meta.env.VITE_MAIN_API;
 const TMDB_API_KEY = import.meta.env.VITE_TMDB_API_KEY || '';
+const TURNSTILE_SITE_KEY = import.meta.env.VITE_TURNSTILE_SITE_KEY;
 
 interface DownloadLink {
   id: string;
@@ -534,10 +537,11 @@ const LinkSelector: React.FC<{
   isDecoding: boolean;
   decodedLink: DecodedLink | null;
   error: string | null;
-  queueInfo?: { size: number } | null;
-}> = ({ isOpen, onClose, title, selectedLink, isDecoding, decodedLink, error, queueInfo }) => {
+  onDecode: (token: string) => void;
+}> = ({ isOpen, onClose, title, selectedLink, isDecoding, decodedLink, error, onDecode }) => {
   const { t, i18n } = useTranslation();
   const [isClosing, setIsClosing] = useState(false);
+  const [turnstileToken, setTurnstileToken] = useState('');
   const isVipUser = localStorage.getItem('is_vip') === 'true';
   const navigate = useNavigate();
 
@@ -551,11 +555,13 @@ const LinkSelector: React.FC<{
   useEffect(() => {
     if (!isOpen) return;
 
-    const originalOverflow = document.body.style.overflow;
-    document.body.style.overflow = 'hidden';
+    const body = document.body;
+    if (!body) return;
+    const originalOverflow = body.style.overflow;
+    body.style.overflow = 'hidden';
 
     return () => {
-      document.body.style.overflow = originalOverflow;
+      body.style.overflow = originalOverflow;
     };
   }, [isOpen]);
 
@@ -650,15 +656,29 @@ const LinkSelector: React.FC<{
                     {t('download.decodedLinkTitle', { provider: selectedLink.provider })}
                   </h3>
                   
-                  {isDecoding ? (
+                  {TURNSTILE_SITE_KEY && !isDecoding && !decodedLink ? (
+                    <div className="flex flex-col items-center gap-4 py-4">
+                      {error && <p role="alert" className="text-sm text-red-400">{error}</p>}
+                      <p className="text-sm text-gray-300 text-center">{t('download.turnstileRequired')}</p>
+                      <TurnstileWidget
+                        onTokenChange={setTurnstileToken}
+                        className="origin-center scale-[0.85] sm:scale-100"
+                      />
+                      <button
+                        type="button"
+                        onClick={() => onDecode(turnstileToken)}
+                        disabled={!turnstileToken}
+                        className="rounded-lg bg-blue-600 px-4 py-2 text-sm font-semibold text-white hover:bg-blue-500 disabled:cursor-not-allowed disabled:opacity-50"
+                      >
+                        {t('download.decodeLink')}
+                      </button>
+                    </div>
+                  ) : isDecoding ? (
                     <div className="flex flex-col items-center justify-center py-6 sm:py-8 gap-2">
                       <div className="flex items-center">
                         <Loader className="w-6 h-6 sm:w-8 sm:h-8 animate-spin text-blue-500" />
                         <span className="ml-2 text-white text-sm sm:text-base">{t('download.decoding')}</span>
                       </div>
-                      {queueInfo != null && (
-                        <span className="text-gray-400 text-xs sm:text-sm">{t('download.queueWaiting', { size: queueInfo.size })}</span>
-                      )}
                     </div>
                   ) : error ? (
                     <div className="flex items-center text-red-400 text-sm sm:text-base">
@@ -762,15 +782,6 @@ const LinkSelector: React.FC<{
                         </div>
                       )}
 
-                      {/* VIP promo for non-VIP users on 1fichier links */}
-                      {!isVipUser && is1FichierLink(decodedLink) && (
-                        <div className="mt-3 p-3 bg-yellow-900/10 rounded-xl border border-yellow-500/20">
-                          <div className="flex items-center gap-2 text-sm">
-                            <Crown className="w-4 h-4 text-yellow-500 opacity-60" />
-                            <span className="text-yellow-300/60">{t('download.vipDebridPromo')}</span>
-                          </div>
-                        </div>
-                      )}
                     </div>
                   ) : null}
 
@@ -862,7 +873,6 @@ const DownloadPage: React.FC = () => {
   const [selectedLink, setSelectedLink] = useState<DownloadLink | null>(null);
   const [isDecoding, setIsDecoding] = useState(false);
   const [decodedLink, setDecodedLink] = useState<DecodedLink | null>(null);
-  const [queueInfo, setQueueInfo] = useState<{ size: number } | null>(null);
   const [showAdPopup, setShowAdPopup] = useState(false);
   const [pendingLinkToDecode, setPendingLinkToDecode] = useState<DownloadLink | null>(null);
   const [adUnlocked, setAdUnlocked] = useState(false);
@@ -1295,7 +1305,7 @@ const DownloadPage: React.FC = () => {
     },
   });
 
-  const proceedDecode = async (link: DownloadLink) => {
+  const proceedDecode = async (link: DownloadLink, turnstileToken = '') => {
     // Annuler la requête précédente si elle existe
     if (decodeAbortControllerRef.current) {
       decodeAbortControllerRef.current.abort();
@@ -1305,7 +1315,7 @@ const DownloadPage: React.FC = () => {
     setSelectedLink(link);
     setError(null);
     setDecodedLink(null);
-    setQueueInfo(null);
+    setIsDecoding(false);
     setShowLinkSelector(true);
 
     // Les liens Movix sont déjà des URLs directes (1fichier, Mega, …) ajoutées
@@ -1337,6 +1347,8 @@ const DownloadPage: React.FC = () => {
       return;
     }
 
+    if (TURNSTILE_SITE_KEY && !turnstileToken) return;
+
     setIsDecoding(true);
 
     // Créer un nouveau AbortController pour cette requête
@@ -1344,56 +1356,15 @@ const DownloadPage: React.FC = () => {
     decodeAbortControllerRef.current = abortController;
 
     try {
-      // On passe `title_id` pour permettre au backend d'utiliser le nouvel
-      // endpoint /api/v1/titles/{titleId}/content/liens en fallback.
-      const params: Record<string, string> = {};
-      if (currentDarkiWorldTitleId) params.title_id = currentDarkiWorldTitleId;
+      // Le serveur résout le lien dans cette requête ; le jeton Turnstile
+      // n'est envoyé qu'une fois, y compris lorsque le lien est en cache.
+      const response = await decodeDownloadLink<DecodedLink & { error?: string }>(
+        link.id, turnstileToken, currentDarkiWorldTitleId, abortController.signal,
+      );
+      if (abortController.signal.aborted) return;
 
-      const POLL_INTERVAL_MS = 5000;
-      const MAX_POLL_ATTEMPTS = 60; // ~5 min max
-      let attempts = 0;
-      let response: any = null;
-
-      while (attempts < MAX_POLL_ATTEMPTS) {
-        if (abortController.signal.aborted) return;
-        response = await axios.get(`${MAIN_API}/api/darkiworld/decode/${link.id}`, {
-          params,
-          signal: abortController.signal,
-          validateStatus: () => true
-        });
-
-        if (response.status === 200) break;
-
-        if (response.status === 202) {
-          // Queued — show user the queue position
-          setQueueInfo({ size: response.data?.queue_size ?? 0 });
-          attempts += 1;
-          await new Promise((r) => setTimeout(r, POLL_INTERVAL_MS));
-          continue;
-        }
-
-        if (response.status === 503 && response.data?.error === 'rate_limited') {
-          setError(t('download.rateLimited', { retryAt: new Date(response.data.retry_at).toLocaleTimeString() }));
-          return;
-        }
-
-        if (response.status === 503 && response.data?.error === 'queue_unavailable') {
-          setError(response.data?.message || t('download.queueUnavailable'));
-          return;
-        }
-
-        if (response.status === 404) {
-          setError(response.data?.error || t('download.decodeFailed'));
-          return;
-        }
-
-        // Unknown status
-        setError(t('download.decodeFailed'));
-        return;
-      }
-
-      if (!response || response.status !== 200) {
-        setError(t('download.queueTimeout'));
+      if (response.status !== 200 || !response.data.success) {
+        setError(response.data?.error || t('download.decodeFailed'));
         return;
       }
 
@@ -1405,9 +1376,9 @@ const DownloadPage: React.FC = () => {
         setError(err.response?.data?.error || t('download.errorDecodingLink'));
       }
     } finally {
-      setIsDecoding(false);
       // Nettoyer la référence si c'est la requête actuelle
       if (decodeAbortControllerRef.current === abortController) {
+        setIsDecoding(false);
         decodeAbortControllerRef.current = null;
       }
     }
@@ -1444,7 +1415,6 @@ const DownloadPage: React.FC = () => {
     setDecodedLink(null);
     setError(null);
     setSelectedLink(null);
-    setQueueInfo(null);
   };
 
   const handleAdPopupAccept = async () => {
@@ -1789,7 +1759,9 @@ const DownloadPage: React.FC = () => {
           isDecoding={isDecoding}
           decodedLink={decodedLink}
           error={error}
-          queueInfo={queueInfo}
+          onDecode={(token) => {
+            if (selectedLink && !decodeAbortControllerRef.current) void proceedDecode(selectedLink, token);
+          }}
         />
         {showAdPopup && (
           <AdFreePlayerAds

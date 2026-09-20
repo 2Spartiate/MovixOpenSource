@@ -1,5 +1,6 @@
 import React, { useEffect, useRef, useState } from 'react';
 import { cn } from '@/lib/utils';
+import { useLightMode } from '@/context/LightModeContext';
 
 interface HexagonBackgroundProps extends React.HTMLAttributes<HTMLDivElement> {
     hexagonSize?: number;
@@ -17,12 +18,14 @@ export const HexagonBackground: React.FC<HexagonBackgroundProps> = ({
     highlightColor = '#fbbf24', // Amber-400 equivalent for the 'light' effect
     ...props
 }) => {
+    const { effectivePrefs } = useLightMode();
     const canvasRef = useRef<HTMLCanvasElement>(null);
     const containerRef = useRef<HTMLDivElement>(null);
     const [dimensions, setDimensions] = useState({ width: 0, height: 0 });
     const mouseRef = useRef({ x: 0, y: 0 });
 
     useEffect(() => {
+        if (!effectivePrefs.bgAnimations) return;
         const updateDimensions = () => {
             if (containerRef.current) {
                 const { clientWidth, clientHeight } = containerRef.current;
@@ -34,9 +37,10 @@ export const HexagonBackground: React.FC<HexagonBackgroundProps> = ({
         updateDimensions();
 
         return () => window.removeEventListener('resize', updateDimensions);
-    }, []);
+    }, [effectivePrefs.bgAnimations]);
 
     useEffect(() => {
+        if (!effectivePrefs.bgAnimations) return;
         const handleMouseMove = (e: MouseEvent) => {
             if (containerRef.current) {
                 const rect = containerRef.current.getBoundingClientRect();
@@ -49,9 +53,10 @@ export const HexagonBackground: React.FC<HexagonBackgroundProps> = ({
 
         window.addEventListener('mousemove', handleMouseMove);
         return () => window.removeEventListener('mousemove', handleMouseMove);
-    }, []);
+    }, [effectivePrefs.bgAnimations]);
 
     useEffect(() => {
+        if (!effectivePrefs.bgAnimations) return;
         const canvas = canvasRef.current;
         if (!canvas) return;
 
@@ -134,14 +139,15 @@ export const HexagonBackground: React.FC<HexagonBackgroundProps> = ({
         render();
 
         return () => cancelAnimationFrame(animationFrameId);
-    }, [dimensions, hexagonSize, hexagonMargin, color, highlightColor]);
+    }, [dimensions, hexagonSize, hexagonMargin, color, highlightColor, effectivePrefs.bgAnimations]);
 
     return (
         <div ref={containerRef} className={cn("relative overflow-hidden bg-black", className)} {...props}>
-            <canvas
+            {effectivePrefs.bgAnimations && <canvas
+                data-decorative-animation
                 ref={canvasRef}
                 className="absolute inset-0 z-0 pointer-events-none"
-            />
+            />}
             <div className="relative z-10 w-full h-full">
                 {children}
             </div>

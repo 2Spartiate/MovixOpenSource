@@ -1,5 +1,6 @@
 import React, { useRef, useState, useEffect } from 'react';
 import ContentRowSkeleton from './skeletons/ContentRowSkeleton';
+import { useLightMode } from '@/context/LightModeContext';
 
 /**
  * Props pour le composant LazySection
@@ -86,18 +87,25 @@ const LazySection: React.FC<LazySectionProps> = ({
     showLoadingDuringFetch = false,
     className = ''
 }) => {
-    // Les premières sections sont visibles immédiatement
-    const isImmediate = index < immediateLoadCount;
+    const { isLightMode } = useLightMode();
+    // En mode léger, les rangées supplémentaires attendent le défilement.
+    const isImmediate = index < (isLightMode ? Math.min(immediateLoadCount, 1) : immediateLoadCount);
+    const effectiveRootMargin = isLightMode ? '100px' : rootMargin;
 
     const [isVisible, setIsVisible] = useState(isImmediate);
     const [hasLoaded, setHasLoaded] = useState(isImmediate);
     const [isFetching, setIsFetching] = useState(false);
     const containerRef = useRef<HTMLDivElement>(null);
     const observerRef = useRef<IntersectionObserver | null>(null);
+    const loadStartedRef = useRef(false);
 
     useEffect(() => {
+        if (loadStartedRef.current) return;
         // Si c'est une section immédiate, pas besoin d'observer
         if (isImmediate) {
+            loadStartedRef.current = true;
+            setIsVisible(true);
+            setHasLoaded(true);
             // Déclencher le callback onLoad si fourni
             if (onLoad) {
                 setIsFetching(true);
@@ -110,14 +118,23 @@ const LazySection: React.FC<LazySectionProps> = ({
         }
 
         const element = containerRef.current;
-        if (!element) return;
+        if (!element || hasLoaded) return;
+
+        let queued = false;
+        let cancelled = false;
+        let idleId: number | undefined;
+        let timer: ReturnType<typeof setTimeout> | undefined;
 
         observerRef.current = new IntersectionObserver(
             (entries) => {
                 entries.forEach((entry) => {
-                    if (entry.isIntersecting && !hasLoaded) {
+                    if (entry.isIntersecting && !queued) {
+                        queued = true;
+                        observerRef.current?.disconnect();
                         // Utiliser requestIdleCallback pour éviter de bloquer le thread principal
                         const triggerLoad = () => {
+                            if (cancelled) return;
+                            loadStartedRef.current = true;
                             setIsVisible(true);
                             setHasLoaded(true);
 
@@ -131,18 +148,19 @@ const LazySection: React.FC<LazySectionProps> = ({
                             }
                         };
 
-                        if ('requestIdleCallback' in window) {
-                            (window as Window & { requestIdleCallback: (cb: () => void, opts?: { timeout: number }) => void })
-                                .requestIdleCallback(triggerLoad, { timeout: 100 + index * 50 });
+                        if (isLightMode) {
+                            triggerLoad();
+                        } else if ('requestIdleCallback' in window) {
+                            idleId = window.requestIdleCallback(triggerLoad, { timeout: 100 + index * 50 });
                         } else {
                             // Fallback pour les navigateurs ne supportant pas requestIdleCallback
-                            setTimeout(triggerLoad, index * 30);
+                            timer = setTimeout(triggerLoad, index * 30);
                         }
                     }
                 });
             },
             {
-                rootMargin,
+                rootMargin: effectiveRootMargin,
                 threshold: 0.01
             }
         );
@@ -150,11 +168,14 @@ const LazySection: React.FC<LazySectionProps> = ({
         observerRef.current.observe(element);
 
         return () => {
+            cancelled = true;
+            if (idleId !== undefined) window.cancelIdleCallback?.(idleId);
+            clearTimeout(timer);
             if (observerRef.current) {
                 observerRef.current.disconnect();
             }
         };
-    }, [hasLoaded, isImmediate, index, rootMargin, onVisible, onLoad]);
+    }, [hasLoaded, isImmediate, index, effectiveRootMargin, isLightMode, onVisible, onLoad]);
 
     // Déterminer ce qu'il faut afficher
     const shouldShowPlaceholder = !isVisible || (showLoadingDuringFetch && isFetching);

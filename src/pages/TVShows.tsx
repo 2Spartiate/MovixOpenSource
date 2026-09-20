@@ -302,12 +302,10 @@ const TVShows: React.FC = () => {
   const { t } = useTranslation();
   const [tvShows, setTVShows] = useState<TVShow[]>([]);
   const [featuredShows, setFeaturedShows] = useState<TVShow[]>([]);
-  const [currentShowIndex, setCurrentShowIndex] = useState(0);
   const [topContent, setTopContent] = useState<TVShow[]>([]);
   const [categories, setCategories] = useState<Category[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
-  const sliderIntervalRef = useRef<NodeJS.Timeout | null>(null);
   const [isTop10CardHovered, setIsTop10CardHovered] = useState(false);
   const top10RowRef = useRef<HTMLDivElement>(null);
   const [hoveredCardIndex, setHoveredCardIndex] = useState<number | null>(null);
@@ -439,7 +437,7 @@ const TVShows: React.FC = () => {
           page: 1,
           sort_by: 'popularity.desc',
           with_genres: '10759|18|10768', // Action & Adventure, Drama, War (genres souvent liés aux adaptations cinéma)
-          vote_average_gte: 7.0, // Filtre pour les séries mieux notées (souvent à plus grand budget)
+          'vote_average.gte': 7.0, // Filtre pour les séries mieux notées (souvent à plus grand budget)
           'vote_count.gte': 100, // Avoir un nombre minimum de votes
           include_adult: false
         }
@@ -709,46 +707,9 @@ const TVShows: React.FC = () => {
     document.title = `${t('tvShows.title')} - Movix`;
   }, []);
 
-  // Auto-rotate featured shows
-  useEffect(() => {
-    if (featuredShows.length > 1) {
-      // Clear any existing interval when dependencies change
-      if (sliderIntervalRef.current) {
-        clearInterval(sliderIntervalRef.current);
-      }
 
-      // Set new interval
-      sliderIntervalRef.current = setInterval(() => {
-        setCurrentShowIndex(prevIndex =>
-          prevIndex === featuredShows.length - 1 ? 0 : prevIndex + 1
-        );
-      }, 6000);
 
-      // Cleanup on unmount
-      return () => {
-        if (sliderIntervalRef.current) {
-          clearInterval(sliderIntervalRef.current);
-        }
-      };
-    }
-  }, [featuredShows, currentShowIndex]);
 
-  // Function to handle manual navigation
-  const handleManualNavigation = (index: number) => {
-    // Reset timer when manually changing slide
-    if (sliderIntervalRef.current) {
-      clearInterval(sliderIntervalRef.current);
-    }
-
-    setCurrentShowIndex(index);
-
-    // Set new interval
-    sliderIntervalRef.current = setInterval(() => {
-      setCurrentShowIndex(prevIndex =>
-        prevIndex === featuredShows.length - 1 ? 0 : prevIndex + 1
-      );
-    }, 6000);
-  };
 
   useEffect(() => {
     const container = top10RowRef.current;

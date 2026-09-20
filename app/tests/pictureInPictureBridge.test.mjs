@@ -158,6 +158,8 @@ function loadBridge(pipOverrides = {}, runtimeOverrides = {}) {
       };
     }
     if (id === './castLoadSingleFlight') return loadCastLoadSingleFlight();
+    if (id === './diagnosticReport') return { recordCastDiagnostic: () => {}, diagnosticErrorCode: (_error, fallback) => fallback, diagnosticErrorDetails: (_error, fallback) => fallback };
+    if (id === './diagnostics') return { copyDiagnostics: async () => {} };
     if (id === './mediaProxyHeaders') {
       return { applyMediaProxyHeaderRules: (_url, headers) => ({ ...headers }) };
     }

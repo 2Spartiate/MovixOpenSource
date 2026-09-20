@@ -234,13 +234,19 @@ function normalizeClient(rawClient) {
   };
 }
 
-function loadOAuthClients() {
+const EMPTY_CLIENTS = [];
+let normalizedClientsCache = null;
+
+function getNormalizedClients() {
   // Source 1: env var (override dev/test).
   const envRaw = process.env[OAUTH_CLIENTS_ENV] || '';
-  const fromEnv = envRaw ? safeJsonParse(envRaw, []) : [];
-
   // Source 2: DB cache (source de vérité prod).
-  const fromDb = getCachedClients() || [];
+  // reloadCache/invalidateCache remplacent ce tableau après chaque modification.
+  const fromDb = getCachedClients() || EMPTY_CLIENTS;
+  if (normalizedClientsCache?.fromDb === fromDb && normalizedClientsCache.envRaw === envRaw) {
+    return normalizedClientsCache;
+  }
+  const fromEnv = envRaw ? safeJsonParse(envRaw, []) : [];
 
   const byClientId = new Map();
   // L'env override la DB (utile pour les tests E2E qui injectent un client éphémère).
@@ -250,7 +256,22 @@ function loadOAuthClients() {
     byClientId.set(normalized.clientId, normalized);
   });
 
-  return Array.from(byClientId.values());
+  const clients = Array.from(byClientId.values());
+  const origins = new Set();
+  for (const client of clients) {
+    for (const uri of client.redirectUris) origins.add(new URL(uri).origin);
+  }
+  normalizedClientsCache = { fromDb, envRaw, clients, byClientId, origins };
+  return normalizedClientsCache;
+}
+
+function copyClient(client) {
+  return { ...client, redirectUris: [...client.redirectUris], allowedScopes: [...client.allowedScopes] };
+}
+
+function loadOAuthClients() {
+  // Les appelants peuvent modifier leurs copies sans changer les autorisations en cache.
+  return getNormalizedClients().clients.map(copyClient);
 }
 
 function getOAuthClient(clientId) {
@@ -259,7 +280,8 @@ function getOAuthClient(clientId) {
     return null;
   }
 
-  return loadOAuthClients().find((client) => client.clientId === normalizedClientId) || null;
+  const client = getNormalizedClients().byClientId.get(normalizedClientId);
+  return client ? copyClient(client) : null;
 }
 
 function getOAuthClientPublicMetadata(client) {
@@ -429,19 +451,11 @@ function normalizeRequestedScopes(requestedScopes, client) {
 }
 
 function getOAuthAllowedCorsOrigins() {
-  const origins = new Set();
+  return Array.from(getNormalizedClients().origins);
+}
 
-  loadOAuthClients().forEach((client) => {
-    client.redirectUris.forEach((redirectUri) => {
-      try {
-        origins.add(new URL(redirectUri).origin);
-      } catch {
-        // Ignore malformed values already filtered during normalization.
-      }
-    });
-  });
-
-  return Array.from(origins);
+function isOAuthCorsOriginAllowed(origin) {
+  return getNormalizedClients().origins.has(origin);
 }
 
 module.exports = {
@@ -453,4 +467,5 @@ module.exports = {
   resolveClientRedirectUri,
   normalizeRequestedScopes,
   getOAuthAllowedCorsOrigins,
+  isOAuthCorsOriginAllowed,
 };

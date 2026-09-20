@@ -8,11 +8,12 @@ import UIKit
 ///
 /// The Cast SDK is main-thread-only.  The module therefore uses the RN main
 /// queue, validates all bridge values before handing them to the relay, and
-/// keeps the relay alive until the receiver load request has been issued.
+/// keeps the relay alive while waiting for the receiver to accept the load.
 @objc(CastModule)
 final class CastModule: RCTEventEmitter,
   GCKSessionManagerListener,
-  GCKRemoteMediaClientListener {
+  GCKRemoteMediaClientListener,
+  GCKRequestDelegate {
 
   private static let statusEventName = "CAST_MEDIA_STATUS"
   private static let genericErrorMessage = "Cast indisponible."
@@ -42,6 +43,14 @@ final class CastModule: RCTEventEmitter,
   private weak var mediaClient: GCKRemoteMediaClient?
   private var pendingLoad: PendingLoad?
   private var activeRelay: PreparedCastRelay?
+  private var preparingLoad: PendingLoad?
+  private var preparationTask: Task<Void, Never>?
+  private var loadGeneration = 0
+  private var sessionStartAttempt: (session: GCKSession, generation: Int)?
+  private var receiverLoad: (request: GCKRequest, pending: PendingLoad, relay: PreparedCastRelay)?
+  private var receiverWatchdog: DispatchWorkItem?
+  private var lastLoadError: String?
+  private var lastNativeErrorCode: String?
   private var pickerWatchdog: DispatchWorkItem?
   private var invalidated = false
 
@@ -57,6 +66,10 @@ final class CastModule: RCTEventEmitter,
   override func supportedEvents() -> [String]! { [Self.statusEventName] }
 
   override func invalidate() {
+    guard Thread.isMainThread else {
+      DispatchQueue.main.async { self.invalidate() }
+      return
+    }
     guard !invalidated else { return }
     invalidated = true
     sessionManager?.remove(self)
@@ -124,16 +137,16 @@ final class CastModule: RCTEventEmitter,
       attachToCastContext()
       guard context != nil else { throw CastRelayError.listenerUnavailable }
       let prepared = try parseSource(source)
-      let title = try parseTitle(metadata["title"])
+      let title = try Self.parseTitle(metadata["title"])
       let _ = title // Metadata is validated again while building the Cast item.
       let start = startTimeSec.doubleValue
       guard start.isFinite, start >= 0, start <= Self.maximumStartTime else {
         throw CastRelayError.invalidRequest
       }
 
-      if let previous = pendingLoad {
-        previous.reject(CastRelayError.sessionUnavailable.rawValue, Self.genericErrorMessage, nil)
-      }
+      rejectPending(CastRelayError.sessionUnavailable)
+      lastLoadError = nil
+      lastNativeErrorCode = nil
       pendingLoad = PendingLoad(
         source: prepared,
         metadata: metadata,
@@ -147,6 +160,9 @@ final class CastModule: RCTEventEmitter,
          session.remoteMediaClient != nil {
         consumePendingLoad(on: session)
       } else {
+        if let connecting = sessionManager?.currentCastSession, connecting.connectionState == .connecting {
+          sessionStartAttempt = (connecting, loadGeneration)
+        }
         context?.presentCastDialog()
         armPickerWatchdog()
         emitStatus()
@@ -213,10 +229,8 @@ final class CastModule: RCTEventEmitter,
     runOnMain(resolve: resolve, reject: reject) { [weak self] in
       guard let self else { throw CastRelayError.sessionUnavailable }
       if let client = self.mediaClient { _ = client.stop() }
-      let relay = self.activeRelay
-      self.activeRelay = nil
-      Task { await relay?.stop() }
-      self.emitStatus()
+      self.finishSession(errorCode: nil)
+      self.sessionManager?.endSessionAndStopCasting(true)
       return NSNull()
     }
   }
@@ -278,9 +292,16 @@ final class CastModule: RCTEventEmitter,
 
   // MARK: - GCKSessionManagerListener
 
+  @objc(sessionManager:willStartSession:)
+  func sessionManager(_: GCKSessionManager, willStart session: GCKSession) {
+    guard !invalidated else { return }
+    sessionStartAttempt = (session, loadGeneration)
+  }
+
   @objc
   func sessionManager(_: GCKSessionManager, didStart session: GCKSession) {
     guard let castSession = session as? GCKCastSession else { return }
+    if sessionStartAttempt?.session === session { sessionStartAttempt = nil }
     attach(to: castSession)
     consumePendingLoad(on: castSession)
   }
@@ -293,30 +314,36 @@ final class CastModule: RCTEventEmitter,
   }
 
   @objc
-  func sessionManager(_: GCKSessionManager, didEnd _: GCKSession, withError _: Error?) {
-    finishSession(errorCode: CastRelayError.sessionUnavailable.rawValue)
+  func sessionManager(_: GCKSessionManager, didEnd session: GCKSession, withError error: Error?) {
+    guard activeSession === session else { return }
+    finishSession(
+      errorCode: error == nil ? nil : CastRelayError.sessionUnavailable.rawValue,
+      nativeCode: error.map { "GCK_SESSION_ERROR_\(($0 as NSError).code)" }
+    )
   }
 
-  @objc
-  func sessionManager(_: GCKSessionManager, didFailToStartSessionWithError _: Error?) {
-    rejectPending(CastRelayError.sessionUnavailable)
-    emitStatus()
+  @objc(sessionManager:didFailToStartSession:withError:)
+  func sessionManager(_: GCKSessionManager, didFailToStart session: GCKSession, withError error: Error) {
+    // Un échec de l'ancien sélecteur ne doit pas rejeter la demande suivante.
+    guard sessionStartAttempt?.session === session,
+          sessionStartAttempt?.generation == loadGeneration else { return }
+    finishSession(
+      errorCode: CastRelayError.sessionUnavailable.rawValue,
+      nativeCode: "GCK_SESSION_ERROR_\((error as NSError).code)"
+    )
   }
 
-  @objc
-  func sessionManager(_: GCKSessionManager, didFailToResumeSession _: GCKSession, withError _: Error?) {
-    finishSession(errorCode: CastRelayError.sessionUnavailable.rawValue)
-  }
-
-  @objc
-  func sessionManager(_: GCKSessionManager, didSuspend _: GCKSession, with _: GCKConnectionSuspendReason) {
+  @objc(sessionManager:didSuspendSession:withReason:)
+  func sessionManager(_: GCKSessionManager, didSuspend session: GCKSession, with reason: GCKConnectionSuspendReason) {
+    guard activeSession === session else { return }
     emitStatus()
   }
 
   // MARK: - GCKRemoteMediaClientListener
 
   @objc
-  func remoteMediaClient(_: GCKRemoteMediaClient, didUpdate mediaStatus: GCKMediaStatus?) {
+  func remoteMediaClient(_ client: GCKRemoteMediaClient, didUpdate mediaStatus: GCKMediaStatus?) {
+    guard mediaClient === client else { return }
     emitStatus(mediaStatus: mediaStatus)
   }
 
@@ -338,6 +365,17 @@ final class CastModule: RCTEventEmitter,
   }
 
   private func attach(to session: GCKCastSession) {
+    if let previous = activeSession, previous !== session {
+      // Le choix d'un nouvel appareil peut déjà avoir une demande en attente.
+      let waitingForDevice = pendingLoad
+      pendingLoad = nil
+      finishSession(errorCode: nil)
+      pendingLoad = waitingForDevice
+    }
+    if activeSession !== session {
+      lastLoadError = nil
+      lastNativeErrorCode = nil
+    }
     activeSession = session
     if let oldClient = mediaClient, oldClient !== session.remoteMediaClient { oldClient.remove(self) }
     guard let client = session.remoteMediaClient else {
@@ -359,27 +397,31 @@ final class CastModule: RCTEventEmitter,
     let pending = pendingLoad
     pendingLoad = nil
     guard let pending else { return }
+    preparingLoad = pending
+    loadGeneration += 1
+    let generation = loadGeneration
+    emitStatus()
     // GCKNetworkAddress.ipAddress est optionnel dans le SDK Cast, contrairement
     // a ce que supposait ce code. Une adresse absente ou vide rend le recepteur
     // inutilisable : on ne tente pas de selection de route sur une cible
     // invalide, le guard ci-dessous s'en charge dans les deux cas.
     let receiverAddress = session.device.networkAddress.ipAddress ?? ""
-    Task { @MainActor [weak self] in
-      guard let self, !self.invalidated else {
-        pending.reject(CastRelayError.sessionUnavailable.rawValue, Self.genericErrorMessage, nil)
-        return
-      }
+    preparationTask = Task { @MainActor [weak self] in
+      guard let self, !self.invalidated, self.loadGeneration == generation else { return }
       var relayForFailure: PreparedCastRelay?
       do {
-        guard !receiverAddress.isEmpty else { throw CastRelayError.sessionUnavailable }
+        guard !receiverAddress.isEmpty else { throw CastNetworkSelectionError.invalidReceiverAddress }
         let selection = try await self.selectRoute(for: receiverAddress)
+        try Task.checkCancellation()
         let preparer = CastMediaPreparer()
         let relay = try await preparer.prepare(source: pending.source, selection: selection)
         relayForFailure = relay
-        guard self.activeSession === session, !self.invalidated else {
+        guard self.activeSession === session, session.connectionState == .connected,
+              !self.invalidated, relay.lifetime.isActive,
+              self.loadGeneration == generation else {
           throw CastRelayError.sessionUnavailable
         }
-        let mediaInfo = try self.makeMediaInformation(relay: relay, metadata: pending.metadata)
+        let mediaInfo = try Self.makeMediaInformation(relay: relay, metadata: pending.metadata)
         let requestBuilder = GCKMediaLoadRequestDataBuilder()
         requestBuilder.mediaInformation = mediaInfo
         requestBuilder.autoplay = true
@@ -391,23 +433,113 @@ final class CastModule: RCTEventEmitter,
         guard let client = session.remoteMediaClient else {
           throw CastRelayError.sessionUnavailable
         }
-        _ = client.loadMedia(with: requestBuilder.build())
-        let oldRelay = self.activeRelay
-        self.activeRelay = relay
-        self.activeSession = session
-        self.mediaClient = client
+        let request = client.loadMedia(with: requestBuilder.build())
+        self.preparingLoad = nil
+        self.preparationTask = nil
+        self.receiverLoad = (request, pending, relay)
+        self.observeRelayTermination(relay)
         relayForFailure = nil
-        if let oldRelay { await oldRelay.stop() }
-        pending.resolve(NSNull())
-        self.emitStatus()
+        let timeout = DispatchWorkItem { [weak self] in
+          guard self?.receiverLoad?.request === request else { return }
+          self?.finishReceiverLoad(errorCode: "MOVIX_CAST_LOAD_TIMEOUT")
+        }
+        self.receiverWatchdog = timeout
+        DispatchQueue.main.asyncAfter(deadline: .now() + 45, execute: timeout)
+        request.delegate = self
       } catch let error as CastRelayError {
         if let relayForFailure { await relayForFailure.stop() }
-        pending.reject(error.rawValue, Self.genericErrorMessage, nil)
+        self.failPreparation(generation: generation, pending: pending, code: error.rawValue)
+      } catch let error as CastNetworkSelectionError {
+        if let relayForFailure { await relayForFailure.stop() }
+        self.failPreparation(
+          generation: generation, pending: pending,
+          code: CastRelayError.sessionUnavailable.rawValue, nativeCode: error.rawValue
+        )
       } catch {
         if let relayForFailure { await relayForFailure.stop() }
-        pending.reject(CastRelayError.sessionUnavailable.rawValue, Self.genericErrorMessage, nil)
+        self.failPreparation(generation: generation, pending: pending, code: CastRelayError.sessionUnavailable.rawValue)
       }
     }
+  }
+
+  private func failPreparation(generation: Int, pending: PendingLoad, code: String, nativeCode: String? = nil) {
+    // Un arrêt ou un remplacement a déjà rejeté la promesse de cette génération.
+    guard generation == loadGeneration else { return }
+    preparingLoad = nil
+    preparationTask = nil
+    lastLoadError = code
+    lastNativeErrorCode = nativeCode
+    let safeError = nativeCode.map {
+      NSError(domain: "MovixCast", code: 0, userInfo: ["nativeErrorCode": $0])
+    }
+    pending.reject(code, Self.genericErrorMessage, safeError)
+    emitStatus()
+  }
+
+  func requestDidComplete(_ request: GCKRequest) {
+    guard receiverLoad?.request === request else { return }
+    finishReceiverLoad(errorCode: receiverLoad?.relay.lifetime.isActive == true
+      ? nil : "MOVIX_RELAY_RELOAD_REQUIRED")
+  }
+
+  func request(_ request: GCKRequest, didFailWithError error: GCKError) {
+    guard receiverLoad?.request === request else { return }
+    finishReceiverLoad(errorCode: "MOVIX_CAST_LOAD_REJECTED", nativeCode: "GCK_ERROR_\(error.code)", nativeError: error)
+  }
+
+  @objc(request:didAbortWithReason:)
+  func request(_ request: GCKRequest, didAbortWith abortReason: GCKRequestAbortReason) {
+    guard receiverLoad?.request === request else { return }
+    finishReceiverLoad(errorCode: "MOVIX_CAST_LOAD_ABORTED", nativeCode: "GCK_ABORT_\(abortReason.rawValue)")
+  }
+
+  private func observeRelayTermination(_ relay: PreparedCastRelay) {
+    let lifetime = relay.lifetime
+    lifetime.observeTermination { [weak self, weak lifetime] in
+      DispatchQueue.main.async { [weak self, weak lifetime] in
+        guard let self, let lifetime, !self.invalidated else { return }
+        // L'identité évite qu'un ancien relais arrêté après remplacement
+        // invalide la nouvelle lecture ou une nouvelle requête LOAD.
+        if self.receiverLoad?.relay.lifetime === lifetime {
+          self.finishReceiverLoad(errorCode: "MOVIX_RELAY_RELOAD_REQUIRED")
+        } else if self.activeRelay?.lifetime === lifetime {
+          self.activeRelay = nil
+          if self.pendingLoad == nil && self.preparingLoad == nil && self.receiverLoad == nil {
+            self.lastLoadError = "MOVIX_RELAY_RELOAD_REQUIRED"
+            self.lastNativeErrorCode = nil
+          }
+          self.emitStatus()
+        }
+      }
+    }
+  }
+
+  private func finishReceiverLoad(
+    errorCode: String?, nativeCode: String? = nil,
+    nativeError: NSError? = nil, publishStatus: Bool = true
+  ) {
+    guard let load = receiverLoad else { return }
+    receiverLoad = nil
+    receiverWatchdog?.cancel()
+    receiverWatchdog = nil
+    load.request.delegate = nil
+    lastLoadError = errorCode
+    lastNativeErrorCode = nativeCode
+    if let errorCode {
+      load.request.cancel()
+      Task { await load.relay.stop() }
+      let safeError = nativeCode.map { code in
+        NSError(domain: "GoogleCast", code: nativeError?.code ?? 0,
+                userInfo: ["nativeErrorCode": code])
+      }
+      load.pending.reject(errorCode, Self.genericErrorMessage, safeError)
+    } else {
+      let previous = activeRelay
+      activeRelay = load.relay
+      Task { await previous?.stop() }
+      load.pending.resolve(NSNull())
+    }
+    if publishStatus { emitStatus() }
   }
 
   private func selectRoute(for receiverAddress: String) async throws -> CastNetworkSelection {
@@ -426,11 +558,16 @@ final class CastModule: RCTEventEmitter,
       }
       monitor.pathUpdateHandler = { path in
         let snapshot = CastNetworkRouteCollector().snapshot(for: path)
-        if let selection = try? CastNetworkSelector.select(
-          candidates: snapshot.candidates,
-          receiverAddress: receiverAddress
-        ) {
+        do {
+          let selection = try CastNetworkSelector.select(
+            candidates: snapshot.candidates,
+            receiverAddress: receiverAddress
+          )
           finish(.success(selection))
+        } catch CastNetworkSelectionError.noUsableWiFiRoute {
+          // Attendre la première route utilisable jusqu'à l'échéance.
+        } catch {
+          finish(.failure(error))
         }
       }
       monitor.start(queue: queue)
@@ -440,7 +577,7 @@ final class CastModule: RCTEventEmitter,
     }
   }
 
-  private func makeMediaInformation(
+  static func makeMediaInformation(
     relay: PreparedCastRelay,
     metadata: NSDictionary
   ) throws -> GCKMediaInformation {
@@ -474,6 +611,14 @@ final class CastModule: RCTEventEmitter,
     builder.contentType = relay.contentType
     builder.streamType = .buffered
     builder.metadata = castMetadata
+    builder.customData = ["movixTransport": "ios-lan-v1"]
+    if relay.profile.isHLS {
+      // Valeurs exactes des enums du SDK 4.8.4, sans conversion de nom Swift ambiguë.
+      builder.hlsSegmentFormat = relay.profile.hlsSegmentFormat == "fmp4"
+        ? GCKHLSSegmentFormat(rawValue: 7)! : GCKHLSSegmentFormat(rawValue: 4)!
+      builder.hlsVideoSegmentFormat = relay.profile.hlsVideoSegmentFormat == "fmp4"
+        ? GCKHLSVideoSegmentFormat(rawValue: 2)! : GCKHLSVideoSegmentFormat(rawValue: 1)!
+    }
     if !tracks.isEmpty { builder.mediaTracks = tracks }
     return builder.build()
   }
@@ -563,7 +708,7 @@ final class CastModule: RCTEventEmitter,
     return try CastSourceValidation.sanitizedHeaders(result)
   }
 
-  private func parseTitle(_ value: Any?) throws -> String {
+  private static func parseTitle(_ value: Any?) throws -> String {
     guard let title = value as? String,
           !title.isEmpty,
           title.count <= Self.maximumTitleCharacters,
@@ -605,9 +750,17 @@ final class CastModule: RCTEventEmitter,
 
   private func rejectPending(_ error: CastRelayError) {
     cancelPickerWatchdog()
-    guard let pending = pendingLoad else { return }
+    loadGeneration += 1
+    sessionStartAttempt = nil
+    preparationTask?.cancel()
+    preparationTask = nil
+    let pending = pendingLoad
     pendingLoad = nil
-    pending.reject(error.rawValue, Self.genericErrorMessage, nil)
+    pending?.reject(error.rawValue, Self.genericErrorMessage, nil)
+    let preparing = preparingLoad
+    preparingLoad = nil
+    preparing?.reject(error.rawValue, Self.genericErrorMessage, nil)
+    finishReceiverLoad(errorCode: error.rawValue, publishStatus: false)
   }
 
   private func armPickerWatchdog() {
@@ -640,12 +793,15 @@ final class CastModule: RCTEventEmitter,
     emitStatus(errorCode: CastRelayError.pickerDismissed.rawValue)
   }
 
-  private func finishSession(errorCode: String?) {
+  private func finishSession(errorCode: String?, nativeCode: String? = nil) {
     let relay = activeRelay
     activeRelay = nil
     activeSession = nil
+    mediaClient?.remove(self)
     mediaClient = nil
     rejectPending(CastRelayError.sessionUnavailable)
+    lastLoadError = errorCode
+    lastNativeErrorCode = nativeCode
     Task { await relay?.stop() }
     emitStatus(errorCode: errorCode)
   }
@@ -655,7 +811,14 @@ final class CastModule: RCTEventEmitter,
     errorCode: String? = nil
   ) -> [String: Any] {
     let status = suppliedStatus ?? mediaClient?.mediaStatus
-    let state = Self.normalizedState(status?.playerState)
+    let loading = pendingLoad != nil || preparingLoad != nil || receiverLoad != nil
+    let transport = (status?.mediaInformation?.customData as? [String: Any])?["movixTransport"] as? String
+    let orphanedRelay = activeSession != nil && activeRelay?.lifetime.isActive != true
+      && (transport == "ios-lan-v1" || transport == "android-lan-v1")
+    let currentError = loading ? nil : (errorCode ?? lastLoadError
+      ?? (orphanedRelay ? "MOVIX_RELAY_RELOAD_REQUIRED" : nil))
+    let state = loading ? "loading" : currentError != nil ? "error"
+      : Self.normalizedState(status?.playerState, idleReason: status?.idleReason)
     let position: TimeInterval
     if let status,
        status.streamPosition.isFinite,
@@ -673,18 +836,20 @@ final class CastModule: RCTEventEmitter,
       normalizedDuration = NSNull()
     }
     var payload: [String: Any] = [
-      "connected": activeSession != nil,
+      "connected": activeSession?.connectionState == .connected,
       "deviceName": activeSession?.device.friendlyName ?? NSNull(),
       "mediaSessionId": status?.mediaSessionID ?? NSNull(),
       "state": state,
       "positionSec": position,
       "durationSec": normalizedDuration,
-      "canSeek": status != nil,
+      "canSeek": status != nil && ["playing", "paused", "buffering"].contains(state),
     ]
-    if let idleReason = status?.idleReason {
-      payload["idleReason"] = String(describing: idleReason)
+    if status?.playerState == .idle,
+       let idleReason = Self.normalizedIdleReason(status?.idleReason) {
+      payload["idleReason"] = idleReason
     }
-    if let errorCode { payload["errorCode"] = errorCode }
+    if let currentError { payload["errorCode"] = currentError }
+    if currentError != nil, let lastNativeErrorCode { payload["nativeErrorCode"] = lastNativeErrorCode }
     return payload
   }
 
@@ -699,14 +864,35 @@ final class CastModule: RCTEventEmitter,
     ))
   }
 
-  private static func normalizedState(_ state: GCKMediaPlayerState?) -> String {
+  static func normalizedIdleReason(_ reason: GCKMediaPlayerIdleReason?) -> String? {
+    guard let reason else { return nil }
+    switch reason {
+    case .none: return nil
+    case .finished: return "FINISHED"
+    case .cancelled: return "CANCELLED"
+    case .interrupted: return "INTERRUPTED"
+    case .error: return "ERROR"
+    @unknown default: return nil
+    }
+  }
+
+  static func normalizedState(
+    _ state: GCKMediaPlayerState?, idleReason: GCKMediaPlayerIdleReason? = nil
+  ) -> String {
     guard let state else { return "idle" }
-    let raw = String(describing: state).lowercased()
-    if raw.contains("playing") { return "playing" }
-    if raw.contains("paused") { return "paused" }
-    if raw.contains("buffer") { return "buffering" }
-    if raw.contains("loading") { return "loading" }
-    if raw.contains("idle") { return "idle" }
-    return "error"
+    switch state {
+    case .playing: return "playing"
+    case .paused: return "paused"
+    case .buffering: return "buffering"
+    case .loading: return "loading"
+    case .idle:
+      switch normalizedIdleReason(idleReason) {
+      case "FINISHED": return "ended"
+      case "ERROR": return "error"
+      default: return "idle"
+      }
+    case .unknown: return "idle"
+    @unknown default: return "error"
+    }
   }
 }

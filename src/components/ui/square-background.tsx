@@ -1,6 +1,7 @@
 import React, { useEffect, useRef } from 'react';
 import { cn } from '@/lib/utils';
 import { useBgPrefs, getBgAccentRgb } from '@/utils/bgPreferences';
+import { useLightMode } from '@/context/LightModeContext';
 
 type BgMode = 'combined' | 'static' | 'animated';
 
@@ -53,6 +54,7 @@ export const SquareBackground: React.FC<SquareBackgroundProps> = ({
     // l'utilisateur active les flags, on ignore les valeurs hardcodées passées
     // par les pages (Search, Collections, etc.) et on applique le réglage user.
     const prefs = useBgPrefs();
+    const { isLightMode, effectivePrefs } = useLightMode();
     const squareSize = prefs.forceSquareSize ? prefs.squareSize : propSquareSize;
     // Préserve l'alpha de la couleur originale (les pages utilisent 0.10/0.15…)
     // en ne remplaçant que la composante RGB.
@@ -90,11 +92,11 @@ export const SquareBackground: React.FC<SquareBackgroundProps> = ({
     const colorRef = useRef(parseRGB(borderColor));
     colorRef.current = parseRGB(borderColor);
 
-    const showCssGrid = mode === 'static';
+    const showCssGrid = !isLightMode && (mode === 'static' || !effectivePrefs.bgAnimations);
     // Halo : seulement quand le mode l'inclut ET que l'utilisateur ne l'a pas
     // explicitement désactivé dans Apparence → "Halo lumineux".
-    const showHalo = (mode === 'static' || mode === 'combined') && prefs.haloEnabled;
-    const showCanvas = mode === 'animated' || mode === 'combined';
+    const showHalo = effectivePrefs.bgAnimations && effectivePrefs.blurEffects && (mode === 'static' || mode === 'combined') && prefs.haloEnabled;
+    const showCanvas = effectivePrefs.bgAnimations && (mode === 'animated' || mode === 'combined');
 
     useEffect(() => {
         if (!showHalo) return;
@@ -627,6 +629,19 @@ export const SquareBackground: React.FC<SquareBackgroundProps> = ({
             document.removeEventListener('visibilitychange', handleVisibilityChange);
             window.removeEventListener('scroll', scheduleRectRefresh);
             window.removeEventListener('resize', scheduleRectRefresh);
+            // Le mode léger doit aussi libérer les buffers conservés hors DOM.
+            canvas.width = 0;
+            canvas.height = 0;
+            if (gridCache.canvas) {
+                gridCache.canvas.width = 0;
+                gridCache.canvas.height = 0;
+            }
+            gridCache.canvas = null;
+            gridCache.signature = '';
+            state.neighbors = [];
+            state.dirtyCells = [];
+            state.currentRow = -2;
+            state.currentCol = -2;
         };
     }, [showCanvas, squareSize, borderColor]);
 

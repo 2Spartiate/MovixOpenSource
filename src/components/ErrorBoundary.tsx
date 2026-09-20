@@ -1,42 +1,37 @@
 import React from 'react';
 import { isChunkLoadError, reloadForChunkFailure } from '../routing/lazyWithRetry';
+import { captureCrash, isRecoverableError } from '../utils/errorTracking';
 
 interface ErrorBoundaryState {
   hasError: boolean;
   error: Error | null;
   errorInfo: React.ErrorInfo | null;
-  sending: boolean;
-  sent: boolean;
-  sendError: boolean;
+  /** GlitchTip event id once the crash has been reported (null = tracking off). */
+  eventId: string | null;
   recoverable: boolean;
   reloadScheduled: boolean;
 }
 
 /**
- * Recoverable = not a code bug, fixable by a reload:
- *  - stale dynamic-import chunks after a deploy (isChunkLoadError)
- *  - React + browser auto-translate DOM race (removeChild/insertBefore)
- *  - React #306: a lazy element resolved to `undefined` (failed/stale chunk)
- *  - the raw TypeError React.lazy throws when a chunk resolved to `undefined`
- *    and it reads `.default` off it ("Cannot read properties of undefined
- *    (reading 'default')" / "e._result is undefined") — same stale-chunk cause,
- *    fires before #306. lazyWithRetry now prevents this upstream, but keep it as
- *    a net for any lazy element that resolves undefined by another path.
- * These get a friendly "updating" screen + guarded auto-reload instead of the
- * crash report UI, so they no longer flood the crash channel.
+ * Recoverable = not a code bug, fixable by a reload (stale chunks after a
+ * deploy, browser auto-translate DOM race, React #306…) — the rules live in
+ * `isRecoverableError` (utils/errorTracking) so the global SDK filters and this
+ * boundary agree. These get a friendly "updating" screen + guarded auto-reload
+ * instead of the crash report UI.
+ *
+ * Real crashes are sent to GlitchTip automatically (captureCrash). The old
+ * hardcoded Discord webhook is gone: it shipped in the bundle, so anyone could
+ * read it and spam the channel, and every crash was one more message.
  */
-const isRecoverableError = (error: Error | null | undefined): boolean => {
-  if (!error) return false;
-  if (isChunkLoadError(error)) return true;
-  const msg = String(error.message || '');
-  return /removeChild|insertBefore|not a child of this node|Minified React error #306|invariant=306|_result|reading 'default'|reading "default"/i.test(msg);
-};
 
-const DISCORD_WEBHOOK_URL =
-  'https://discord.com/api/webhooks/1514627721916055654/hRzr4oYG8-D44WR0UDpHfwtrE7D1uomP0NcVazRjB2DKOEfxuhK2g6DQD52qrYOuMYVJ';
+/** Chromium-only `performance.memory` (absent from the DOM lib typings). */
+type PerformanceWithMemory = Performance & {
+  memory?: { usedJSHeapSize: number; jsHeapSizeLimit: number };
+};
 
 function getDeviceInfo() {
   const ua = navigator.userAgent;
+  const jsHeap = (performance as PerformanceWithMemory).memory;
 
   let browser = 'Inconnu';
   if (ua.includes('Firefox/')) {
@@ -75,8 +70,8 @@ function getDeviceInfo() {
     timestamp: new Date().toISOString(),
     userAgent: ua,
     online: navigator.onLine,
-    memory: (performance as any).memory
-      ? `${Math.round((performance as any).memory.usedJSHeapSize / 1048576)}MB / ${Math.round((performance as any).memory.jsHeapSizeLimit / 1048576)}MB`
+    memory: jsHeap
+      ? `${Math.round(jsHeap.usedJSHeapSize / 1048576)}MB / ${Math.round(jsHeap.jsHeapSizeLimit / 1048576)}MB`
       : 'N/A',
   };
 }
@@ -84,18 +79,18 @@ function getDeviceInfo() {
 class ErrorBoundary extends React.Component<React.PropsWithChildren, ErrorBoundaryState> {
   constructor(props: React.PropsWithChildren) {
     super(props);
-    this.state = { hasError: false, error: null, errorInfo: null, sending: false, sent: false, sendError: false, recoverable: false, reloadScheduled: true };
+    this.state = { hasError: false, error: null, errorInfo: null, eventId: null, recoverable: false, reloadScheduled: true };
   }
 
   static getDerivedStateFromError(error: Error): Partial<ErrorBoundaryState> {
     // Decide recoverability synchronously so the soft screen renders on the
     // first frame — no flash of the crash UI before componentDidCatch runs.
-    return { hasError: true, error, recoverable: isRecoverableError(error) };
+    return { hasError: true, error, recoverable: isRecoverableError(error, true) };
   }
 
   componentDidCatch(error: Error, errorInfo: React.ErrorInfo) {
     this.setState({ errorInfo });
-    if (isRecoverableError(error)) {
+    if (isRecoverableError(error, true)) {
       // Not a code bug — recover quietly with a guarded reload (the budget in
       // reloadForChunkFailure caps attempts so this can never loop).
       const reloadScheduled = reloadForChunkFailure();
@@ -103,54 +98,10 @@ class ErrorBoundary extends React.Component<React.PropsWithChildren, ErrorBounda
       return;
     }
     console.error('[ErrorBoundary]', error, errorInfo);
+    // Sent automatically to GlitchTip (with the component stack): no button,
+    // no user action. Null when tracking is off (dev build, no DSN).
+    this.setState({ eventId: captureCrash(error, errorInfo) });
   }
-
-  handleSendReport = async () => {
-    const { error, errorInfo } = this.state;
-    this.setState({ sending: true, sendError: false });
-
-    const info = getDeviceInfo();
-    const stack = error?.stack ?? 'Aucune stack trace';
-    const componentStack = errorInfo?.componentStack ?? 'N/A';
-
-    const truncate = (str: string, max: number) => (str.length > max ? str.slice(0, max) + '...' : str);
-
-    const embeds = [
-      {
-        title: ':rotating_light: Crash Report — Movix',
-        color: 0xdc2626,
-        fields: [
-          { name: 'Erreur', value: '```\n' + truncate(error?.message ?? 'Erreur inconnue', 900) + '\n```', inline: false },
-          { name: 'Stack Trace', value: '```\n' + truncate(stack, 900) + '\n```', inline: false },
-          { name: 'Component Stack', value: '```\n' + truncate(componentStack, 900) + '\n```', inline: false },
-          { name: 'Navigateur', value: info.browser, inline: true },
-          { name: 'OS', value: info.os, inline: true },
-          { name: 'Appareil', value: info.device, inline: true },
-          { name: 'Ecran', value: info.screen, inline: true },
-          { name: 'Viewport', value: info.viewport, inline: true },
-          { name: 'Langue', value: info.language, inline: true },
-          { name: 'En ligne', value: info.online ? 'Oui' : 'Non', inline: true },
-          { name: 'Memoire JS', value: info.memory, inline: true },
-          { name: 'URL', value: truncate(info.url, 200), inline: false },
-        ],
-        footer: { text: info.timestamp + ' • ' + truncate(info.userAgent, 150) },
-      },
-    ];
-
-    try {
-      const res = await fetch(DISCORD_WEBHOOK_URL, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          username: 'Movix Crash Reporter',
-          embeds,
-        }),
-      });
-      this.setState({ sending: false, sent: res.ok, sendError: !res.ok });
-    } catch {
-      this.setState({ sending: false, sendError: true });
-    }
-  };
 
   handleReload = () => {
     window.location.reload();
@@ -193,7 +144,7 @@ class ErrorBoundary extends React.Component<React.PropsWithChildren, ErrorBounda
       );
     }
 
-    const { error, errorInfo, sending, sent, sendError } = this.state;
+    const { error, errorInfo, eventId } = this.state;
     const info = getDeviceInfo();
 
     return (
@@ -264,38 +215,27 @@ class ErrorBoundary extends React.Component<React.PropsWithChildren, ErrorBounda
             </div>
           </details>
 
+          {/* Report status: sent automatically when tracking is on */}
+          {eventId && (
+            <p style={{ margin: '0 0 16px', fontSize: 13, color: '#9ca3af' }}>
+              Rapport envoyé automatiquement · référence{' '}
+              <code style={{ fontFamily: 'ui-monospace, monospace', color: '#e5e7eb' }}>{eventId}</code>
+            </p>
+          )}
+
           {/* Actions */}
           <div style={{ display: 'flex', flexWrap: 'wrap', gap: 12 }}>
             <button
-              onClick={this.handleSendReport}
-              disabled={sending || sent}
+              onClick={this.handleReload}
               style={{
                 padding: '10px 20px',
                 borderRadius: 8,
                 border: 'none',
                 fontWeight: 600,
                 fontSize: 14,
-                cursor: sending || sent ? 'default' : 'pointer',
-                backgroundColor: sent ? '#16a34a' : sendError ? '#dc2626' : '#dc2626',
-                color: '#fff',
-                opacity: sending ? 0.6 : 1,
-                transition: 'opacity 0.2s, background-color 0.2s',
-              }}
-            >
-              {sending ? 'Envoi...' : sent ? 'Rapport envoyé !' : sendError ? 'Erreur — Réessayer' : 'Envoyer le rapport'}
-            </button>
-
-            <button
-              onClick={this.handleReload}
-              style={{
-                padding: '10px 20px',
-                borderRadius: 8,
-                border: '1px solid #333',
-                fontWeight: 600,
-                fontSize: 14,
                 cursor: 'pointer',
-                backgroundColor: 'transparent',
-                color: '#e5e7eb',
+                backgroundColor: '#dc2626',
+                color: '#fff',
               }}
             >
               Recharger la page

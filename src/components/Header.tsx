@@ -1,6 +1,7 @@
 import React, { useState, useEffect, useRef, useCallback, useMemo } from 'react';
 import { createPortal } from 'react-dom';
 import Snowfall from 'react-snowfall';
+import { useLightMode } from '@/context/LightModeContext';
 import { useLocation, useNavigate } from 'react-router-dom';
 import { PrefetchLink as Link } from '@/routing/PrefetchLink';
 import { Film, Search, Menu, X, Star, Tv2, Users, Clapperboard, Bell, Tv, Lightbulb, Network, List, Radio, Unlock, ChevronDown, ExternalLink, LayoutGrid, Settings, Dices, Sparkles, HelpCircle, Github, CalendarDays } from 'lucide-react';
@@ -49,6 +50,7 @@ interface ExploreGroup {
 
 const Header: React.FC = () => {
   const { t } = useTranslation();
+  const { effectivePrefs } = useLightMode();
   const [isExploreOpen, setIsExploreOpen] = useState(false);
   const [isMobileSearchOpen, setIsMobileSearchOpen] = useState(false);
   const [isSnowfallActive, setIsSnowfallActive] = useState(() => {
@@ -80,6 +82,7 @@ const Header: React.FC = () => {
   const autocompleteRef = useRef<HTMLDivElement>(null);
   const notificationsRef = useRef<HTMLDivElement>(null);
   const exploreRef = useRef<HTMLDivElement>(null);
+  const exploreOverlayRef = useRef<HTMLDivElement>(null);
   const [dropdownStyle, setDropdownStyle] = useState<React.CSSProperties>({});
   const location = useLocation();
   const navigate = useNavigate();
@@ -211,18 +214,21 @@ const Header: React.FC = () => {
   // Click outside
   useEffect(() => {
     const handleClickOutside = (event: MouseEvent) => {
-      if (autocompleteRef.current && !autocompleteRef.current.contains(event.target as Node) && searchInputRef.current && !searchInputRef.current.contains(event.target as Node)) {
+      const target = event.target as HTMLElement;
+      if (autocompleteRef.current && !autocompleteRef.current.contains(target)
+        && !searchInputRef.current?.contains(target)
+        && !mobileSearchInputRef.current?.contains(target)) {
         setShowAutocomplete(false);
       }
       if (showNotifications && notificationsRef.current) {
-        const target = event.target as HTMLElement;
         if (target.closest('[data-notification-button]') || target.closest('[data-notifications-popup]')) return;
         if (!notificationsRef.current.contains(target)) setShowNotifications(false);
       }
-      // Fermer mega menu desktop au clic extérieur
+      // Le menu mobile est rendu en portail : ses clics restent intérieurs.
       if (isExploreOpen && exploreRef.current) {
-        const target = event.target as HTMLElement;
-        if (!exploreRef.current.contains(target) && !target.closest('[data-explore-trigger]')) {
+        if (!exploreRef.current.contains(target)
+          && !exploreOverlayRef.current?.contains(target)
+          && !target.closest('[data-explore-trigger]')) {
           setIsExploreOpen(false);
         }
       }
@@ -230,9 +236,6 @@ const Header: React.FC = () => {
     document.addEventListener('mousedown', handleClickOutside);
     return () => document.removeEventListener('mousedown', handleClickOutside);
   }, [showNotifications, isExploreOpen]);
-
-  // Overlay du menu fullscreen mobile : c'est lui le scroller (cf. le JSX).
-  const exploreOverlayRef = useRef<HTMLDivElement>(null);
 
   // Bloquer le scroll (html + body + Lenis) quand le menu fullscreen est ouvert.
   // body en position:fixed avec top:-scrollY (technique body-scroll-lock) :
@@ -389,6 +392,8 @@ const Header: React.FC = () => {
     e.preventDefault();
     if (headerQuery.trim()) {
       navigate(`/search?q=${encodeURIComponent(headerQuery)}`);
+      clearAutocompleteSuggestions();
+      setShowAutocomplete(false);
       setHeaderQuery('');
       setIsMobileSearchOpen(false);
     }
@@ -434,7 +439,7 @@ const Header: React.FC = () => {
         <div className="absolute inset-0 pointer-events-none z-0 bg-gradient-to-b from-black/90 via-black/70 to-transparent" aria-hidden="true" />
         <div className="relative z-10">
           <div className="max-w-[1400px] 2xl:max-w-[1600px] mx-auto">
-            <div className="flex items-center h-16 px-4 md:px-6 lg:px-8 gap-3 md:gap-5">
+            <div className="flex items-center h-16 px-4 md:px-6 lg:px-8 gap-3 md:gap-5 lg:gap-3 xl:gap-5 max-[360px]:gap-1 max-[360px]:px-2">
 
               {/* Logo */}
               <Link
@@ -455,13 +460,26 @@ const Header: React.FC = () => {
                 <span className="text-red-600 tracking-wider">MOVIX</span>
               </Link>
 
+              <a
+                href="https://t.me/movix_site"
+                target="_blank"
+                rel="noopener noreferrer"
+                aria-label={t('telegram.joinTelegram')}
+                title={t('telegram.joinTelegram')}
+                className="pointer-events-auto inline-flex h-11 w-11 shrink-0 items-center justify-center p-2 text-sky-400 transition-colors duration-150 hover:text-sky-300 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-sky-400 motion-reduce:transition-none"
+              >
+                <svg viewBox="0 0 24 24" fill="currentColor" className="h-5 w-5 shrink-0" aria-hidden="true">
+                  <path d="M9.78 18.65l.28-4.23 7.68-6.92c.34-.31-.07-.46-.52-.19l-9.48 5.99-4.1-1.28c-.88-.25-.89-.86.2-1.3l15.97-6.16c.73-.33 1.43.18 1.15 1.3L18.24 18.8c-.19.92-.73 1.14-1.48.71l-4.14-3.06-1.99 1.93c-.23.23-.42.42-.85.42z" />
+                </svg>
+              </a>
+
               {/* Desktop Nav: 3 items principaux + Explorer */}
               <nav className="hidden lg:flex items-center gap-1">
                 {mainNavItems.map((item) => (
                   <Link
                     key={item.path}
                     to={item.path}
-                    className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-sm transition-all duration-200 ${
+                    className={`flex items-center gap-1.5 px-2 xl:px-3 py-1.5 rounded-lg text-sm transition-all duration-200 max-xl:[&>svg]:hidden ${
                       item.isActive
                         ? 'text-white bg-white/10 font-medium'
                         : 'text-gray-400 hover:text-white hover:bg-white/5'
@@ -874,7 +892,7 @@ const Header: React.FC = () => {
       {/* Spacer */}
       <div className="w-full h-0" aria-hidden="true" />
 
-      {isSnowfallActive && (
+      {isSnowfallActive && effectivePrefs.bgAnimations && (
         <Snowfall
           style={{
             position: 'fixed',

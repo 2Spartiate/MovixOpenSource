@@ -6,6 +6,25 @@ function getAuthToken(): string | null {
   return localStorage.getItem('auth_token');
 }
 
+export function decodeDownloadLink<T>(
+  id: string,
+  turnstileToken: string,
+  titleId: string | null,
+  signal: AbortSignal,
+) {
+  const authToken = getAuthToken();
+  return axios.post<T>(
+    `${API_URL}/api/darkiworld/decode/${encodeURIComponent(id)}`,
+    { turnstileToken },
+    {
+      params: titleId ? { title_id: titleId } : undefined,
+      headers: authToken ? { Authorization: `Bearer ${authToken}` } : undefined,
+      signal,
+      validateStatus: () => true,
+    },
+  );
+}
+
 export interface AdminDownloadLink {
   url: string;
   language: string;

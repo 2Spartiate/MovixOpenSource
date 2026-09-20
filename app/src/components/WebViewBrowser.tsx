@@ -240,8 +240,9 @@ const WebViewBrowser = forwardRef<WebViewBrowserRef, WebViewBrowserProps>(
       [journalConsole],
     );
 
-    const userAgent =
-      Platform.OS === 'ios' ? CONFIG.USER_AGENT_IOS : CONFIG.USER_AGENT;
+    // Sur iOS, laisser WKWebView annoncer la version réelle de WebKit et de
+    // l'appareil : un User-Agent Safari figé peut perturber Turnstile.
+    const userAgent = Platform.OS === 'ios' ? undefined : CONFIG.USER_AGENT;
 
     return (
       <WebView
@@ -250,7 +251,7 @@ const WebViewBrowser = forwardRef<WebViewBrowserRef, WebViewBrowserProps>(
         style={{ flex: 1, backgroundColor: '#0a0a0a' }}
         // Injection du bridge + userscript avant le chargement
         injectedJavaScriptBeforeContentLoaded={injectedJS}
-        // Réinjection après chaque navigation
+        // Garder les iframes Turnstile sans bridge ni userscript Movix.
         injectedJavaScriptBeforeContentLoadedForMainFrameOnly={true}
         // Bridge messages
         onMessage={onMessage}
@@ -282,7 +283,9 @@ const WebViewBrowser = forwardRef<WebViewBrowserRef, WebViewBrowserProps>(
         allowsFullscreenVideo={true}
         allowsBackForwardNavigationGestures={true}
         // Sécurité
-        originWhitelist={['https://*', 'http://*']}
+        // Turnstile utilise aussi des documents internes about:srcdoc.
+        // about:blank est déjà autorisé par react-native-webview.
+        originWhitelist={['https://*', 'http://*', 'about:srcdoc']}
         // « compatibility » laisse passer le contenu passif (images) mais
         // bloque toujours le contenu actif : un `fetch("http://…")` depuis la
         // page échouait donc en quelques millisecondes (« Network request

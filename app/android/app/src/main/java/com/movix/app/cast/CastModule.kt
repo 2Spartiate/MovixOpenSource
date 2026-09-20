@@ -45,6 +45,8 @@ class CastModule internal constructor(
     private var acceptedCoordinator: CastLoadCoordinator? = null
     private var pendingCoordinator: CastLoadCoordinator? = null
     private var pendingLoad: PendingLoad? = null
+    private var lastLoadError: String? = null
+    private var lastNativeErrorCode: String? = null
     private var listenerRegistered = false
     private var mediaRouter: MediaRouter? = null
     private var discoveryActive = false
@@ -67,13 +69,13 @@ class CastModule internal constructor(
                 consumePendingLoad(session)
             } else {
                 val active = acceptedCoordinator
-                if (active == null) {
-                    emitStatus(reloadRequiredStatus(session.castDevice?.friendlyName))
+                if (active == null || pendingCoordinator != null) {
+                    emitStatus(statusWithoutCoordinator(session))
                 } else {
                     active.getStatus(false) { result ->
                         emitStatus(
                             result.getOrElse {
-                                reloadRequiredStatus(session.castDevice?.friendlyName)
+                                CastStatusMapper.disconnected("MOVIX_CAST_STATUS_FAILED")
                             },
                         )
                     }
@@ -82,6 +84,8 @@ class CastModule internal constructor(
         }
 
         override fun onSessionEnded(session: CastSession, error: Int) {
+            lastLoadError = null
+            lastNativeErrorCode = null
             failPending("MOVIX_CAST_SESSION_ENDED")
             clearCoordinators(CastRelayStopReason.SESSION_ENDED)
             emitStatus(CastStatusMapper.disconnected())
@@ -102,9 +106,10 @@ class CastModule internal constructor(
         }
 
         override fun onSessionResumeFailed(session: CastSession, error: Int) {
+            failPending("MOVIX_CAST_SESSION_FAILED")
             clearCoordinators(CastRelayStopReason.SESSION_ENDED)
             emitStatus(
-                CastStatusMapper.disconnected("MOVIX_RELAY_RELOAD_REQUIRED"),
+                CastStatusMapper.disconnected("MOVIX_CAST_SESSION_FAILED"),
             )
         }
 
@@ -295,6 +300,8 @@ class CastModule internal constructor(
                 return@runOnUiQueueThread
             }
             failPending("MOVIX_CAST_LOAD_REPLACED")
+            lastLoadError = null
+            lastNativeErrorCode = null
             pendingLoad = parsed
             runCatching {
                 MediaRouteChooserDialog(activity).apply {
@@ -336,13 +343,9 @@ class CastModule internal constructor(
     fun getStatus(refresh: Boolean, promise: Promise) {
         reactContext.runOnUiQueueThread {
             val active = acceptedCoordinator
-            if (active == null) {
+            if (active == null || pendingCoordinator != null || pendingLoad != null) {
                 val session = ensureContext()?.sessionManager?.currentCastSession
-                val status = if (session?.isConnected == true) {
-                    reloadRequiredStatus(session.castDevice?.friendlyName)
-                } else {
-                    CastStatusMapper.disconnected()
-                }
+                val status = statusWithoutCoordinator(session)
                 promise.resolve(status.toWritableMap())
                 return@runOnUiQueueThread
             }
@@ -360,6 +363,9 @@ class CastModule internal constructor(
     @ReactMethod
     fun stop(promise: Promise) {
         reactContext.runOnUiQueueThread {
+            failPending("MOVIX_CAST_STOPPED")
+            lastLoadError = null
+            lastNativeErrorCode = null
             val pending = pendingCoordinator
             pendingCoordinator = null
             pending?.abandonPendingLoad("MOVIX_CAST_STOPPED")
@@ -434,9 +440,12 @@ class CastModule internal constructor(
     }
 
     private fun startLoad(session: CastSession, pending: PendingLoad) {
+        lastLoadError = null
+        lastNativeErrorCode = null
         val receiverAddress = session.castDevice?.inetAddress
         val remote = session.remoteMediaClient
         if (receiverAddress == null || remote == null) {
+            lastLoadError = "MOVIX_RELAY_RECEIVER_ADDRESS_REQUIRED"
             pending.promise.reject(
                 "MOVIX_RELAY_RECEIVER_ADDRESS_REQUIRED",
                 "Receiver address unavailable",
@@ -463,6 +472,7 @@ class CastModule internal constructor(
             ::emitStatus,
         )
         pendingCoordinator = nextCoordinator
+        emitStatus(statusWithoutCoordinator(session))
         nextCoordinator.load(
             CastRelayRequest(
                 deviceName = session.castDevice?.friendlyName ?: "Chromecast",
@@ -480,14 +490,21 @@ class CastModule internal constructor(
                 pendingCoordinator = null
                 if (result.isSuccess) {
                     previousAccepted?.retireAfterReplacement()
-                    nextCoordinator.activateStatusListener()
                     acceptedCoordinator = nextCoordinator
+                    nextCoordinator.activateStatusListener()
+                    nextCoordinator.getStatus(false) { status ->
+                        status.onSuccess(::emitStatus)
+                    }
                 } else {
                     nextCoordinator.retireAfterReplacement()
+                    if (acceptedCoordinator == null) {
+                        relayClient.stop(CastRelayStopReason.LOAD_FAILED)
+                    }
                     emitAcceptedStatusOrError(
                         result.exceptionOrNull()?.message
                             ?.takeIf { it.startsWith("MOVIX_") }
                             ?: "MOVIX_CAST_LOAD_FAILED",
+                        (result.exceptionOrNull() as? CastCommandException)?.nativeErrorCode,
                     )
                 }
                 pending.promise.settle(result)
@@ -629,6 +646,11 @@ class CastModule internal constructor(
                     it.message?.takeIf { code -> code.startsWith("MOVIX_") }
                         ?: "MOVIX_CAST_COMMAND_FAILED",
                     "Cast command failed",
+                    Arguments.createMap().apply {
+                        (it as? CastCommandException)?.nativeErrorCode?.let { code ->
+                            putString("nativeErrorCode", code)
+                        }
+                    },
                 )
             },
         )
@@ -652,10 +674,12 @@ class CastModule internal constructor(
         }
     }
 
-    private fun emitAcceptedStatusOrError(errorCode: String) {
+    private fun emitAcceptedStatusOrError(errorCode: String, nativeErrorCode: String? = null) {
+        lastLoadError = errorCode
+        lastNativeErrorCode = nativeErrorCode
         val accepted = acceptedCoordinator
         if (accepted == null) {
-            emitStatus(CastStatusMapper.disconnected(errorCode))
+            emitStatus(statusWithoutCoordinator(castContext?.sessionManager?.currentCastSession))
             return
         }
         accepted.getStatus(false) { result ->
@@ -677,14 +701,18 @@ class CastModule internal constructor(
         CastRelayStopReason.EXPLICIT -> "MOVIX_CAST_STOPPED"
     }
 
-    private fun reloadRequiredStatus(deviceName: String?): NativeCastStatus {
-        return CastStatusMapper.map(
-            CastStatusSnapshot(
-                connected = true,
-                deviceName = deviceName,
-                playbackState = NativeCastPlaybackState.ERROR,
-                errorCode = "MOVIX_RELAY_RELOAD_REQUIRED",
-            ),
+    private fun statusWithoutCoordinator(session: CastSession?): NativeCastStatus {
+        // Une connexion au récepteur ne prouve pas que le relais a disparu :
+        // la préparation et l'acceptation du LOAD sont encore asynchrones.
+        val transport = session?.remoteMediaClient?.mediaInfo?.customData
+            ?.optString("movixTransport").orEmpty()
+        return CastStatusMapper.withoutOwnedLoad(
+            connected = session?.isConnected == true,
+            deviceName = session?.castDevice?.friendlyName,
+            loading = pendingCoordinator != null || pendingLoad != null,
+            orphanedRelay = transport == "android-lan-v1" || transport == "ios-lan-v1",
+            lastError = lastLoadError,
+            nativeErrorCode = lastNativeErrorCode,
         )
     }
 
@@ -709,6 +737,7 @@ class CastModule internal constructor(
             putBoolean("canSeek", canSeek)
             putString("idleReason", idleReason)
             putString("errorCode", errorCode)
+            putString("nativeErrorCode", nativeErrorCode)
         }
     }
 

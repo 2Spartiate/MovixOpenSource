@@ -60,7 +60,8 @@ function domainRestriction(req, res, next) {
     'movix.chat',
     'movix.date',
     'movix.show',
-    'movix.fun'
+    'movix.fun',
+    'movix.men'
   ];
 
   const origin = req.get('origin');

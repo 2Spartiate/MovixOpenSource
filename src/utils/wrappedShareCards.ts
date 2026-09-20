@@ -1,312 +1,203 @@
-/**
- * Formats alternatifs de la share-card Wrapped : Affiche de film & Billet de ciné.
- * Données primitives en entrée (pas de dépendance aux types de page).
- */
-import { drawRoundedRectPath, wrapCanvasText, loadCanvasImage, ensureShareFonts, drawSeededStickers, mulberry32, FONT_STACK, DISPLAY_FONT } from './wrappedCanvas';
-import { DEFAULT_PUBLIC_DOMAIN } from '../i18n/currentDomain';
+import type { WrappedShareCardData, WrappedShareFormat } from '@/types/wrapped';
+import { ensureShareFonts, loadCanvasImage } from '@/utils/wrappedCanvas';
+import { drawCanvasImage, drawFittedText, drawRoundedRectPath } from '@/utils/wrappedCanvasLayout';
 
-export interface WrappedShareCardData {
-    year: number;
-    totalHours: number;
-    totalMinutes: number;
-    uniqueTitles: number;
-    totalSessions: number;
-    longestStreak: number;
-    peakHour: number | null;
-    peakMonthName: string;
-    peakMonthIndex: number;
-    personaTitle: string;
-    personaEmoji: string;
-    personaColor: string;
-    topTitles: string[];           // top 5
-    topGenreName: string | null;
-    watchTimeLabel: string;        // ex. "23h 14min"
-    topPosterUrl: string | null;
-    topBackdropUrl: string | null;
-    posterUrls: (string | null)[]; // top 3
-    seed: number;
-}
+const PAPER = '#f4efe6';
+const INK = '#17121f';
+const LILAC = '#d8c4ff';
 
-function toBlob(canvas: HTMLCanvasElement): Promise<Blob | null> {
-    return new Promise((resolve) => canvas.toBlob((b) => resolve(b), 'image/png'));
-}
-
-// ────────────────────────────────────────────────────────────────────────────
-// FORMAT B — AFFICHE DE FILM (1080×1620, ratio 2:3)
-// ────────────────────────────────────────────────────────────────────────────
-export async function generatePosterShareImage(data: WrappedShareCardData): Promise<Blob | null> {
-    await ensureShareFonts();
-    const width = 1080, height = 1620;
-    const canvas = document.createElement('canvas');
-    canvas.width = width; canvas.height = height;
-    const ctx = canvas.getContext('2d');
-    if (!ctx) return null;
-
-    const center = (text: string, y: number) => ctx.fillText(text, (width - ctx.measureText(text).width) / 2, y);
-
-    // Fond : backdrop plein cadre + voile sombre + vignette
-    ctx.fillStyle = '#0a0a0c';
-    ctx.fillRect(0, 0, width, height);
-    const backdrop = data.topBackdropUrl ? await loadCanvasImage(data.topBackdropUrl) : null;
-    if (backdrop) {
-        const scale = Math.max(width / backdrop.width, height / backdrop.height);
-        const dw = backdrop.width * scale, dh = backdrop.height * scale;
-        ctx.save();
-        ctx.globalAlpha = 0.42;
-        ctx.drawImage(backdrop, (width - dw) / 2, (height - dh) / 2, dw, dh);
-        ctx.restore();
-    }
-    const veil = ctx.createLinearGradient(0, 0, 0, height);
-    veil.addColorStop(0, 'rgba(8,8,10,0.82)');
-    veil.addColorStop(0.42, 'rgba(8,8,10,0.45)');
-    veil.addColorStop(1, 'rgba(8,8,10,0.94)');
-    ctx.fillStyle = veil;
-    ctx.fillRect(0, 0, width, height);
-    const vignette = ctx.createRadialGradient(width / 2, height / 2, height * 0.3, width / 2, height / 2, height * 0.75);
-    vignette.addColorStop(0, 'rgba(0,0,0,0)');
-    vignette.addColorStop(1, 'rgba(0,0,0,0.55)');
-    ctx.fillStyle = vignette;
-    ctx.fillRect(0, 0, width, height);
-
-    // Grain léger (déterministe)
-    const rand = mulberry32(data.seed);
-    ctx.fillStyle = 'rgba(255,255,255,0.04)';
-    for (let i = 0; i < 220; i++) {
-        ctx.fillRect(rand() * width, rand() * height, 1.4, 1.4);
-    }
-
-    // Lauriers + sélection officielle
-    ctx.fillStyle = 'rgba(246,196,83,0.92)';
-    ctx.font = `800 26px ${FONT_STACK}`;
-    center(`🏆  SÉLECTION OFFICIELLE ${data.year}  🏆`, 138);
-
-    // MOVIX PRÉSENTE
-    ctx.fillStyle = 'rgba(255,255,255,0.6)';
-    ctx.font = `800 30px ${FONT_STACK}`;
-    center('M O V I X   P R É S E N T E', 252);
-
-    // Titre principal
-    ctx.fillStyle = '#ffffff';
-    ctx.font = `400 64px ${DISPLAY_FONT}`;
-    center('UNE ANNÉE DE', 392);
-    const big = data.totalHours > 0 ? `${data.totalHours} HEURES` : `${data.totalMinutes} MINUTES`;
-    const grad = ctx.createLinearGradient(140, 0, width - 140, 0);
-    grad.addColorStop(0, '#ffd7d1');
-    grad.addColorStop(0.5, '#ff7a59');
-    grad.addColorStop(1, '#f6c453');
-    ctx.fillStyle = grad;
-    ctx.font = `400 116px ${DISPLAY_FONT}`;
-    center(big, 516);
-
-    // Persona
-    ctx.fillStyle = 'rgba(255,255,255,0.85)';
-    ctx.font = `800 34px ${FONT_STACK}`;
-    center(`${data.personaEmoji}  ${data.personaTitle}`, 596);
-
-    // Bandeau posters top 3
-    const posters = await Promise.all(data.posterUrls.slice(0, 3).map(u => (u ? loadCanvasImage(u) : Promise.resolve(null))));
-    const pw = 218, ph = 326, gap = 36;
-    const totalW = pw * 3 + gap * 2;
-    let px = (width - totalW) / 2;
-    const py = 668;
-    posters.forEach((img, i) => {
-        ctx.save();
-        drawRoundedRectPath(ctx, px, py, pw, ph, 22);
-        ctx.fillStyle = 'rgba(20,20,24,0.9)';
-        ctx.fill();
-        ctx.strokeStyle = i === 0 ? 'rgba(255,122,89,0.9)' : 'rgba(255,255,255,0.18)';
-        ctx.lineWidth = 3;
-        ctx.stroke();
-        if (img) {
-            drawRoundedRectPath(ctx, px + 7, py + 7, pw - 14, ph - 14, 17);
-            ctx.clip();
-            ctx.drawImage(img, px + 7, py + 7, pw - 14, ph - 14);
-        } else {
-            ctx.fillStyle = 'rgba(255,255,255,0.6)';
-            ctx.font = `900 64px ${FONT_STACK}`;
-            ctx.fillText('🎬', px + pw / 2 - 32, py + ph / 2 + 20);
-        }
-        ctx.restore();
-        // Badge rang
-        drawRoundedRectPath(ctx, px + 12, py + 12, 56, 34, 17);
-        ctx.fillStyle = i === 0 ? '#ff7a59' : 'rgba(10,10,12,0.85)';
-        ctx.fill();
-        ctx.fillStyle = i === 0 ? '#190d0b' : '#ffffff';
-        ctx.font = `900 20px ${FONT_STACK}`;
-        ctx.fillText(`#${i + 1}`, px + 26, py + 36);
-        px += pw + gap;
-    });
-
-    // Bloc crédits façon affiche
-    let cy = 1108;
-    const creditLine = (label: string, value: string, valueSize = 26) => {
-        ctx.fillStyle = 'rgba(255,255,255,0.45)';
-        ctx.font = `800 17px ${FONT_STACK}`;
-        center(label, cy);
-        cy += 34;
-        ctx.fillStyle = 'rgba(255,255,255,0.92)';
-        ctx.font = `800 ${valueSize}px ${FONT_STACK}`;
-        const lines = wrapCanvasText(ctx, value, width - 220).slice(0, 2);
-        lines.forEach((line) => { center(line, cy); cy += valueSize + 8; });
-        cy += 18;
-    };
-
-    creditLine('AVEC', data.topTitles.slice(0, 5).join(' · ').toUpperCase(), 24);
-    creditLine('GENRE DE L\'ANNÉE', (data.topGenreName || '—').toUpperCase());
-    creditLine('UN FILM DE', 'TOI');
-
-    // Pied : stats + domaine
-    ctx.fillStyle = 'rgba(255,255,255,0.5)';
-    ctx.font = `700 22px ${FONT_STACK}`;
-    center(`${data.uniqueTitles} TITRES  ·  ${data.totalSessions} SESSIONS  ·  ${data.watchTimeLabel}`, 1492);
-    ctx.fillStyle = 'rgba(255,255,255,0.38)';
-    ctx.font = `600 24px ${FONT_STACK}`;
-    center(DEFAULT_PUBLIC_DOMAIN, 1556);
-
-    return toBlob(canvas);
-}
-
-// ────────────────────────────────────────────────────────────────────────────
-// FORMAT C — BILLET DE CINÉ (1080×1920, ticket centré)
-// ────────────────────────────────────────────────────────────────────────────
-export async function generateTicketShareImage(data: WrappedShareCardData): Promise<Blob | null> {
-    await ensureShareFonts();
-    const width = 1080, height = 1920;
-    const canvas = document.createElement('canvas');
-    canvas.width = width; canvas.height = height;
-    const ctx = canvas.getContext('2d');
-    if (!ctx) return null;
-
-    // Fond sombre + glows + stickers (cohérent avec le format story)
-    ctx.fillStyle = '#070708';
-    ctx.fillRect(0, 0, width, height);
-    const glow = ctx.createRadialGradient(width / 2, 320, 30, width / 2, 320, 560);
-    glow.addColorStop(0, 'rgba(255, 95, 86, 0.22)');
-    glow.addColorStop(1, 'rgba(255, 95, 86, 0)');
-    ctx.fillStyle = glow;
-    ctx.fillRect(0, 0, width, height);
-    const glow2 = ctx.createRadialGradient(width * 0.8, height * 0.85, 30, width * 0.8, height * 0.85, 480);
-    glow2.addColorStop(0, 'rgba(78, 205, 196, 0.16)');
-    glow2.addColorStop(1, 'rgba(78, 205, 196, 0)');
-    ctx.fillStyle = glow2;
-    ctx.fillRect(0, 0, width, height);
-    drawSeededStickers(ctx, width, height, data.seed, 28);
-
-    // Ticket papier
-    const tx = 130, ty = 290, tw = width - 260, th = 1340;
+function poster(ctx: CanvasRenderingContext2D, image: HTMLImageElement | null, x: number, y: number, w: number, h: number, fallback: string) {
     ctx.save();
-    ctx.shadowColor = 'rgba(0,0,0,0.5)';
-    ctx.shadowBlur = 60;
-    ctx.shadowOffsetY = 26;
-    drawRoundedRectPath(ctx, tx, ty, tw, th, 36);
-    ctx.fillStyle = '#f5efe2';
+    drawRoundedRectPath(ctx, x, y, w, h, 16);
+    ctx.fillStyle = '#282131';
     ctx.fill();
+    ctx.clip();
+    if (image) drawCanvasImage(ctx, image, x, y, w, h);
+    else {
+        ctx.fillStyle = PAPER;
+        drawFittedText(ctx, fallback, x + 24, y + h / 2, w - 48, 38, 3);
+    }
     ctx.restore();
+}
 
-    // Perforations latérales (cercles couleur fond)
-    ctx.fillStyle = '#070708';
-    for (let y = ty + 60; y < ty + th - 40; y += 64) {
-        ctx.beginPath(); ctx.arc(tx, y, 11, 0, Math.PI * 2); ctx.fill();
-        ctx.beginPath(); ctx.arc(tx + tw, y, 11, 0, Math.PI * 2); ctx.fill();
+function brand(ctx: CanvasRenderingContext2D, data: WrappedShareCardData, x = 72, y = 104, color = PAPER) {
+    ctx.fillStyle = color;
+    drawFittedText(ctx, 'MOVIX', x, y, 300, 46, 1, true);
+    ctx.textAlign = 'right';
+    drawFittedText(ctx, `WRAPPED ${data.year}`, 1008, y, 530, 38, 1);
+    ctx.textAlign = 'left';
+}
+
+function stats(ctx: CanvasRenderingContext2D, data: WrappedShareCardData, y: number, color = PAPER, secondary = LILAC) {
+    ctx.fillStyle = secondary;
+    drawFittedText(ctx, data.labels.watchTime, 72, y, 560, 38, 1);
+    drawFittedText(ctx, data.labels.titles, 684, y, 324, 38, 1);
+    ctx.fillStyle = color;
+    drawFittedText(ctx, data.watchTime, 72, y + 90, 560, 68, 1, true);
+    drawFittedText(ctx, data.titleCount, 684, y + 90, 324, 68, 1, true);
+}
+
+function footer(ctx: CanvasRenderingContext2D, data: WrappedShareCardData, height: number, color = PAPER) {
+    ctx.fillStyle = color;
+    drawFittedText(ctx, data.domain, 72, height - 72, 936, 38, 1);
+}
+
+function traits(ctx: CanvasRenderingContext2D, data: WrappedShareCardData, y: number, color = LILAC) {
+    if (!data.traits?.length) return;
+    ctx.fillStyle = color;
+    drawFittedText(ctx, data.traits.map(trait => trait.label).join(' · '), 72, y, 936, 26, 1, false, 400);
+}
+
+function signature(ctx: CanvasRenderingContext2D, values: number[], x: number, y: number, width: number, height: number, futureFrom: number | null) {
+    ctx.save();
+    const max = Math.max(1, ...values);
+    const step = width / 12;
+    values.forEach((value, i) => {
+        if (futureFrom && i + 1 >= futureFrom && value === 0) {
+            ctx.globalAlpha = 0.35;
+            ctx.strokeStyle = ctx.fillStyle;
+            ctx.lineWidth = 2;
+            drawRoundedRectPath(ctx, x + i * step, y + height - 12, step * 0.64, 12, 3);
+            ctx.stroke();
+            return;
+        }
+        const barHeight = Math.max(2, value / max * height);
+        ctx.globalAlpha = value > 0 ? 0.85 : 0.2;
+        drawRoundedRectPath(ctx, x + i * step, y + height - barHeight, step * 0.64, barHeight, 3);
+        ctx.fill();
+    });
+    ctx.restore();
+}
+
+export async function generateWrappedShareCard(data: WrappedShareCardData, format: WrappedShareFormat): Promise<Blob> {
+    await ensureShareFonts();
+    const width = 1080, height = format === 'poster' ? 1620 : 1920;
+    const canvas = document.createElement('canvas');
+    canvas.width = width;
+    canvas.height = height;
+    const ctx = canvas.getContext('2d');
+    if (!ctx) throw new Error('Canvas unavailable');
+    const count = format === 'ticket' ? 0 : format === 'top-five' ? 5 : format === 'story' ? 3 : 1;
+    const [images, backdrop] = await Promise.all([
+        Promise.all(data.items.slice(0, count).map(item => item.posterUrl ? loadCanvasImage(item.posterUrl) : null)),
+        format === 'story' && data.backdropUrl ? loadCanvasImage(data.backdropUrl) : Promise.resolve(null),
+    ]);
+    ctx.fillStyle = INK;
+    ctx.fillRect(0, 0, width, height);
+
+    if (format === 'ticket') {
+        ctx.fillStyle = PAPER;
+        drawRoundedRectPath(ctx, 36, 36, 1008, 1848, 20);
+        ctx.fill();
+        brand(ctx, data, 72, 128, INK);
+        ctx.fillStyle = INK;
+        drawFittedText(ctx, data.labels.ticket, 72, 278, 936, 66, 2, true);
+        drawFittedText(ctx, String(data.year), 72, 500, 936, 160, 1, true);
+        ctx.strokeStyle = '#b3a7bc';
+        ctx.lineWidth = 2;
+        ctx.setLineDash([10, 10]);
+        ctx.beginPath(); ctx.moveTo(72, 568); ctx.lineTo(1008, 568); ctx.stroke();
+        ctx.setLineDash([]);
+        ctx.fillStyle = '#55465f';
+        drawFittedText(ctx, data.labels.favorite, 72, 658, 936, 38, 1);
+        ctx.fillStyle = INK;
+        drawFittedText(ctx, data.items[0]?.title || '—', 72, 764, 936, 72, 3, true);
+        stats(ctx, data, 1160, INK, '#55465f');
+        ctx.fillStyle = '#55465f';
+        drawFittedText(ctx, data.labels.persona, 72, 1420, 936, 38, 1);
+        ctx.fillStyle = INK;
+        drawFittedText(ctx, data.persona, 72, 1512, 936, 62, 2, true);
+        traits(ctx, data, 1700, '#55465f');
+        footer(ctx, data, height, INK);
+    } else if (format === 'top-five') {
+        brand(ctx, data);
+        ctx.fillStyle = LILAC;
+        drawFittedText(ctx, data.labels.topFive, 72, 222, 936, 70, 1, true);
+        data.items.slice(0, 5).forEach((item, index) => {
+            const y = 294 + index * 244;
+            poster(ctx, images[index], 72, y, 132, 198, String(index + 1));
+            ctx.fillStyle = LILAC;
+            drawFittedText(ctx, String(index + 1).padStart(2, '0'), 242, y + 50, 90, 38, 1);
+            ctx.fillStyle = PAPER;
+            drawFittedText(ctx, item.title, 346, y + 50, 662, 50, 2);
+            ctx.fillStyle = LILAC;
+            drawFittedText(ctx, item.duration, 346, y + 174, 662, 38, 1);
+        });
+        stats(ctx, data, 1614);
+        traits(ctx, data, 1794);
+        footer(ctx, data, height);
+    } else if (format === 'story') {
+        // La carte réunit le casting de l'année ; l'aperçu utilise ce même PNG.
+        ctx.fillStyle = '#171713';
+        ctx.fillRect(0, 0, width, height);
+        if (backdrop) {
+            ctx.save();
+            ctx.globalAlpha = 0.28;
+            drawCanvasImage(ctx, backdrop, 0, 0, width, 1340, 'cover');
+            ctx.restore();
+            const veil = ctx.createLinearGradient(0, 0, 0, 1400);
+            veil.addColorStop(0, 'rgba(23,23,19,0.32)');
+            veil.addColorStop(1, '#171713');
+            ctx.fillStyle = veil;
+            ctx.fillRect(0, 0, width, 1400);
+        }
+        brand(ctx, data);
+        const gold = '#f4cc83';
+        ctx.fillStyle = gold;
+        drawFittedText(ctx, data.labels.heading, 72, 196, 936, 56, 1, true);
+        if (data.items.length) poster(ctx, images[0], 72, 276, 552, 828, data.items[0].title);
+        data.items.slice(1, 3).forEach((item, index) => {
+            const y = 276 + index * 496;
+            poster(ctx, images[index + 1], 710, y, 240, 360, item.title);
+            ctx.fillStyle = gold;
+            drawFittedText(ctx, `0${index + 2}`, 656, y + 34, 45, 28, 1, true);
+            ctx.fillStyle = PAPER;
+            drawFittedText(ctx, item.title, 710, y + 410, 298, 34, 2, true);
+        });
+        if (data.items.length) {
+            ctx.fillStyle = gold;
+            drawFittedText(ctx, data.labels.favorite, 72, 1160, 552, 32, 1);
+            ctx.fillStyle = PAPER;
+            drawFittedText(ctx, data.items[0].title, 72, 1232, 552, 62, 2, true);
+            stats(ctx, data, 1370, PAPER, gold);
+            ctx.fillStyle = PAPER;
+            drawFittedText(ctx, data.persona, 72, 1570, 936, 56, 1, true);
+        } else {
+            ctx.fillStyle = gold;
+            drawFittedText(ctx, data.labels.persona, 72, 440, 936, 38, 1);
+            ctx.fillStyle = PAPER;
+            drawFittedText(ctx, data.persona, 72, 580, 936, 128, 4, true);
+            stats(ctx, data, 1190, PAPER, gold);
+        }
+        ctx.fillStyle = gold;
+        if (data.signature.some(value => value > 0)) {
+            signature(ctx, data.signature, 72, 1660, 936, 76, data.signatureFutureFrom);
+        }
+        drawFittedText(ctx, data.period || data.signatureCaption, 72, 1780, 936, 30, 1, false, 400);
+        footer(ctx, data, height);
+    } else {
+        const compact = format === 'poster';
+        brand(ctx, data);
+        ctx.fillStyle = LILAC;
+        drawFittedText(ctx, data.labels.favorite, 72, 206, 936, 38, 1);
+        if (images[0]) {
+            const w = compact ? 432 : 504, h = w * 1.5;
+            poster(ctx, images[0], (width - w) / 2, 264, w, h, data.labels.imageUnavailable);
+            ctx.fillStyle = PAPER;
+            drawFittedText(ctx, data.items[0]?.title || data.labels.heading, 72, compact ? 1000 : 1120, 936, 74, 2, true);
+        } else {
+            // Une composition typographique reste partageable même sans affiche disponible.
+            ctx.fillStyle = LILAC;
+            drawFittedText(ctx, data.labels.heading, 72, 370, 936, 60, 2, true);
+            ctx.fillStyle = PAPER;
+            drawFittedText(ctx, data.items[0]?.title || data.persona, 72, compact ? 590 : 680, 936, 100, compact ? 4 : 5, true);
+        }
+        stats(ctx, data, compact ? 1224 : 1390);
+        ctx.fillStyle = LILAC;
+        drawFittedText(ctx, data.persona, 72, compact ? 1444 : 1640, 936, 50, compact ? 1 : 2);
+        traits(ctx, data, compact ? 1494 : 1780);
+        footer(ctx, data, height);
     }
 
-    const ink = '#1d1a16';
-    const inkSoft = 'rgba(29,26,22,0.55)';
-    const centerInTicket = (text: string, y: number) => ctx.fillText(text, tx + (tw - ctx.measureText(text).width) / 2, y);
-
-    // En-tête ticket
-    ctx.fillStyle = ink;
-    ctx.font = `400 58px ${DISPLAY_FONT}`;
-    centerInTicket(`MOVIX WRAPPED`, ty + 116);
-    ctx.font = `400 100px ${DISPLAY_FONT}`;
-    centerInTicket(String(data.year), ty + 226);
-    ctx.fillStyle = inkSoft;
-    ctx.font = `800 24px ${FONT_STACK}`;
-    centerInTicket('★  A D M I T   O N E  ★', ty + 286);
-
-    // Ligne déchirure
-    ctx.strokeStyle = 'rgba(29,26,22,0.35)';
-    ctx.lineWidth = 3;
-    ctx.setLineDash([14, 12]);
-    ctx.beginPath();
-    ctx.moveTo(tx + 40, ty + 330);
-    ctx.lineTo(tx + tw - 40, ty + 330);
-    ctx.stroke();
-    ctx.setLineDash([]);
-
-    // Champs du billet
-    let fy = ty + 412;
-    const field = (label: string, value: string, big = false) => {
-        ctx.fillStyle = inkSoft;
-        ctx.font = `800 19px ${FONT_STACK}`;
-        centerInTicket(label, fy);
-        fy += big ? 56 : 46;
-        ctx.fillStyle = ink;
-        ctx.font = big ? `900 44px ${FONT_STACK}` : `900 34px ${FONT_STACK}`;
-        const lines = wrapCanvasText(ctx, value, tw - 120).slice(0, 2);
-        lines.forEach((line) => { centerInTicket(line, fy); fy += big ? 52 : 42; });
-        fy += 30;
-    };
-
-    field('FILM / SÉRIE DE L\'ANNÉE', data.topTitles[0] ? `« ${data.topTitles[0]} »` : '—', true);
-    field('DURÉE TOTALE', data.watchTimeLabel);
-
-    // Rangée SALLE / SIÈGE / SÉANCE
-    const cols = [
-        { label: 'SALLE', value: String(data.peakMonthIndex).padStart(2, '0') },
-        { label: 'SIÈGE', value: `${data.longestStreak}J` },
-        { label: 'SÉANCE', value: data.peakHour != null ? `${data.peakHour}H` : '—' },
-    ];
-    const colW = (tw - 160) / 3;
-    cols.forEach((c, i) => {
-        const cx = tx + 80 + i * colW;
-        ctx.fillStyle = inkSoft;
-        ctx.font = `800 19px ${FONT_STACK}`;
-        ctx.fillText(c.label, cx + (colW - ctx.measureText(c.label).width) / 2, fy);
-        ctx.fillStyle = ink;
-        ctx.font = `900 46px ${FONT_STACK}`;
-        ctx.fillText(c.value, cx + (colW - ctx.measureText(c.value).width) / 2, fy + 58);
-    });
-    fy += 130;
-
-    field('GENRE', (data.topGenreName || '—').toUpperCase());
-
-    // Rangée TITRES / SESSIONS (comble l'espace mort avant le code-barres)
-    const cols2 = [
-        { label: 'TITRES', value: String(data.uniqueTitles) },
-        { label: 'SESSIONS', value: String(data.totalSessions) },
-    ];
-    const col2W = (tw - 160) / 2;
-    cols2.forEach((c, i) => {
-        const cx = tx + 80 + i * col2W;
-        ctx.fillStyle = inkSoft;
-        ctx.font = `800 19px ${FONT_STACK}`;
-        ctx.fillText(c.label, cx + (col2W - ctx.measureText(c.label).width) / 2, fy);
-        ctx.fillStyle = ink;
-        ctx.font = `900 46px ${FONT_STACK}`;
-        ctx.fillText(c.value, cx + (col2W - ctx.measureText(c.value).width) / 2, fy + 58);
-    });
-    fy += 130;
-
-    // Persona
-    ctx.fillStyle = ink;
-    ctx.font = `800 30px ${FONT_STACK}`;
-    centerInTicket(`${data.personaEmoji}  ${data.personaTitle}`, fy);
-
-    // Code-barres (seedé — barre garantie à chaque pas, gap borné : pas de gros trous)
-    const rand = mulberry32(data.seed + 7);
-    const barAreaW = tw - 240;
-    let bx = tx + 120;
-    const barY = ty + th - 196;
-    ctx.fillStyle = ink;
-    while (bx < tx + 120 + barAreaW) {
-        const bw = 2 + Math.floor(rand() * 8);
-        ctx.fillRect(bx, barY, bw, 86);
-        bx += bw + 4 + Math.floor(rand() * 6);
-    }
-    ctx.fillStyle = inkSoft;
-    ctx.font = `700 24px ${FONT_STACK}`;
-    centerInTicket(DEFAULT_PUBLIC_DOMAIN, ty + th - 66);
-
-    return toBlob(canvas);
+    return new Promise((resolve, reject) => canvas.toBlob(blob => blob ? resolve(blob) : reject(new Error('Canvas export failed')), 'image/png'));
 }

@@ -51,46 +51,52 @@
             Movix — Films et séries en streaming gratuit | VF, VOSTFR, HD
         </title>
 
-        <!-- JSON-LD -->
+        <!-- JSON-LD. Un seul objet avec @graph, pas un tableau : Safari 18+
+             injecte dans chaque page un lecteur de données structurées qui
+             suppose un objet et plante sur un tableau
+             (`r["@context"].toLowerCase`), une erreur dans la console de
+             chaque visiteur Safari. @graph est la forme recommandée par
+             schema.org et comprise par Google. -->
         <script type="application/ld+json" data-rh="true">
-            [
-                {
-                    "@context": "https://schema.org",
-                    "@type": "Organization",
-                    "name": "Movix",
-                    "alternateName": "Movix Streaming",
-                    "url": "__MOVIX_SITE_URL__",
-                    "description": "Movix est une plateforme française open-source (CC BY-NC 4.0) de streaming multimédia : films, séries, anime, TV en direct et Watch Parties synchronisées.",
-                    "logo": {
-                        "@type": "ImageObject",
-                        "url": "__MOVIX_SITE_URL__/movix.png",
-                        "width": 512,
-                        "height": 512
-                    },
-                    "sameAs": ["https://t.me/movix_site"],
-                    "contactPoint": {
-                        "@type": "ContactPoint",
-                        "contactType": "customer support",
-                        "email": "movixstreaming@gmail.com",
-                        "availableLanguage": ["French", "English"]
-                    }
-                },
-                {
-                    "@context": "https://schema.org",
-                    "@type": "WebSite",
-                    "name": "Movix",
-                    "url": "__MOVIX_SITE_URL__",
-                    "inLanguage": "fr",
-                    "potentialAction": {
-                        "@type": "SearchAction",
-                        "target": {
-                            "@type": "EntryPoint",
-                            "urlTemplate": "__MOVIX_SITE_URL__/search?q={search_term_string}"
+            {
+                "@context": "https://schema.org",
+                "@graph": [
+                    {
+                        "@type": "Organization",
+                        "name": "Movix",
+                        "alternateName": "Movix Streaming",
+                        "url": "__MOVIX_SITE_URL__",
+                        "description": "Movix est une plateforme française open-source (CC BY-NC 4.0) de streaming multimédia : films, séries, anime, TV en direct et Watch Parties synchronisées.",
+                        "logo": {
+                            "@type": "ImageObject",
+                            "url": "__MOVIX_SITE_URL__/movix.png",
+                            "width": 512,
+                            "height": 512
                         },
-                        "query-input": "required name=search_term_string"
+                        "sameAs": ["https://t.me/movix_site"],
+                        "contactPoint": {
+                            "@type": "ContactPoint",
+                            "contactType": "customer support",
+                            "email": "movixstreaming@gmail.com",
+                            "availableLanguage": ["French", "English"]
+                        }
+                    },
+                    {
+                        "@type": "WebSite",
+                        "name": "Movix",
+                        "url": "__MOVIX_SITE_URL__",
+                        "inLanguage": "fr",
+                        "potentialAction": {
+                            "@type": "SearchAction",
+                            "target": {
+                                "@type": "EntryPoint",
+                                "urlTemplate": "__MOVIX_SITE_URL__/search?q={search_term_string}"
+                            },
+                            "query-input": "required name=search_term_string"
+                        }
                     }
-                }
-            ]
+                ]
+            }
         </script>
         <script>
             // Object.hasOwn is ES2022 (Chrome 93+, Safari 15.4+, Firefox 92+). react-markdown
@@ -114,9 +120,16 @@
             }
         </script>
         <script>
+            // Rechargement de secours quand le bundle d'entrée ne charge pas :
+            // un vieux index.html (cache HTTP, edge) pointe vers un chunk hashé
+            // qui n'existe plus → 404 → page blanche, main.tsx ne démarre
+            // jamais, donc lazyWithRetry ne peut rien faire. Ce chemin ne
+            // s'exécute que quand le site est déjà cassé : on repart de zéro
+            // (SW désinscrit, caches vidés) et on recharge avec un paramètre
+            // qui contourne le cache du document. Une seule fois par session
+            // et par build, pour ne pas boucler si le HTML servi reste périmé.
             (() => {
                 const buildId = "%VITE_APP_BUILD_ID%";
-                const buildStorageKey = "movix_build_id";
                 const recoveryStorageKey = `movix_build_recovery_${buildId}`;
                 const refreshSearchParam = "movix_build_refresh";
 
@@ -154,7 +167,6 @@
                     }
 
                     try {
-                        localStorage.setItem(buildStorageKey, buildId);
                         sessionStorage.setItem(recoveryStorageKey, "done");
                     } catch {
                         // Ignore storage errors.
@@ -164,23 +176,8 @@
                 };
 
                 try {
+                    // Nettoie le paramètre laissé par un rechargement de secours.
                     const currentUrl = new URL(window.location.href);
-                    const previousBuildId =
-                        localStorage.getItem(buildStorageKey);
-                    const alreadyRecovered =
-                        sessionStorage.getItem(recoveryStorageKey) === "done";
-
-                    if (
-                        previousBuildId &&
-                        previousBuildId !== buildId &&
-                        !alreadyRecovered
-                    ) {
-                        window.__MOVIX_CACHE_RECOVERY__ = recoverClientCache();
-                        return;
-                    }
-
-                    localStorage.setItem(buildStorageKey, buildId);
-
                     if (currentUrl.searchParams.has(refreshSearchParam)) {
                         currentUrl.searchParams.delete(refreshSearchParam);
                         window.history.replaceState(
@@ -189,6 +186,13 @@
                             currentUrl.toString(),
                         );
                     }
+
+                    // Clé de l'ancienne comparaison de build en localStorage.
+                    // Supprimée : le SW ne met plus le HTML en cache, donc un
+                    // nouveau build ne peut rien servir de périmé, et cette
+                    // comparaison ne faisait que recharger deux fois et vider
+                    // tous les caches à chaque déploiement. Plus lue nulle part.
+                    localStorage.removeItem("movix_build_id");
                 } catch {
                     // Ignore storage errors.
                 }

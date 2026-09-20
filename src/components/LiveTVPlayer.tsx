@@ -2,6 +2,7 @@ import React, { useEffect, useRef, useState, useCallback } from 'react';
 import type HlsType from 'hls.js';
 import type * as DashjsType from 'dashjs';
 import type MpegtsType from 'mpegts.js';
+import { enterPlayerFullscreen, exitPlayerFullscreen, getFullscreenElement } from '@/utils/playerFullscreenPersistence';
 
 let HlsLib: typeof HlsType | null = null;
 let DashjsLib: typeof DashjsType | null = null;
@@ -39,9 +40,15 @@ import {
 } from '../utils/vavooChannelGroups';
 import { isBareIpStreamUrl } from '../utils/streamHost';
 import { isLowLatencyEnabled } from '../utils/lowLatencyPref';
+import { createFctvPlaylistLoader } from '@/utils/fctvPlaylistLoader';
+import { prepareNativeHlsStartup } from '@/utils/nativeHlsStartup';
+import { resolveStreamedNative } from '@/services/streamedService';
+import { buildStreamedPlaybackChoices, selectStreamedVariant, unwrapStreamedBytes } from '@/utils/streamedPlayback';
+import type { StreamedPlaybackChoice } from '@/types/streamed';
+import StreamedSourceSelector from '@/components/StreamedSourceSelector';
 import { useTranslation } from 'react-i18next';
 import { toast } from 'sonner';
-import { getVipHeaders } from '../utils/vipUtils';
+import { getVipHeaders, isUserVip } from '../utils/vipUtils';
 import {
     initializeCastApi,
     requestCastSession,
@@ -169,6 +176,10 @@ class ExtensionLoader {
 
         try {
             const headers: any = {};
+            if (this.config.streamedReferer) {
+                headers.Referer = this.config.streamedReferer;
+                headers.Origin = new URL(this.config.streamedReferer).origin;
+            }
             // If it's a Vavoo stream, add headers
             if (url.includes('vavoo') || url.includes('sunshine')) {
                 headers['User-Agent'] = 'VAVOO/2.6';
@@ -218,12 +229,13 @@ class ExtensionLoader {
             let byteLength: number;
             if (isPlaylist) {
                 const binaryString = atob(response.data);
-                data = binaryString;
-                byteLength = binaryString.length;
+                data = this.config.streamedReferer ? selectStreamedVariant(binaryString) : binaryString;
+                byteLength = data.length;
                 console.log(`ExtensionLoader loaded playlist (${binaryString.length} chars) for: ${url}`);
             } else {
-                const bytes = await decodeBase64ToBytes(response.data);
-                data = bytes.buffer;
+                const decoded = await decodeBase64ToBytes(response.data);
+                const bytes = this.config.streamedReferer ? unwrapStreamedBytes(decoded) : decoded;
+                data = bytes.buffer as ArrayBuffer;
                 byteLength = bytes.byteLength;
                 console.log(`ExtensionLoader loaded segment (${bytes.byteLength} bytes) for: ${url}`);
             }
@@ -265,7 +277,7 @@ class ExtensionLoader {
     }
 }
 
-interface Stream {
+interface Stream extends StreamedPlaybackChoice {
     url: string;
     // Variante proxifiée et signée par mainapi, jointe d'office à chaque flux.
     // Le client ne peut pas la fabriquer lui-même : proxiesembed n'accepte que
@@ -276,7 +288,8 @@ interface Stream {
         notWebReady?: boolean;
         bingeGroup?: string;
     };
-    _isEmbed?: boolean;
+    _streamedResolved?: boolean;
+    _streamedExtension?: boolean;
     _embedPath?: string;
     _directPlay?: boolean; // Play the raw URL as-is: no proxy, no extension loader (Vavoo)
     _vavooVariantId?: string;
@@ -690,8 +703,9 @@ const LiveTVPlayer: React.FC<LiveTVPlayerProps> = ({
         const isNorthlive = requestedChannelId.startsWith('northlive');
         const isMatch = requestedChannelId.startsWith('match');
         const isVavoo = requestedChannelId.startsWith('vavoo');
+        const isStreamed = requestedChannelId.startsWith('streamed_');
 
-        if (isExtensionAvailable() && !isNorthlive && !isMatch && !isVavoo) {
+        if (isExtensionAvailable() && !isNorthlive && !isMatch && !isVavoo && !isStreamed) {
             const srcKey = requestedChannelId.split('_')[0] as LiveTvSourceKey;
             if (!isLiveTvSourceEnabled(srcKey)) {
                 const disabledError = new Error(t('liveTV.sourceDisabledByUser', { source: srcKey })) as Error & { isDisabledByUser?: boolean };
@@ -805,7 +819,7 @@ const LiveTVPlayer: React.FC<LiveTVPlayerProps> = ({
             // encore publié » — d'où les tentatives espacées. Sur un match
             // c'est autre chose : le backend vient d'interroger l'amont et
             // n'a trouvé aucun serveur. Insister n'apporte rien, on abrège.
-            const maxAttempts = channelId.startsWith('match_') ? 3 : MAX_404_RETRIES;
+            const maxAttempts = channelId.startsWith('match_') || channelId.startsWith('streamed_') ? 3 : MAX_404_RETRIES;
 
             for (let attempt = 0; attempt < maxAttempts && !loaded; attempt++) {
                 try {
@@ -822,7 +836,9 @@ const LiveTVPlayer: React.FC<LiveTVPlayerProps> = ({
                         throw emptyStreamsError;
                     }
 
-                    setStreams(validStreams);
+                    setStreams(buildStreamedPlaybackChoices(validStreams, isUserVip() || isExtensionAvailable(), {
+                        embed: t('liveTV.streamedEmbedPlayer'), native: t('liveTV.streamedNativePlayer'),
+                    }));
                     setCurrentStreamIndex(0);
                     loaded = true;
                 } catch (innerErr: any) {
@@ -1016,6 +1032,34 @@ const LiveTVPlayer: React.FC<LiveTVPlayerProps> = ({
     }, [currentStreamIndex, isVavooResolving, streams.length]);
 
     const playbackStream = streams[currentStreamIndex];
+    const hasStreamedChoices = !!playbackStream?._streamedKey;
+
+    useEffect(() => {
+        // Une réinitialisation du même lecteur ne doit pas réarmer les retries.
+        levelParsingRetryRef.current = 0;
+    }, [channelId, playbackStream]);
+
+    useEffect(() => {
+        if (!playbackStream?._streamedNative || playbackStream._streamedResolved) return;
+        const controller = new AbortController();
+        setIsLoading(true);
+        setError(null);
+        void resolveStreamedNative(channelId, playbackStream._streamedNative, controller.signal)
+            .then(result => {
+                if (controller.signal.aborted) return;
+                setStreams(previous => previous.map(stream => stream === playbackStream ? {
+                    ...stream, url: result.url, referer: result.referer,
+                    _streamedResolved: true, _streamedExtension: result.extension,
+                    _directPlay: !result.extension,
+                } : stream));
+            })
+            .catch(() => {
+                if (controller.signal.aborted) return;
+                setIsLoading(false);
+                setError(t('liveTV.streamedNativeError'));
+            });
+        return () => controller.abort();
+    }, [channelId, playbackStream, t]);
 
     // Déclaré ici, et pas au plus près du rendu : plusieurs effets plus bas
     // lisent `isEmbedStream` dans leur tableau de dépendances, évalué pendant
@@ -1032,6 +1076,7 @@ const LiveTVPlayer: React.FC<LiveTVPlayerProps> = ({
         const streamUrl = currentStream?.url;
 
         if (!streamUrl) return;
+        if (currentStream._streamedNative && !currentStream._streamedResolved) return;
 
         // If it's an embed, we don't need to initialize HLS/Dash/MPEGTS players
         if (currentStream._isEmbed) {
@@ -1070,6 +1115,7 @@ const LiveTVPlayer: React.FC<LiveTVPlayerProps> = ({
         setShowControls(true);
 
         let cancelled = false;
+        let cleanupNativeHls: (() => void) | undefined;
         const isDash = streamUrl.endsWith('.mpd');
 
         // Check if we should force proxy (e.g. for HTTP streams or specific providers)
@@ -1102,14 +1148,15 @@ const LiveTVPlayer: React.FC<LiveTVPlayerProps> = ({
         const isWiflixStream = !!currentStream.originalUrl || streamUrl.includes('lansdrud.space') || streamUrl.includes('livetvde.net');
 
         // Check if URL is already proxied (to prevent double-proxying)
-        const isAlreadyProxied = streamUrl.includes('proxiesembed') || streamUrl.includes('/proxy?url=');
+        const isStreamedRelay = !!currentStream._streamedNative && !currentStream._streamedExtension;
+        const isAlreadyProxied = isStreamedRelay || streamUrl.includes('proxiesembed') || streamUrl.includes('/proxy?url=');
 
         const isPageHttps = window.location.protocol === 'https:';
 
         // Determine if extension will handle this stream (via Blob proxy)
         // Wiflix streams with extension should use originalUrl (unproxied) + ExtensionLoader
         const extensionHandlesStream = !forceDirect && effectiveExtensionAvailable
-            && (isHttp || isVavooStream || isWiflixStream || isBareIpDirectServer);
+            && (isHttp || isVavooStream || isWiflixStream || isBareIpDirectServer || currentStream._streamedExtension);
 
         // Force REMOTE proxy (proxiesembed) ONLY if:
         // 1. FamilyRestream/TF1 (always use remote proxy for these)
@@ -1301,13 +1348,20 @@ const LiveTVPlayer: React.FC<LiveTVPlayerProps> = ({
             // This routes ALL network requests through the extension (blob proxy)
             if (extensionHandlesStream) {
                 hlsConfig.loader = ExtensionLoader;
+                if (currentStream._streamedExtension) hlsConfig.streamedReferer = currentStream.referer;
                 console.log("HLS: Using ExtensionLoader (Blob Proxy) for HTTP/Vavoo/Wiflix stream");
-            } else if ((shouldForceProxy && !extensionHandlesStream) || (isAlreadyProxied && streamUrl.includes('proxiesembed'))) {
+            } else if (!isStreamedRelay && ((shouldForceProxy && !extensionHandlesStream) || (isAlreadyProxied && streamUrl.includes('proxiesembed')))) {
                 // Keep the top-level manifest on the proxy URL without overriding child playlist URLs.
                 hlsConfig.loader = ProxyLoader;
                 console.log("HLS: Using ProxyLoader (keep manifest requests on proxy URL)");
             } else {
+                // Streamed réécrit aussi les playlists enfants : le loader natif
+                // doit garder leur URL, même avec une seule variante dans le master.
                 console.log("HLS: Using default loader");
+            }
+
+            if (channelId.startsWith('match_')) {
+                hlsConfig.pLoader = createFctvPlaylistLoader(hlsConfig.loader || Hls.DefaultConfig.loader);
             }
 
             const hls = new Hls(hlsConfig);
@@ -1321,7 +1375,8 @@ const LiveTVPlayer: React.FC<LiveTVPlayerProps> = ({
                 hls404RetryRef.current = 0;
                 hls458RetryRef.current = 0;
                 bufferAppendRetryRef.current = 0;
-                levelParsingRetryRef.current = 0;
+                // Un master valide ne garantit pas que sa playlist vidéo l'est.
+                // Le budget de parsing est réarmé seulement par LEVEL_LOADED.
                 hlsRecoveryInFlightRef.current = false;
                 ProxyLoader._forceLevelReloads = hls.levels.length === 1 && !hls.audioTracks?.length;
                 setIsLoading(false);
@@ -1500,8 +1555,8 @@ const LiveTVPlayer: React.FC<LiveTVPlayerProps> = ({
                     return;
                 }
 
-                // levelParsingError (media sequence mismatch) — récupérable sur les live streams
-                // Le proxy peut retourner un manifeste avec un numéro de séquence décalé
+                // Deux resynchronisations et une réinitialisation au maximum,
+                // même si le master se recharge mais que la playlist reste invalide.
                 if (data.details === 'levelParsingError' && data.fatal) {
                     levelParsingRetryRef.current += 1;
                     if (levelParsingRetryRef.current <= 2) {
@@ -1515,7 +1570,6 @@ const LiveTVPlayer: React.FC<LiveTVPlayerProps> = ({
                         return;
                     }
                     console.log('[HLS] levelParsingError persists after live resync + reinit, giving up');
-                    levelParsingRetryRef.current = 0;
                     // Fall through to generic fatal handler
                 }
 
@@ -1590,17 +1644,19 @@ const LiveTVPlayer: React.FC<LiveTVPlayerProps> = ({
             });
             } else if (video.canPlayType('application/vnd.apple.mpegurl')) {
                 // Safari native HLS
-                video.src = finalUrl;
-                video.addEventListener('loadedmetadata', () => {
+                cleanupNativeHls = prepareNativeHlsStartup(video, channelId.startsWith('match_'), () => {
+                    if (cancelled) return;
                     setIsLoading(false);
                     video.play().catch(console.error);
                 });
+                video.src = finalUrl;
             }
         }
         })();
 
         return () => {
             cancelled = true;
+            cleanupNativeHls?.();
             // Reset watchdog state on stream change
             stallCountRef.current = 0;
             lastTimeRef.current = 0;
@@ -1864,28 +1920,32 @@ const LiveTVPlayer: React.FC<LiveTVPlayerProps> = ({
 
     // Fullscreen handling
     useEffect(() => {
+        const video = videoRef.current;
         const handleFullscreenChange = () => {
-            setIsFullscreen(!!document.fullscreenElement);
+            setIsFullscreen(!!getFullscreenElement() || !!(video as HTMLVideoElement & { webkitDisplayingFullscreen?: boolean } | null)?.webkitDisplayingFullscreen);
             setShowControls(true);
         };
 
-        document.addEventListener('fullscreenchange', handleFullscreenChange);
-        return () => document.removeEventListener('fullscreenchange', handleFullscreenChange);
-    }, []);
+        const events = ['fullscreenchange', 'webkitfullscreenchange', 'mozfullscreenchange', 'MSFullscreenChange'];
+        events.forEach(event => document.addEventListener(event, handleFullscreenChange));
+        video?.addEventListener('webkitbeginfullscreen', handleFullscreenChange);
+        video?.addEventListener('webkitendfullscreen', handleFullscreenChange);
+        handleFullscreenChange();
+        return () => {
+            events.forEach(event => document.removeEventListener(event, handleFullscreenChange));
+            video?.removeEventListener('webkitbeginfullscreen', handleFullscreenChange);
+            video?.removeEventListener('webkitendfullscreen', handleFullscreenChange);
+        };
+    }, [isEmbedStream]);
 
     const toggleFullscreen = async () => {
-        // Fallback pour iPhone (iOS)
-        if (videoRef.current && (videoRef.current as any).webkitEnterFullscreen) {
-            (videoRef.current as any).webkitEnterFullscreen();
-            return;
-        }
-
-        if (!containerRef.current) return;
-
-        if (!document.fullscreenElement) {
-            await containerRef.current.requestFullscreen();
+        const video = videoRef.current as HTMLVideoElement & { webkitDisplayingFullscreen?: boolean } | null;
+        if (getFullscreenElement() || video?.webkitDisplayingFullscreen) {
+            await exitPlayerFullscreen(video);
         } else {
-            await document.exitFullscreen();
+            // Le helper gère les API préfixées, leur absence (notamment les
+            // embeds sur iPhone) et le refus natif avant les métadonnées.
+            await enterPlayerFullscreen({ container: containerRef.current, video });
         }
     };
 
@@ -1916,9 +1976,18 @@ const LiveTVPlayer: React.FC<LiveTVPlayerProps> = ({
         }
     };
 
-    const handleServerChange = (index: number) => {
+    const handleServerChange = (index: number, keepSettingsOpen = false) => {
+        if (!streams[index]) return;
+        if (index === currentStreamIndex && !error) {
+            if (!keepSettingsOpen) setShowSettings(false);
+            return;
+        }
+        setError(null);
+        setStreams(previous => previous.map((stream, streamIndex) => streamIndex === index && stream._streamedNative
+            ? { ...stream, url: stream._streamedNative.embedUrl, _streamedResolved: false }
+            : stream));
         setCurrentStreamIndex(index);
-        setShowSettings(false);
+        setShowSettings(keepSettingsOpen);
         setIsLoading(true);
         resetPauseState();
     };
@@ -2075,6 +2144,13 @@ const LiveTVPlayer: React.FC<LiveTVPlayerProps> = ({
             initial={{ opacity: 0 }}
             animate={{ opacity: 1 }}
             exit={{ opacity: 0 }}
+            transition={{
+                duration: 0.15,
+                ease: [0.23, 1, 0.32, 1],
+            }}
+            // Framer 11 rétablit sinon l'opacité 1 une image à la fin
+            // de sa sortie native, provoquant un flash noir avant le retrait.
+            onUpdate={() => undefined}
             className={`fixed inset-0 z-[12000] flex items-center justify-center bg-black ${shouldHideCursor ? 'cursor-none' : ''}`}
             ref={containerRef}
             onPointerMove={isEmbedStream ? undefined : handleMouseMove}
@@ -2144,7 +2220,7 @@ const LiveTVPlayer: React.FC<LiveTVPlayerProps> = ({
                             </button>
 
                             <p className="min-w-0 flex-1 truncate text-center text-sm font-semibold text-white/90">
-                                {activeStream?.title || channelName}
+                                {hasStreamedChoices ? channelName : activeStream?.title || channelName}
                             </p>
 
                             <div className="pointer-events-auto flex items-center gap-1.5">
@@ -2159,10 +2235,12 @@ const LiveTVPlayer: React.FC<LiveTVPlayerProps> = ({
                                 {streams.length > 1 && (
                                     <button
                                         onClick={() => setShowSettings(true)}
-                                        className="rounded-lg bg-black/50 p-2 text-white shadow-lg backdrop-blur-sm transition-colors hover:bg-black/70"
+                                        className="flex items-center gap-2 rounded-lg bg-black/50 p-2 text-white shadow-lg backdrop-blur-sm transition-colors hover:bg-black/70"
                                         title={t('watch.sources')}
+                                        aria-expanded={showSettings}
                                     >
                                         <Settings size={18} />
+                                        {hasStreamedChoices && <span className="text-sm">{t('liveTV.streamedServers')}</span>}
                                     </button>
                                 )}
 
@@ -2266,7 +2344,15 @@ const LiveTVPlayer: React.FC<LiveTVPlayerProps> = ({
                             className="flex w-full max-w-3xl flex-col items-center gap-4 rounded-3xl border border-white/10 bg-neutral-950/85 px-6 py-7 shadow-2xl"
                         >
                     <p className="text-white text-lg text-center px-4 max-w-lg">{error}</p>
-                    <div className="flex gap-4">
+                    <div className="flex flex-wrap justify-center gap-3">
+                        {playbackStream?._streamedNative && (
+                            <button
+                                onClick={() => handleServerChange(streams.findIndex(stream => stream._isEmbed && stream._streamedKey === playbackStream._streamedKey))}
+                                className="px-4 py-2 bg-red-600 hover:bg-red-700 rounded-lg transition-colors"
+                            >
+                                {t('liveTV.streamedTryEmbed')}
+                            </button>
+                        )}
                         <button
                             onClick={onClose}
                             className="px-4 py-2 bg-gray-600 hover:bg-gray-700 rounded-lg transition-colors"
@@ -2296,7 +2382,15 @@ const LiveTVPlayer: React.FC<LiveTVPlayerProps> = ({
                     </div>
 
                     {/* Source Selector in Error Screen */}
-                    {streams.length > 1 && (
+                    {streams.length > 1 && (hasStreamedChoices ? (
+                        <button
+                            onClick={() => setShowSettings(true)}
+                            className="flex min-h-11 items-center gap-2 rounded-lg px-3 py-2 text-sm text-gray-300 transition-colors hover:bg-white/10 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-red-400"
+                        >
+                            <Settings size={16} />
+                            {t('liveTV.streamedChangeServer')}
+                        </button>
+                    ) : (
                         <div className="flex flex-col items-center gap-2 mt-4">
                             <span className="text-gray-400 text-sm">{t('liveTV.changeSource')}</span>
                             <div className="flex flex-wrap gap-2 justify-center max-w-lg">
@@ -2319,7 +2413,7 @@ const LiveTVPlayer: React.FC<LiveTVPlayerProps> = ({
                                 ))}
                             </div>
                         </div>
-                    )}
+                    ))}
                         </motion.div>
                     </motion.div>
                 )}
@@ -2436,9 +2530,12 @@ const LiveTVPlayer: React.FC<LiveTVPlayerProps> = ({
                                 >
                                     <button
                                         onClick={(e) => { e.stopPropagation(); setShowSettings(!showSettings); }}
-                                        className="p-2 hover:bg-white/10 rounded-full transition-colors cursor-pointer text-white"
+                                        className="flex items-center gap-2 rounded-full p-2 text-white transition-colors hover:bg-white/10"
+                                        title={t('watch.sources')}
+                                        aria-expanded={showSettings}
                                     >
                                         <Settings size={24} className={`transition-transform duration-300 ${showSettings ? 'rotate-180' : ''}`} />
+                                        {hasStreamedChoices && <span className="text-sm">{t('liveTV.streamedServers')}</span>}
                                     </button>
                                 </motion.div>
                             )}
@@ -2500,30 +2597,37 @@ const LiveTVPlayer: React.FC<LiveTVPlayerProps> = ({
                 {showSettings && streams.length > 1 && (
                     <motion.div
                         key="settings-panel"
-                        initial={{ opacity: 0, width: 0 }}
-                        animate={{ opacity: 1, width: 280 }}
-                        exit={{ opacity: 0, width: 0 }}
+                        initial={{ opacity: 0, x: '100%' }}
+                        animate={{ opacity: 1, x: 0 }}
+                        exit={{ opacity: 0, x: '100%' }}
                         transition={{ duration: 0.3, ease: [0.25, 1, 0.5, 1] }}
-                        style={{ height: '100%', position: 'absolute', top: 0, right: 0, bottom: 0, maxWidth: '90vw' }}
-                        className="bg-black/95 z-[10002] flex flex-col border-l border-gray-800 shadow-xl"
+                        onUpdate={() => undefined}
+                        role="region"
+                        aria-label={hasStreamedChoices ? t('liveTV.streamedServers') : t('liveTV.server')}
+                        onKeyDown={event => { if (event.key !== 'Escape') event.stopPropagation(); }}
+                        className={`absolute inset-y-0 right-0 z-[10002] flex max-w-[90vw] flex-col border-l border-gray-800 ${hasStreamedChoices ? 'w-80 bg-neutral-950' : 'w-[280px] bg-black/95'}`}
                     >
                         {/* Header */}
                         <div className="flex items-center justify-between px-4 py-3 border-b border-gray-800">
                             <h3 className="text-white text-sm font-medium">
-                                {t('liveTV.server')}
+                                {hasStreamedChoices ? t('liveTV.streamedServers') : t('liveTV.server')}
                             </h3>
                             <button
                                 onClick={() => setShowSettings(false)}
-                                className="p-1 hover:bg-white/10 rounded-full transition-colors cursor-pointer text-gray-400 hover:text-white"
+                                aria-label={t('common.close')}
+                                autoFocus
+                                className="flex min-h-11 min-w-11 items-center justify-center rounded-full text-gray-400 transition-colors hover:bg-white/10 hover:text-white focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-red-400"
                             >
                                 <X size={18} />
                             </button>
                         </div>
 
                         {/* Server list */}
-                        <div className="flex-1 overflow-y-auto p-2 space-y-4" data-lenis-prevent>
-                            {streams.length > 1 && (
-                                <div>
+                        <div className="min-h-0 flex-1 overflow-y-auto overscroll-contain" data-lenis-prevent>
+                            {hasStreamedChoices ? (
+                                <StreamedSourceSelector streams={streams} currentStreamIndex={currentStreamIndex} onChange={handleServerChange} />
+                            ) : (
+                                <div className="p-2">
                                     <div className="space-y-1">
                             {streams.map((stream, index) => (
                                 <button

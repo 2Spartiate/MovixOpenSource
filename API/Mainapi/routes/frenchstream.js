@@ -1,6 +1,6 @@
 /**
  * FrenchStream helper module.
- * Extracted from server.js -- provides scraping functions for FrenchStream.
+ * Extracted from server.js -- retrieves Omega sources directly from FrenchCloud.
  * This is NOT an Express router; it exports plain functions used by tmdb.js.
  */
 
@@ -8,11 +8,11 @@ const cheerio = require('cheerio');
 const axios = require('axios');
 
 const FRENCHSTREAM_BASE_URL = 'https://frenchstream.food';
+const FRENCHCLOUD_BASE_URL = 'https://frenchcloud.cam';
 
 // ---------------------------------------------------------------------------
 // Dependencies injected via configure()
 // ---------------------------------------------------------------------------
-let makeRequestWithCorsFallback;
 let axiosFrenchStreamRequest;
 let findTvSeriesOnTMDB;
 
@@ -20,9 +20,38 @@ let findTvSeriesOnTMDB;
  * Inject runtime dependencies that still live in server.js.
  */
 function configure(deps) {
-  if (deps.makeRequestWithCorsFallback) makeRequestWithCorsFallback = deps.makeRequestWithCorsFallback;
   if (deps.axiosFrenchStreamRequest) axiosFrenchStreamRequest = deps.axiosFrenchStreamRequest;
   if (deps.findTvSeriesOnTMDB) findTvSeriesOnTMDB = deps.findTvSeriesOnTMDB;
+}
+
+function getFrenchCloudUrl(type, imdbId) {
+  // Conserver les zéros initiaux de l'identifiant IMDb.
+  const id = String(imdbId).replace(/^tt/i, '');
+  if (!/^\d+$/.test(id)) throw new Error('Identifiant IMDb invalide');
+  return `${FRENCHCLOUD_BASE_URL}/${type}/${id}`;
+}
+
+function requestFrenchCloud(url) {
+  return axios.get(url, {
+    headers: {
+      'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36',
+      'Referer': `${FRENCHCLOUD_BASE_URL}/`,
+    },
+    timeout: 15000,
+    decompress: true,
+  });
+}
+
+function normalizeFrenchCloudPlayerLink(value) {
+  if (!value?.trim()) return null;
+  try {
+    const url = new URL(value, FRENCHCLOUD_BASE_URL);
+    if (!['http:', 'https:'].includes(url.protocol) ||
+        url.hostname === 'frenchcloud.cam' || url.hostname.endsWith('.frenchcloud.cam')) return null;
+    return url.href;
+  } catch {
+    return null;
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -30,78 +59,24 @@ function configure(deps) {
 // ---------------------------------------------------------------------------
 async function getFrenchStreamMovie(imdbId) {
   try {
-    const searchUrl = `${FRENCHSTREAM_BASE_URL}/xfsearch/${imdbId}`;
-
-    const searchResponse = await makeRequestWithCorsFallback(searchUrl, { timeout: 5000, decompress: true });
-    const $search = cheerio.load(searchResponse.data);
-
-    // Find the movie link in search results
-    let movieLink = null;
-    $search('.short').each((index, element) => {
-      const $element = $search(element);
-      const link = $element.find('.short-poster').attr('href');
-      if (link && !movieLink) {
-        movieLink = link;
-      }
-    });
-
-    if (!movieLink) {
-      return { error: 'Movie not found on FrenchStream' };
-    }
-
-    const movieResponse = await makeRequestWithCorsFallback(movieLink, { timeout: 5000, decompress: true });
-    const $movie = cheerio.load(movieResponse.data);
-
-    // Extract iframe src using the specified XPath logic
-    let iframeSrc = $movie('body > div:nth-child(2) > div:nth-child(1) > div > article > div:nth-child(1) > div > div > div:nth-child(1) > div > div > div > iframe').attr('src');
-
-    if (!iframeSrc) {
-      // Fallback selectors
-      iframeSrc = $movie('iframe[src*="frenchcloud.cam"]').attr('src');
-    }
-
-    if (!iframeSrc) {
-      // Try finding it in the tabs content if the structure is slightly different
-      iframeSrc = $movie('.tabs-content iframe').attr('src');
-    }
-
-    if (!iframeSrc) {
-      return { error: 'Iframe not found on movie page' };
-    }
-
-    // Fetch the iframe content (FrenchCloud page)
-    const iframeResponse = await axios.get(iframeSrc, {
-      headers: {
-        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36',
-        'Referer': `${FRENCHSTREAM_BASE_URL}/`
-      },
-      timeout: 15000,
-      decompress: true
-    });
+    const iframeSrc = getFrenchCloudUrl('film', imdbId);
+    const iframeResponse = await requestFrenchCloud(iframeSrc);
 
     const $iframe = cheerio.load(iframeResponse.data);
+    if (!$iframe('._player').length) throw new Error('Page FrenchCloud invalide');
     const playerLinks = [];
 
-    $iframe('._player-mirrors li').each((index, element) => {
+    $iframe('._source_list li[data-link], ._player-mirrors li[data-link]').each((index, element) => {
       const $element = $iframe(element);
-      const dataLink = $element.attr('data-link');
+      const link = normalizeFrenchCloudPlayerLink($element.attr('data-link'));
       const playerName = $element.text().trim();
       const isHD = $element.hasClass('fullhd');
 
-      // Skip links that contain frenchcloud.cam (often the embed itself)
-      if (!dataLink || dataLink.includes('frenchcloud.cam')) {
-        return;
-      }
-
-      // Add protocol to links that start with //
-      let formattedLink = dataLink;
-      if (dataLink.startsWith('//')) {
-        formattedLink = 'https:' + dataLink;
-      }
+      if (!link || playerLinks.some(player => player.link === link)) return;
 
       playerLinks.push({
         player: playerName,
-        link: formattedLink,
+        link,
         is_hd: isHD
       });
     });
@@ -112,6 +87,7 @@ async function getFrenchStreamMovie(imdbId) {
     };
 
   } catch (error) {
+    if (error.response?.status === 404) return { error: 'Movie not found on FrenchCloud' };
     return { error: `Failed to fetch movie data: ${error.message}` };
   }
 }
@@ -121,53 +97,21 @@ async function getFrenchStreamMovie(imdbId) {
 // ---------------------------------------------------------------------------
 async function getFrenchStreamSeries(id) {
   try {
-    const targetUrl = `${FRENCHSTREAM_BASE_URL}/xfsearch/${id}`;
+    const link = getFrenchCloudUrl('serial', id);
+    const details = await getFrenchStreamSeriesDetails(link, id);
+    if (details.error) return details;
+    const episodeCount = details.seasons.reduce((count, season) => count + season.episodes.length, 0);
+    if (!episodeCount) return [];
 
-    const response = await makeRequestWithCorsFallback(targetUrl, {
-      timeout: 5000,
-      decompress: true
-    });
-
-    const $ = cheerio.load(response.data);
-
-    // Find all series in the search results
-    const seriesList = [];
-    $('.short').each(async (index, element) => {
-      try {
-        const $element = $(element);
-        const link = $element.find('.short-poster').attr('href');
-        const title = $element.find('.short-title').text().trim();
-
-        // Skip items that don't have "saison" in their title
-        if (!title.toLowerCase().includes('saison')) {
-          return;
-        }
-
-        const posterImg = $element.find('.short-poster img').attr('src');
-        const poster = posterImg ? (posterImg.startsWith('/') ? `${FRENCHSTREAM_BASE_URL}${posterImg}` : posterImg) : null;
-        const audioType = $element.find('.film-verz a').text().trim();
-
-        // Extract episode count if available
-        let episodeCount = null;
-        const episodeElement = $element.find('.mli-eps i');
-        if (episodeElement.length > 0) {
-          episodeCount = parseInt(episodeElement.text().trim());
-        }
-
-        seriesList.push({
-          title,
-          link,
-          poster,
-          audio_type: audioType,
-          episode_count: episodeCount,
-          seasons: []  // Will be populated later for each series
-        });
-      } catch (error) {
-        console.error(`Error parsing series element:`, error);
-      }
-    });
-
-    return seriesList;
+    const languages = new Set(details.seasons.flatMap(season =>
+      season.episodes.flatMap(episode => Object.keys(episode.versions))));
+    return [{
+      ...details,
+      link,
+      poster: null,
+      audio_type: [...languages].map(language => language.toUpperCase()).join(' / '),
+      episode_count: episodeCount,
+    }];
   } catch (error) {
     return { error: `Erreur lors de la recuperation des series: ${error.message}` };
   }
@@ -178,322 +122,70 @@ async function getFrenchStreamSeries(id) {
 // ---------------------------------------------------------------------------
 async function getFrenchStreamSeriesDetails(seriesUrl, originalTitle) {
   try {
-    // Convertir les anciens domaines FrenchStream vers le domaine actif.
-    const targetUrl = seriesUrl
-      .replace('fr.french-stream.sbs', 'frenchstream.food')
-      .replace('french-stream.gratis', 'frenchstream.food')
-      .replace('french-stream.legal', 'frenchstream.food')
-      .replace('french-stream.one', 'frenchstream.food');
-
-    const response = await makeRequestWithCorsFallback(targetUrl, {
-      timeout: 5000,
-      decompress: true
-    });
-
+    const response = await requestFrenchCloud(seriesUrl);
     const $ = cheerio.load(response.data);
+    if (!$('._root').length) throw new Error('Page FrenchCloud invalide');
 
-    const seriesTitle = originalTitle;
-
-    // Extract release date from <span class="release"> 2023 - </span>
-    let releaseDate = null;
-
-    // Essayer plusieurs selecteurs possibles pour la date de sortie
-    const releaseSelectors = [
-      'article div.fmain div.fleft div.poster span.release',
-      'span.release',
-      'article div.container div div span.release',
-      'div.poster span.release',
-      '.release'
-    ];
-
-    // Essayer chaque selecteur jusqu'a ce qu'on trouve la date
-    for (const selector of releaseSelectors) {
-      const releaseElement = $(selector);
-      if (releaseElement.length > 0) {
-        const releaseDateText = releaseElement.text().trim();
-        // Extract year from text like "2023 - "
-        const yearMatch = releaseDateText.match(/(\d{4})/);
-        if (yearMatch) {
-          releaseDate = yearMatch[1];
-          break;
-        }
-      }
-    }
-
-    // Si toujours pas trouve, chercher dans toute la page
-    if (!releaseDate) {
-      // Chercher tout texte contenant 4 chiffres qui pourrait etre une annee
-      const allText = $('body').text();
-      const yearMatches = allText.match(/\b(19\d{2}|20\d{2})\b/g);
-      if (yearMatches && yearMatches.length > 0) {
-        // Prendre la premiere annee trouvee dans la page
-        releaseDate = yearMatches[0];
-      }
-    }
-
-    // Extract summary from <p> inside #s-desc element
-    let summary = null;
-
-    // Essayer differentes approches pour trouver le resume
-    const summarySelectorApproaches = [
-      // Approche 1: XPath complet converti en selecteur CSS
-      () => {
-        const summaryElement = $('body > div:nth-child(2) > div > div > article > div:nth-child(3) > div:nth-child(1) > div:nth-child(1) > div:nth-child(2) > p:nth-child(2)');
-        return summaryElement.length > 0 ? summaryElement.text().trim() : null;
-      },
-
-      // Approche 2: Recherche dans la zone principale du contenu
-      () => {
-        const mainContent = $('.finfo, .fcontent, .fdesc, #s-desc');
-        if (mainContent.length > 0) {
-          const paragraphs = mainContent.find('p');
-          // Recuperer le paragraphe le plus long (probablement le resume)
-          let longestText = "";
-          paragraphs.each((i, el) => {
-            const text = $(el).text().trim();
-            if (text.length > longestText.length &&
-              !text.includes("Resume du film") &&
-              !text.includes("streaming complet")) {
-              longestText = text;
-            }
-          });
-          return longestText.length > 100 ? longestText : null;
-        }
-        return null;
-      },
-
-      // Approche 3: Recherche par mots-cles
-      () => {
-        // Mots-cles qui indiquent probablement un resume
-        const summaryKeywords = ["histoire", "serie", "saison", "episode", "personnage", "aventure"];
-        const paragraphs = $('p');
-        let bestMatch = null;
-        let bestScore = 0;
-
-        paragraphs.each((i, el) => {
-          const text = $(el).text().trim();
-          if (text.length < 100) return; // Trop court pour etre un resume
-
-          // Calculer un score base sur les mots-cles presents
-          let score = 0;
-          const lowerText = text.toLowerCase();
-          summaryKeywords.forEach(keyword => {
-            if (lowerText.includes(keyword)) score++;
-          });
-
-          // Bonus pour la longueur (resumes typiquement plus longs)
-          score += Math.min(text.length / 200, 3);
-
-          // Malus pour les textes generiques
-          if (text.includes("streaming") || text.includes("vostfr") ||
-            text.includes("gratuit") || text.includes("Resume du film")) {
-            score -= 5;
-          }
-
-          if (score > bestScore) {
-            bestScore = score;
-            bestMatch = text;
-          }
-        });
-
-        return bestScore > 2 ? bestMatch : null;
-      },
-
-      // Approche 4: Recherche directe du texte apres les divs de metadonnees
-      () => {
-        // Trouver une div qui contient la date de sortie, puis chercher un paragraphe apres
-        const releaseDiv = $('span.release').closest('div');
-        if (releaseDiv.length > 0) {
-          // Chercher le premier paragraphe substantiel apres cette div
-          let currentElement = releaseDiv;
-          let found = false;
-
-          // Parcourir jusqu'a 10 elements suivants
-          for (let i = 0; i < 10 && !found; i++) {
-            currentElement = currentElement.next();
-            if (currentElement.length === 0) break;
-
-            // Si c'est un paragraphe, verifier son contenu
-            if (currentElement.is('p')) {
-              const text = currentElement.text().trim();
-              if (text.length > 100 &&
-                !text.includes("Resume du film") &&
-                !text.includes("streaming complet")) {
-                found = true;
-                return text;
-              }
-            }
-
-            // Si c'est une div, chercher des paragraphes a l'interieur
-            const innerP = currentElement.find('p');
-            if (innerP.length > 0) {
-              const text = innerP.first().text().trim();
-              if (text.length > 100 &&
-                !text.includes("Resume du film") &&
-                !text.includes("streaming complet")) {
-                found = true;
-                return text;
-              }
-            }
-          }
-        }
-        return null;
-      }
-    ];
-
-    // Essayer chaque approche jusqu'a trouver un resume
-    for (const approach of summarySelectorApproaches) {
-      try {
-        const result = approach();
-        if (result) {
-          summary = result;
-          break;
-        }
-      } catch (error) {
-        console.error(`Erreur lors de l'extraction du resume: ${error.message}`);
-      }
-    }
-
-    // Derniere tentative: analyse du HTML brut
-    if (!summary) {
-      try {
-        const htmlContent = response.data;
-
-        // Chercher le texte qui pourrait etre un resume apres des marqueurs communs
-        const resumeMarkers = [
-          '<div class="fdesc">',
-          '<div id="s-desc">',
-          '<h2>Synopsis</h2>',
-          '<h3>Synopsis</h3>',
-          'Synopsis :'
-        ];
-
-        for (const marker of resumeMarkers) {
-          const markerIndex = htmlContent.indexOf(marker);
-          if (markerIndex !== -1) {
-            // Chercher le premier paragraphe substantiel apres ce marqueur
-            const afterMarker = htmlContent.substring(markerIndex + marker.length);
-            const paragraphMatch = afterMarker.match(/<p[^>]*>([^<]{100,})<\/p>/);
-
-            if (paragraphMatch && paragraphMatch[1]) {
-              summary = paragraphMatch[1].trim();
-              break;
-            }
-          }
-        }
-      } catch (error) {
-        console.error(`Erreur lors de l'analyse du HTML brut: ${error.message}`);
-      }
-    }
-
-    // Valider que le resume n'est pas un texte par defaut
-    if (summary && (
-      summary.includes("Resume du film") ||
-      summary.includes("streaming complet") ||
-      summary.includes("vf et vostfr") ||
-      summary.includes("vod gratuit sans limite")
-    )) {
-      summary = null;
-    }
-
-    // Find series on TMDB using the extracted info
-    let tmdbData = null;
-    if (seriesTitle) {
-      // Pass the original title from FrenchStream; findTvSeriesOnTMDB will clean it
-      tmdbData = await findTvSeriesOnTMDB(seriesTitle, releaseDate, summary);
-    }
-
-    // Find all seasons using the new structure
-    const seasons = [];
-    const seasonsContainer = $('.tab-content > .tab-pane'); // Updated selector
-
-    seasonsContainer.each((seasonIndex, seasonElement) => {
-      try {
-        const $seasonElement = $(seasonElement);
-        const seasonId = $seasonElement.attr('id'); // e.g., season-1
-        const seasonNumberMatch = seasonId ? seasonId.match(/\d+$/) : null;
-        const seasonNumber = seasonNumberMatch ? parseInt(seasonNumberMatch[0]) : seasonIndex + 1;
-        const seasonTitle = `Saison ${seasonNumber}`;
-
-        const episodesMap = new Map(); // Use a map to group by episode number
-
-        // Find all episodes in this season
-        const episodeElements = $seasonElement.find('ul li');
-
-        episodeElements.each((episodeIndex, episodeElement) => {
-          try {
-            const $episodeElement = $(episodeElement);
-            const episodeLink = $episodeElement.find('a').first();
-
-            // Extract episode info
-            const episodeNumStr = episodeLink.text().trim();
-            const episodeNumMatch = episodeNumStr.match(/^\d+/);
-            const episodeNum = episodeNumMatch ? episodeNumMatch[0] : episodeNumStr;
-
-            const episodeTitle = episodeLink.attr('data-title') || `Episode ${episodeNumStr}`;
-            const isVOSTFR = episodeTitle.includes('VOSTFR');
-            const langKey = isVOSTFR ? 'vostfr' : 'vf';
-
-            // Get player links
-            const players = [];
-            $episodeElement.find('.mirrors a').each((playerIndex, playerElement) => {
-              const $playerElement = $(playerElement);
-              const playerName = $playerElement.text().trim();
-              const playerLink = $playerElement.attr('data-link');
-
-              if (playerLink) {
-                players.push({
-                  name: playerName,
-                  link: playerLink
-                });
-              }
-            });
-
-            // Get or create the entry for this episode number
-            if (!episodesMap.has(episodeNum)) {
-              episodesMap.set(episodeNum, {
-                number: episodeNum,
-                versions: {}
-              });
-            }
-
-            // Add the current language version
-            episodesMap.get(episodeNum).versions[langKey] = {
-              title: episodeTitle,
-              players: players
-            };
-
-          } catch (error) {
-            console.error(`Error parsing episode element (Index ${episodeIndex}) in ${seriesUrl}:`, error.message);
-          }
-        });
-
-        // Convert map values to array and sort numerically by episode number
-        const episodes = Array.from(episodesMap.values()).sort((a, b) => {
-          const numA = parseInt(a.number);
-          const numB = parseInt(b.number);
-          if (isNaN(numA) || isNaN(numB)) return a.number.localeCompare(b.number);
-          return numA - numB;
-        });
-
-        seasons.push({
-          number: seasonNumber,
-          title: seasonTitle,
-          episodes: episodes
-        });
-      } catch (error) {
-        console.error(`Error parsing season element (ID ${seasonId || 'unknown'}) in ${seriesUrl}:`, error.message);
-      }
+    const title = $('title').text().trim() || originalTitle;
+    const seasonNumbers = new Map();
+    $('._stab[data-season]').each((_, element) => {
+      const tab = $(element);
+      const match = tab.text().match(/\d+/);
+      if (match) seasonNumbers.set(tab.attr('data-season'), Number(match[0]));
     });
 
+    const seasons = [];
+    $('._grp[data-season]').each((_, element) => {
+      const group = $(element);
+      // data-season est un ID interne ; le numéro réel est dans l'onglet S1, S2…
+      const label = group.find('._ep[data-label]').first().attr('data-label') || '';
+      const seasonMatch = label.match(/\bS(\d+)\b/i);
+      const seasonNumber = seasonNumbers.get(group.attr('data-season')) ??
+        (seasonMatch ? Number(seasonMatch[1]) : null);
+      if (seasonNumber === null) return;
+
+      const episodes = new Map();
+      group.find('._ep[data-link]').each((_, episodeElement) => {
+        const episode = $(episodeElement);
+        const link = normalizeFrenchCloudPlayerLink(episode.attr('data-link'));
+        if (!link) return;
+
+        const episodeLabel = episode.attr('data-label') || '';
+        const numberMatch = episodeLabel.match(/\bE(\d+)\b/i) ||
+          episode.find('._epn').text().match(/\d+/);
+        if (!numberMatch) return;
+        const number = String(Number(numberMatch[1] || numberMatch[0]));
+        const episodeTitle = episode.find('._ept').text().trim() || episodeLabel || `Épisode ${number}`;
+        const language = /vostfr/i.test(episodeLabel + ' ' + episodeTitle) ? 'vostfr' : 'vf';
+        if (!episodes.has(number)) episodes.set(number, { number, versions: {} });
+        const versions = episodes.get(number).versions;
+        if (!versions[language]) versions[language] = { title: episodeTitle, players: [] };
+        if (!versions[language].players.some(player => player.link === link)) {
+          versions[language].players.push({ name: new URL(link).hostname, link });
+        }
+      });
+
+      seasons.push({
+        number: seasonNumber,
+        title: `Saison ${seasonNumber}`,
+        episodes: [...episodes.values()].sort((a, b) => Number(a.number) - Number(b.number)),
+      });
+    });
+    seasons.sort((a, b) => a.number - b.number);
+
+    // L'embed ne fournit plus la date de sortie ni le synopsis de FrenchStream.
+    const tmdbData = title && seasons.some(season => season.episodes.length) && findTvSeriesOnTMDB
+      ? await findTvSeriesOnTMDB(title, null, null)
+      : null;
     return {
-      title: seriesTitle,
-      release_date: releaseDate,
-      summary: summary,
+      title,
+      release_date: null,
+      summary: null,
       tmdb_data: tmdbData,
-      seasons: seasons
+      seasons,
     };
   } catch (error) {
+    if (error.response?.status === 404) return { error: 'Series not found on FrenchCloud (404)' };
     return { error: `Failed to fetch series details: ${error.message}` };
   }
 }

@@ -21,7 +21,7 @@ export const beginEmblaScroll = (): void => {
   if (typeof document === 'undefined') return;
   activeEmblaCount += 1;
   if (activeEmblaCount === 1) {
-    document.body.classList.add('embla-scrolling');
+    document.body?.classList.add('embla-scrolling');
   }
 };
 
@@ -30,6 +30,6 @@ export const endEmblaScroll = (): void => {
   if (activeEmblaCount === 0) return;
   activeEmblaCount -= 1;
   if (activeEmblaCount === 0) {
-    document.body.classList.remove('embla-scrolling');
+    document.body?.classList.remove('embla-scrolling');
   }
 };

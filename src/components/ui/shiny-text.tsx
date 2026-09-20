@@ -1,5 +1,6 @@
 import React, { useState, useCallback, useEffect, useRef } from 'react';
 import { motion, useMotionValue, useAnimationFrame, useTransform } from 'framer-motion';
+import { useLightMode } from '@/context/LightModeContext';
 
 interface ShinyTextProps {
     text: string;
@@ -15,7 +16,7 @@ interface ShinyTextProps {
     delay?: number;
 }
 
-const ShinyText: React.FC<ShinyTextProps> = ({
+const AnimatedShinyText: React.FC<ShinyTextProps> = ({
     text,
     disabled = false,
     speed = 2,
@@ -118,6 +119,14 @@ const ShinyText: React.FC<ShinyTextProps> = ({
             {text}
         </motion.span>
     );
+};
+
+const ShinyText: React.FC<ShinyTextProps> = (props) => {
+    const { effectivePrefs } = useLightMode();
+    if (props.disabled || !effectivePrefs.bgAnimations) {
+        return <span className={`inline-block ${props.className ?? ''}`} style={{ color: props.color ?? '#b5b5b5' }}>{props.text}</span>;
+    }
+    return <AnimatedShinyText {...props} />;
 };
 
 export default ShinyText;

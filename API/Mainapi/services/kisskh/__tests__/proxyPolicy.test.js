@@ -1,6 +1,7 @@
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const path = require('node:path');
+const vm = require('node:vm');
 const test = require('node:test');
 
 const PROXY_A = { type: 'socks5h', host: 'Proxy.Example', port: 1080, auth: 'user:secret' };
@@ -26,12 +27,13 @@ function createRedisDouble() {
       values.set(key, String(value));
       return 'OK';
     },
-    async eval(script, keyCount, key, now, interval) {
-      calls.push(['eval', script, keyCount, key, now, interval]);
+    async eval(script, keyCount, key, now, interval, maxWait) {
+      calls.push(['eval', script, keyCount, key, now, interval, maxWait]);
       const requestedAt = Number(now);
       const spacing = Number(interval);
       const current = Number(values.get(key) || 0);
       const slot = Math.max(requestedAt, current);
+      if (slot - requestedAt >= Number(maxWait)) return -1;
       values.set(key, String(slot + spacing));
       return slot - requestedAt;
     },
@@ -60,6 +62,63 @@ function selectionDouble(snapshots = [[PROXY_A]]) {
     },
   };
 }
+
+function managerCandidates(pool, reserveProxyWindow) {
+  const filename = path.resolve(__dirname, '../../../utils/proxyManager.js');
+  const source = fs.readFileSync(filename, 'utf8');
+  const declarations = [
+    source.match(/const KISSKH_METADATA_PROXY_OPTIONS = Object\.freeze\(\{[\s\S]*?\n\}\);/)?.[0],
+    source.match(/function buildProxyRateLimitKey\([\s\S]*?\n\}/)?.[0],
+    source.match(/async function getKisskhProxyCandidates\([\s\S]*?\n\}/)?.[0],
+  ];
+  assert.ok(declarations.every(Boolean));
+  const context = {
+    crypto: require('node:crypto'), PROXIES: pool, reserveProxyWindow,
+    PROXY_RATE_LIMIT_REDIS_PREFIX: 'test:proxy',
+  };
+  // Isoler les fonctions reelles du demarrage reseau de proxyManager.
+  vm.runInNewContext(`${declarations.join('\n')}\nthis.select = getKisskhProxyCandidates;`, context, { filename });
+  return context.select;
+}
+
+test('the real proxy manager and policy inspect only one available proxy in a 1000-proxy pool', async () => {
+  const { createKisskhProxyPolicy } = require('../proxyPolicy');
+  const inspected = new Set();
+  const proxies = Array.from({ length: 1000 }, (_, index) => ({
+    type: 'socks5', port: 1080,
+    get host() { inspected.add(index); return `proxy-${index}.example`; },
+  }));
+  let rotations = 0;
+  let reservations = 0;
+  const redis = createRedisDouble();
+  const policy = createKisskhProxyPolicy({
+    redis,
+    getProxyCandidates: managerCandidates(proxies, async (_name, length, count) => {
+      assert.equal(length, 1000);
+      assert.equal(count, 1);
+      return 999 + rotations++;
+    }),
+    reserveProxy: async () => { reservations += 1; return true; },
+  });
+
+  assert.equal(await policy.reserve(), proxies[999]);
+  assert.deepEqual([...inspected], [999]);
+  assert.equal(await policy.reserve(), proxies[0]);
+  assert.deepEqual([...inspected], [999, 0]);
+  assert.equal(rotations, 2);
+  assert.equal(reservations, 2);
+  const reads = redis.calls.filter(([command]) => command === 'mget');
+  assert.deepEqual(reads.map((call) => call.length - 1), [1, 1]);
+});
+
+test('lazy proxy candidates keep their snapshot across pool refreshes and skip duplicate identities', async () => {
+  const pool = [PROXY_A, PROXY_A, PROXY_B];
+  const select = managerCandidates(pool, async () => 0);
+  const candidates = await select();
+  pool.splice(0, pool.length, { type: 'socks5', host: 'new.example', port: 1080 });
+  assert.deepEqual([...candidates], [PROXY_A, PROXY_B]);
+  assert.deepEqual([...(await select())], pool);
+});
 
 test('reservations consume one rotated snapshot and atomically space only the selected proxy', async () => {
   const { createKisskhProxyPolicy } = require('../proxyPolicy');
@@ -118,6 +177,87 @@ test('transport failures quarantine exponentially and cap at 900 seconds', async
   for (let failure = 0; failure < 10; failure += 1) await policy.recordFailure(PROXY_A, 'transport');
   const quarantineWrite = redis.calls.filter((call) => call[0] === 'set' && call[1].endsWith(':quarantine')).at(-1);
   assert.equal(Number(quarantineWrite[2]) - clock, 900_000);
+});
+
+test('an absent breaker never causes Redis deletes and an open breaker rejects bursts locally', async () => {
+  const { createKisskhProxyPolicy } = require('../proxyPolicy');
+  const redis = createRedisDouble();
+  const selection = selectionDouble();
+  const policy = createKisskhProxyPolicy({ redis, ...selection, now: () => 10_000 });
+  await policy.assertCircuitClosed();
+  assert.equal(redis.calls.filter(([command]) => command === 'del').length, 0);
+  await policy.record429({});
+  const before = redis.calls.length;
+  const results = await Promise.allSettled(Array.from({ length: 100 }, () => policy.reserve()));
+  assert.ok(results.every((result) => result.status === 'rejected'
+    && result.reason.code === 'provider_rate_limited'));
+  assert.equal(selection.calls.snapshots.length, 0);
+  assert.equal(redis.calls.length, before);
+});
+
+test('a saturated proxy pool has a command budget and a local retry delay', async () => {
+  const { createKisskhProxyPolicy } = require('../proxyPolicy');
+  const redis = createRedisDouble();
+  let clock = 10_000;
+  let reservations = 0;
+  const candidates = Array.from({ length: 1000 }, (_, index) => ({
+    type: 'socks5', host: `proxy-${index}.example`, port: 1080,
+  }));
+  const policy = createKisskhProxyPolicy({
+    redis, now: () => clock,
+    getProxyCandidates: async () => candidates,
+    reserveProxy: async () => { reservations += 1; return false; },
+  });
+  assert.equal(await policy.reserve(), null);
+  assert.ok(reservations > 0 && reservations <= 32, `reservations: ${reservations}`);
+  const quarantineKeys = redis.calls.filter(([command]) => command === 'mget')
+    .reduce((total, call) => total + call.length - 1, 0);
+  assert.ok(quarantineKeys <= 33, `quarantine keys: ${quarantineKeys}`);
+  const before = redis.calls.length;
+  const attempts = reservations;
+  for (let index = 0; index < 100; index += 1) assert.equal(await policy.reserve(), null);
+  assert.equal(redis.calls.length, before);
+  assert.equal(reservations, attempts);
+  clock += 1_000;
+  await policy.reserve();
+  assert.ok(reservations > attempts);
+});
+
+test('slow reservations admit at most twelve selections without queuing more Redis work', async () => {
+  const { createKisskhProxyPolicy } = require('../proxyPolicy');
+  let release;
+  const pending = new Promise((resolve) => { release = resolve; });
+  let selections = 0;
+  const policy = createKisskhProxyPolicy({
+    redis: createRedisDouble(),
+    async getProxyCandidates() { selections += 1; await pending; return [PROXY_A]; },
+    reserveProxy: async () => true,
+  });
+  const reservations = Promise.all(Array.from({ length: 100 }, () => policy.reserve()));
+  await new Promise((resolve) => setImmediate(resolve));
+  release();
+  const results = await reservations;
+  assert.ok(selections > 0 && selections <= 12, `selections: ${selections}`);
+  assert.equal(results.filter(Boolean).length, selections);
+});
+
+test('global slots are shared across workers and a burst cannot extend the queue indefinitely', async () => {
+  const { createKisskhProxyPolicy } = require('../proxyPolicy');
+  const redis = createRedisDouble();
+  let clock = 10_000;
+  const sleeps = [];
+  const options = { redis, ...selectionDouble(), now: () => clock,
+    sleep: async (ms) => { sleeps.push(ms); } };
+  const workers = [createKisskhProxyPolicy(options), createKisskhProxyPolicy(options)];
+  const results = await Promise.allSettled(Array.from({ length: 100 }, (_, index) =>
+    workers[index % workers.length].reserveGlobal()));
+  const accepted = results.filter((result) => result.status === 'fulfilled');
+  assert.equal(accepted.length, 20);
+  assert.ok(sleeps.every((ms) => ms < 2_000));
+  assert.equal(Number(redis.values.get('kisskh:metadata:global:next')), 12_000);
+  assert.ok(redis.calls.length <= 40, `Redis commands: ${redis.calls.length}`);
+  clock += 2_000;
+  assert.equal(await workers[0].reserveGlobal(), 0);
 });
 
 test('success resets failure count and quarantine', async () => {
@@ -235,8 +375,7 @@ test('reservation batches quarantine state and reaches a healthy candidate after
   assert.equal(selection.calls.snapshots.length, 1);
   assert.deepEqual(selection.calls.reserves.map(([proxy]) => proxy), [proxies.at(-1)]);
   const quarantineReads = redis.calls.filter(([command]) => command === 'mget');
-  assert.equal(quarantineReads.length, 1);
-  assert.equal(quarantineReads[0].length - 1, proxies.length);
+  assert.deepEqual(quarantineReads.map((call) => call.length - 1), [1, 32, 7]);
 });
 
 test('a 1000-entry snapshot with repeats is deduplicated and processed with bounded Redis work', async () => {
@@ -247,7 +386,7 @@ test('a 1000-entry snapshot with repeats is deduplicated and processed with boun
     host: `203.0.${Math.floor(index / 250)}.${(index % 250) + 1}`,
     port: 1080,
   }));
-  const selection = selectionDouble([[...unique, ...unique]]);
+  const selection = selectionDouble([unique.flatMap((proxy) => [proxy, proxy])]);
   const policy = createKisskhProxyPolicy({
     redis,
     ...selection,
@@ -263,9 +402,33 @@ test('a 1000-entry snapshot with repeats is deduplicated and processed with boun
   assert.deepEqual(selection.calls.reserves.map(([proxy]) => proxy), [unique.at(-1)]);
   const reserveRedisCalls = redis.calls.slice(beforeReserve);
   const quarantineReads = reserveRedisCalls.filter(([command]) => command === 'mget');
-  assert.equal(quarantineReads.length, 1);
-  assert.equal(quarantineReads[0].length - 1, unique.length);
+  assert.equal(quarantineReads.length, 17);
+  assert.ok(quarantineReads.every((call) => call.length - 1 <= 32));
+  assert.equal(quarantineReads.reduce((total, call) => total + call.length - 1, 0), unique.length);
   assert.equal(reserveRedisCalls.filter(([command]) => command === 'get').length, 1);
+});
+
+test('an expired quarantine-read deadline never inspects the next proxy or reserves late', async () => {
+  const { createKisskhProxyPolicy } = require('../proxyPolicy');
+  let inspected = 0;
+  let reservations = 0;
+  const redis = createRedisDouble();
+  redis.mget = async () => { await delay(80); return [null]; };
+  const policy = createKisskhProxyPolicy({
+    redis,
+    getProxyCandidates: async () => (function* () {
+      inspected += 1;
+      yield PROXY_A;
+      inspected += 1;
+      yield PROXY_B;
+    })(),
+    reserveProxy: async () => { reservations += 1; return true; },
+    reservationDeadlineMs: 20,
+  });
+  assert.equal(await policy.reserve(), null);
+  await delay(80);
+  assert.equal(inspected, 1);
+  assert.equal(reservations, 0);
 });
 
 test('reservation enforces hard candidate and wall-clock bounds', async () => {

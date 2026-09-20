@@ -28,6 +28,7 @@ interface Catalog {
   type: string;
   id: string;
   name: string;
+  _emoji?: string;
   extra?: Array<{
     name: string;
     isRequired: boolean;
@@ -180,6 +181,7 @@ const sourceDisplayNames: { [key: string]: string } = {
   'northlive': 'Northlive',
   'vavoo': 'Vavoo',
   'fctv': 'FCTV33',
+  'streamed': 'Streamed',
   'iptv': 'liveTV.iptvWebSource',
 };
 
@@ -188,6 +190,7 @@ const getSourceKey = (catalogId: string): string => {
   if (catalogId.startsWith('northlive_')) return 'northlive';
   if (catalogId.startsWith('vavoo_')) return 'vavoo';
   if (catalogId.startsWith('matches_')) return 'fctv';
+  if (catalogId.startsWith('streamed_')) return 'streamed';
   return 'other';
 };
 
@@ -463,9 +466,133 @@ const TimeRemaining = memo(({ timestamp, t }: { timestamp: number; t: TimeRemain
 });
 TimeRemaining.displayName = 'TimeRemaining';
 
+interface LiveTVPlaybackHandle {
+  openPlayer: (channel: Channel) => void;
+  openAd: (channel: Channel) => void;
+}
+
+// Le lecteur et le popup partagent un état isolé de la grille : ouvrir ou
+// fermer une surcouche ne doit pas recalculer toutes les cartes derrière.
+const LiveTVPlayback = React.forwardRef<LiveTVPlaybackHandle>(
+  (_props, ref) => {
+    const [pendingChannel, setPendingChannel] = useState<Channel | null>(null);
+    const [selectedChannel, setSelectedChannel] = useState<Channel | null>(null);
+    const closingPlayerRef = useRef(false);
+
+    React.useImperativeHandle(ref, () => ({
+      openPlayer: setSelectedChannel,
+      openAd: setPendingChannel,
+    }), []);
+
+    useEffect(() => {
+      if (!selectedChannel) return;
+      closingPlayerRef.current = false;
+      window.history.pushState({ ...window.history.state, playerOpen: true }, '');
+      const handlePopState = () => {
+        closingPlayerRef.current = true;
+        setSelectedChannel(null);
+      };
+      window.addEventListener('popstate', handlePopState);
+      return () => window.removeEventListener('popstate', handlePopState);
+    }, [selectedChannel]);
+
+    const handleClosePlayer = useCallback(() => {
+      if (closingPlayerRef.current) return;
+      closingPlayerRef.current = true;
+      // Démarrer la sortie dès le clic, sans attendre le popstate asynchrone.
+      setSelectedChannel(null);
+      window.history.back();
+    }, []);
+
+    useWrappedTracker({
+      mode: 'viewing',
+      viewingData: selectedChannel ? {
+        contentType: 'live-tv',
+        contentId: selectedChannel.id,
+        contentTitle: selectedChannel.name,
+      } : undefined,
+      isActive: !!selectedChannel,
+    });
+
+    const handleAccept = useCallback(() => {
+      if (!pendingChannel) return;
+      // Deux chaînes par publicité, dont celle qui vient d'être choisie.
+      sessionStorage.setItem('livetv_ad_credits', '1');
+      setPendingChannel(null);
+      setSelectedChannel(pendingChannel);
+    }, [pendingChannel]);
+
+    const handleClose = useCallback(() => setPendingChannel(null), []);
+
+    return (
+      <>
+        {selectedChannel && (
+          <div
+            hidden
+            data-premid-live-context=""
+            data-premid-channel={selectedChannel.name || undefined}
+            data-premid-channel-poster={selectedChannel.poster || undefined}
+          />
+        )}
+        <AnimatePresence>
+          {selectedChannel && (
+            <LiveTVPlayer
+              channelId={selectedChannel.id}
+              channelName={selectedChannel.name}
+              channelPoster={selectedChannel.poster}
+              vavooVariants={selectedChannel._vavooVariants}
+              onClose={handleClosePlayer}
+            />
+          )}
+        </AnimatePresence>
+        {pendingChannel && (
+          <AdFreePlayerAds onClose={handleClose} onAccept={handleAccept} variant="livetv" />
+        )}
+      </>
+    );
+  }
+);
+LiveTVPlayback.displayName = 'LiveTVPlayback';
+
+interface LiveTVLaunchTarget {
+  source: string;
+  targetId: string;
+  kind: 'channel' | 'iptv';
+  name?: string;
+  poster?: string | null;
+  catalogId?: string;
+  categoryId?: string;
+}
+
+// Seul ce petit composant écoute le routeur. Le popstate qui ferme un lecteur
+// ne doit pas invalider la page catalogue quand son URL n'a pas changé.
+const LiveTVLaunchRequest = ({ onLaunch }: { onLaunch: (target: LiveTVLaunchTarget) => void }) => {
+  const [searchParams, setSearchParams] = useSearchParams();
+  useEffect(() => {
+    const source = searchParams.get('source')?.trim();
+    const targetId = searchParams.get('targetId')?.trim();
+    const kind = searchParams.get('kind');
+    if (!source || !targetId || (kind !== 'channel' && kind !== 'iptv')) return;
+
+    const storedFavorite = readLiveTvFavorites().find((favorite) => (
+      favorite.source === source && favorite.id === targetId && favorite.kind === kind
+    ));
+    onLaunch({
+      source,
+      targetId,
+      kind,
+      name: storedFavorite?.name,
+      poster: storedFavorite?.poster ?? null,
+      catalogId: searchParams.get('catalogId')?.trim() || storedFavorite?.catalogId,
+      categoryId: searchParams.get('categoryId')?.trim() || storedFavorite?.categoryId,
+    });
+    setSearchParams({}, { replace: true });
+  }, [onLaunch, searchParams, setSearchParams]);
+  return null;
+};
+
 const LiveTV: React.FC = () => {
   const { t } = useTranslation();
-  const [searchParams, setSearchParams] = useSearchParams();
   const [catalogs, setCatalogs] = useState<Catalog[]>([]);
   const [channels, setChannels] = useState<Channel[]>([]);
   const [selectedCatalog, setSelectedCatalog] = useState<string>('');
@@ -489,15 +616,7 @@ const LiveTV: React.FC = () => {
   const [favoriteIptvCategories, setFavoriteIptvCategories] = useState<FavoriteIptvCategory[]>(() => readFavoriteIptvCategories());
   const [, setPrefsVersion] = useState(0);
   useEffect(() => subscribeToPrefsChanges(() => setPrefsVersion((v) => v + 1)), []);
-  const [launchTarget, setLaunchTarget] = useState<{
-    source: string;
-    targetId: string;
-    kind: 'channel' | 'iptv';
-    name?: string;
-    poster?: string | null;
-    catalogId?: string;
-    categoryId?: string;
-  } | null>(null);
+  const [launchTarget, setLaunchTarget] = useState<LiveTVLaunchTarget | null>(null);
   const lastLaunchSelectionKeyRef = useRef<string | null>(null);
   const activeLaunchKeyRef = useRef<string | null>(null);
 
@@ -533,7 +652,7 @@ const LiveTV: React.FC = () => {
   const hasExtension = isExtensionAvailable();
   const hasFullAccess = isVip || hasExtension;
 
-  const isSourceFree = (source: string) => source === 'northlive' || source === 'vavoo';
+  const isSourceFree = (source: string) => source === 'northlive' || source === 'vavoo' || source === 'streamed';
   const isSourceAccessible = (source: string) =>
     isSourceFree(source) ? true : source === 'iptv' ? isVip : hasFullAccess;
   const hasAccess = isSourceAccessible(selectedSource);
@@ -582,34 +701,6 @@ const LiveTV: React.FC = () => {
     window.addEventListener('storage', handleStorage);
     return () => window.removeEventListener('storage', handleStorage);
   }, []);
-
-  useEffect(() => {
-    const source = searchParams.get('source')?.trim();
-    const targetId = searchParams.get('targetId')?.trim();
-    const kind = searchParams.get('kind');
-
-    if (!source || !targetId || (kind !== 'channel' && kind !== 'iptv')) {
-      return;
-    }
-
-    const storedFavorite = readLiveTvFavorites().find((favorite) => (
-      favorite.source === source
-      && favorite.id === targetId
-      && favorite.kind === kind
-    ));
-
-    setLaunchTarget({
-      source,
-      targetId,
-      kind,
-      name: storedFavorite?.name,
-      poster: storedFavorite?.poster ?? null,
-      catalogId: searchParams.get('catalogId')?.trim() || storedFavorite?.catalogId,
-      categoryId: searchParams.get('categoryId')?.trim() || storedFavorite?.categoryId,
-    });
-
-    setSearchParams({}, { replace: true });
-  }, [searchParams, setSearchParams]);
 
   const persistFavoriteChannels = useCallback((nextFavorites: LiveTVFavorite[]) => {
     setFavoriteChannels(nextFavorites);
@@ -719,37 +810,6 @@ const LiveTV: React.FC = () => {
     toast.success(`${category.category_name} ${t('liveTV.addedCategoryToFavoritesToast')}`, { duration: 2000 });
   }, [favoriteIptvCategoryIds, favoriteIptvCategories, persistFavoriteIptvCategories, t]);
 
-  // Player state
-  const [selectedChannel, setSelectedChannel] = useState<Channel | null>(null);
-
-  // Gérer le bouton retour pour fermer le player
-  useEffect(() => {
-    if (selectedChannel) {
-      window.history.pushState({ playerOpen: true }, '');
-
-      const handlePopState = () => {
-        setSelectedChannel(null);
-      };
-
-      window.addEventListener('popstate', handlePopState);
-
-      return () => {
-        window.removeEventListener('popstate', handlePopState);
-      };
-    }
-  }, [selectedChannel]);
-
-  // Movix Wrapped 2026 - Track Live TV viewing time (only when channel is open)
-  useWrappedTracker({
-    mode: 'viewing',
-    viewingData: selectedChannel ? {
-      contentType: 'live-tv',
-      contentId: selectedChannel.id,
-      contentTitle: selectedChannel.name,
-    } : undefined,
-    isActive: !!selectedChannel,
-  });
-
   // API Base URL (utilise notre backend)
   const API_BASE = import.meta.env.VITE_MAIN_API || 'http://localhost:25565';
 
@@ -766,7 +826,7 @@ const LiveTV: React.FC = () => {
     let data;
 
     // northlive and vavoo are served only by our API (the extension doesn't know them).
-    if (isExtensionAvailable() && !catalogId.startsWith('northlive_') && !catalogId.startsWith('vavoo_')) {
+    if (isExtensionAvailable() && !catalogId.startsWith('northlive_') && !catalogId.startsWith('vavoo_') && !catalogId.startsWith('streamed_')) {
       data = await fetchFromExtension('GET_CATALOG', { type: 'tv', id: catalogId });
     } else {
       const response = await fetch(`${API_BASE}/api/livetv/catalog/tv/${catalogId}`);
@@ -888,7 +948,7 @@ const LiveTV: React.FC = () => {
         setError(null);
         let data;
 
-        if (isExtensionAvailable() && !selectedCatalog.startsWith('northlive_') && !selectedCatalog.startsWith('vavoo_')) {
+        if (isExtensionAvailable() && !selectedCatalog.startsWith('northlive_') && !selectedCatalog.startsWith('vavoo_') && !selectedCatalog.startsWith('streamed_')) {
           data = await fetchFromExtension('GET_CATALOG', { type: 'tv', id: selectedCatalog });
         } else {
           const response = await fetch(`${API_BASE}/api/livetv/catalog/tv/${selectedCatalog}`);
@@ -962,11 +1022,10 @@ const LiveTV: React.FC = () => {
     fetchIptvStreams();
   }, [selectedIptvCategory, isVip]);
 
-  // Ad Popup state
-  const [showAd, setShowAd] = useState(false);
-  const [pendingChannel, setPendingChannel] = useState<Channel | null>(null);
+  const playbackRef = useRef<LiveTVPlaybackHandle>(null);
+  const openPlayer = useCallback((channel: Channel) => playbackRef.current?.openPlayer(channel), []);
 
-  const isTimedEventChannel = (channel: Channel) => channel.id.startsWith('match_');
+  const isTimedEventChannel = (channel: Channel) => channel.id.startsWith('match_') || channel.id.startsWith('streamed_');
 
   // Imminent = le coup d'envoi est dans moins de cinq minutes. Le test ne
   // portait que sur la borne haute : une heure déjà passée donnait un écart
@@ -1002,19 +1061,18 @@ const LiveTV: React.FC = () => {
 
     // Les VIPs n'ont pas de publicité
     if (isVip) {
-      setSelectedChannel(channel);
+      openPlayer(channel);
       return;
     }
 
     const credits = parseInt(sessionStorage.getItem('livetv_ad_credits') || '0');
     if (credits > 0) {
       sessionStorage.setItem('livetv_ad_credits', (credits - 1).toString());
-      setSelectedChannel(channel);
+      openPlayer(channel);
     } else {
-      setPendingChannel(channel);
-      setShowAd(true);
+      playbackRef.current?.openAd(channel);
     }
-  }, [isVip]);
+  }, [isVip, openPlayer]);
 
   const handleIptvChannelClick = async (stream: IptvStream) => {
     try {
@@ -1026,7 +1084,7 @@ const LiveTV: React.FC = () => {
       const streamUrl = data.streams?.[0]?.url;
       if (streamUrl) {
         // Créer un Channel virtuel pour le LiveTVPlayer
-        setSelectedChannel({
+        openPlayer({
           id: `iptv_${stream.stream_id}`,
           type: 'tv',
           name: stream.name,
@@ -1051,7 +1109,7 @@ const LiveTV: React.FC = () => {
       const data = await response.json();
       const streamUrl = data.streams?.[0]?.url;
       if (streamUrl) {
-        setSelectedChannel({
+        openPlayer({
           id: `iptv_${streamId}`,
           type: 'tv',
           name: options?.name || t('liveTV.iptvWebSource'),
@@ -1062,27 +1120,7 @@ const LiveTV: React.FC = () => {
       console.error('Error getting IPTV stream URL:', err);
       setError(err instanceof Error ? err.message : t('liveTV.loadingError'));
     }
-  }, [API_BASE, t]);
-
-  const handleAdAccept = () => {
-    // Le user a regardé la pub, on lui donne 2 crédits
-    // On consomme immédiatement 1 crédit pour la chaîne actuelle, donc il en reste 1
-    sessionStorage.setItem('livetv_ad_credits', '1');
-    setShowAd(false);
-    if (pendingChannel) {
-      setSelectedChannel(pendingChannel);
-      setPendingChannel(null);
-    }
-  };
-
-  const handleClosePlayer = () => {
-    window.history.back();
-  };
-
-  const handleCloseAd = () => {
-    setShowAd(false);
-    setPendingChannel(null);
-  };
+  }, [API_BASE, openPlayer, t]);
 
   const resolveLaunchChannelTarget = useCallback(async (target: NonNullable<typeof launchTarget>) => {
     const sourceCatalogs = catalogs.filter((catalog) => getSourceKey(catalog.id) === target.source);
@@ -1124,7 +1162,8 @@ const LiveTV: React.FC = () => {
   }, [catalogs, channels, fetchCatalogChannelsById, selectedCatalog]);
 
   useEffect(() => {
-    if (!launchTarget) return;
+    // Une demande reçue dès le montage attend le manifeste avant résolution.
+    if (!launchTarget || loadingCatalogs) return;
 
     const launchKey = `${launchTarget.source}:${launchTarget.targetId}:${launchTarget.kind}:${launchTarget.catalogId || ''}:${launchTarget.categoryId || ''}`;
     if (activeLaunchKeyRef.current === launchKey) {
@@ -1192,6 +1231,7 @@ const LiveTV: React.FC = () => {
     hasFullAccess,
     isVip,
     launchTarget,
+    loadingCatalogs,
     openIptvFavoriteById,
     resolveLaunchChannelTarget,
     selectedCatalog,
@@ -1211,6 +1251,7 @@ const LiveTV: React.FC = () => {
     // « Sports de combat »… et la traduction par mots-clés ci-dessous les
     // écraserait tous en « Sport ».
     if (catalog.id.startsWith('matches_')) return catalog.name;
+    if (catalog.id.startsWith('streamed_')) return t(`liveTV.streamedSports.${catalog.id.slice('streamed_'.length)}`, { defaultValue: catalog.name });
 
     let name = catalog.name;
 
@@ -1243,6 +1284,7 @@ const LiveTV: React.FC = () => {
 
   // Helper pour obtenir l'emoji du catalogue (priorité: map > nom > inférence > défaut)
   const getCatalogEmoji = (catalog: Catalog) => {
+    if (catalog.id.startsWith('streamed_') && catalog._emoji) return catalog._emoji;
     // 1. Check predefined map
     if (categoryEmojis[catalog.id]) return categoryEmojis[catalog.id];
 
@@ -1288,6 +1330,7 @@ const LiveTV: React.FC = () => {
   const sourceIcons: Record<string, React.ReactNode> = {
     'vavoo': <Radio className="w-3.5 h-3.5" />,
     'fctv': <span className="text-sm leading-none">⚽</span>,
+    'streamed': <span className="text-sm leading-none">🏟️</span>,
     'iptv': <i className="bi bi-globe text-sm" />,
   };
 
@@ -1490,7 +1533,7 @@ const LiveTV: React.FC = () => {
   };
 
   const renderChannelCard = (channel: Channel, index: number) => {
-    const isMatch = selectedCatalog.startsWith('matches_');
+    const isMatch = selectedCatalog.startsWith('matches_') || selectedCatalog.startsWith('streamed_');
     const isNorthlive = selectedCatalog.startsWith('northlive_');
     const isVavoo = selectedCatalog.startsWith('vavoo_');
     const vavooServers = Array.from(new Set(
@@ -2072,38 +2115,10 @@ const LiveTV: React.FC = () => {
         )}
       </div>
 
-      {selectedChannel && (
-        <div
-          hidden
-          data-premid-live-context=""
-          data-premid-channel={selectedChannel.name || undefined}
-          data-premid-channel-poster={selectedChannel.poster || undefined}
-        />
-      )}
-
-      {/* ── PLAYER MODAL ── */}
-      <AnimatePresence>
-        {selectedChannel && (
-          <LiveTVPlayer
-            channelId={selectedChannel.id}
-            channelName={selectedChannel.name}
-            channelPoster={selectedChannel.poster}
-            vavooVariants={selectedChannel._vavooVariants}
-            onClose={handleClosePlayer}
-          />
-        )}
-      </AnimatePresence>
-
-      {/* ── AD POPUP ── */}
-      {showAd && (
-        <AdFreePlayerAds
-          onClose={handleCloseAd}
-          onAccept={handleAdAccept}
-          variant="livetv"
-        />
-      )}
+      <LiveTVLaunchRequest onLaunch={setLaunchTarget} />
+      <LiveTVPlayback ref={playbackRef} />
     </div>
   );
 };
 
-export default LiveTV;
+export default memo(LiveTV);

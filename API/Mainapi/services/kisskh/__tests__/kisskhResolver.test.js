@@ -63,7 +63,7 @@ function providerFixture() {
       evidence: { score: 126, titleSource: 'alternative' },
     },
     mediaUrl: 'https://media.example/master.m3u8?signature=sensitive',
-    requiredHeaders: { Referer: 'https://kisskh.nl/', Origin: 'https://kisskh.nl' },
+    requiredHeaders: { Referer: 'https://kisskh.do/', Origin: 'https://kisskh.do' },
     subtitles: [
       { src: 'https://subs.example/en.srt?sig=one', label: 'English', land: 'en' },
       { src: 'https://subs.example/fr.txt?sig=two', label: 'Francais', land: 'fr' },
@@ -139,6 +139,45 @@ test('concurrent identical resolutions share provider work and mint fresh fallba
     && mode === 'EX' && ttl === 120));
 });
 
+test('configured domain updates subtitle hosts and fallback headers while preserving external CDN URLs', async () => {
+  const fixture = providerFixture();
+  delete fixture.requiredHeaders;
+  fixture.subtitles = [
+    { src: 'https://kisskh.nl/sub/fr.srt?sig=one', land: 'fr' },
+    { src: 'https://sub.kisskh.nl/fr.txt?sig=two', land: 'fr' },
+    { src: 'https://sub.cdnvideo11.shop/fr.srt?origin=kisskh.nl', land: 'fr' },
+    { src: 'https://kisskh.nl.attacker.example/fr.srt', land: 'fr' },
+    { src: 'https://notkisskh.nl/fr.srt', land: 'fr' },
+  ];
+  const setup = makeResolver({
+    providerBaseUrl: 'https://kisskh.tv',
+    resolveProvider: async () => fixture,
+  });
+  const request = { tmdbId: 154825, season: 1, episode: 3 };
+  const expected = [
+    'https://kisskh.tv/sub/fr.srt?sig=one',
+    'https://sub.kisskh.tv/fr.txt?sig=two',
+    'https://sub.cdnvideo11.shop/fr.srt?origin=kisskh.nl',
+    'https://kisskh.nl.attacker.example/fr.srt',
+    'https://notkisskh.nl/fr.srt',
+  ];
+  for (let attempt = 0; attempt < 2; attempt += 1) {
+    const result = await setup.resolver.resolveTv(request);
+    assert.deepEqual(result.subtitles.map((track) => track.sourceUrl), expected);
+    assert.deepEqual(result.subtitles.map((track) => track.proxyUrl), expected);
+    const capability = await setup.capabilityStore.consume(result.sources[0].fallbackToken);
+    assert.deepEqual(capability.requiredHeaders, { Referer: 'https://kisskh.tv/', Origin: 'https://kisskh.tv' });
+    if (attempt === 0) {
+      const cached = await setup.cache.getResolution('tv', request.tmdbId, request.season, request.episode);
+      await setup.cache.setResolution('tv', request.tmdbId, request.season, request.episode, {
+        ...cached,
+        requiredHeaders: { Referer: 'https://kisskh.nl/', Origin: 'https://kisskh.nl' },
+        subtitles: cached.subtitles.map((track, index) => ({ ...track, sourceUrl: fixture.subtitles[index].src })),
+      });
+    }
+  }
+});
+
 test('metadata cache TTLs are exact, sensitive payload stays in bounded local LRU, and lock release compares token', async () => {
   const setup = makeResolver({ resolveProvider: async () => providerFixture() });
   const result = await setup.resolver.resolveTv({ tmdbId: 154825, season: 1, episode: 3 });
@@ -146,17 +185,10 @@ test('metadata cache TTLs are exact, sensitive payload stays in bounded local LR
 
   const matchWrite = setup.redis.writes.find(([key]) => key === 'kisskh:match:v1:tv:154825');
   const episodesWrite = setup.redis.writes.find(([key]) => key === 'kisskh:episodes:v2:4608');
-  const bundleCurrentWrite = setup.redis.writes.find(([key]) => key === 'kisskh:bundle:current');
-  const bundleLastKnownWrite = setup.redis.writes.find(([key]) => key === 'kisskh:bundle:last-known');
   assert.deepEqual(matchWrite.slice(2, 4), ['EX', 86_400]);
   assert.deepEqual(episodesWrite.slice(2, 4), ['EX', 21_600]);
-  assert.deepEqual(bundleCurrentWrite.slice(2, 4), ['EX', 900]);
-  assert.deepEqual(bundleLastKnownWrite.slice(2, 4), ['EX', 86_400]);
-  assert.deepEqual(Object.keys(JSON.parse(bundleCurrentWrite[1])).sort(), [
-    'algorithmVersion', 'bundleSha256', 'checkedAt', 'moduleSha256',
-  ]);
-  assert.equal(JSON.parse(bundleCurrentWrite[1]).checkedAt, setup.nowState.value);
-  assert.deepEqual(await setup.cache.getCurrentBundleMetadata(), JSON.parse(bundleCurrentWrite[1]));
+  assert.equal(setup.redis.writes.some(([key]) => key.startsWith('kisskh:bundle:')), false,
+    'Only a real bundle validation may renew the shared verification timestamp');
   const normalWrites = setup.redis.writes.filter(([key]) => /kisskh:(?:match|episodes|not-found):/.test(key));
   assert.doesNotMatch(JSON.stringify(normalWrites), /kkey|fallbackToken|mediaUrl|signature|keyBase64|ivBase64/i);
   assert.equal(await setup.cache.getSensitive('episode', 86439) !== null, true);
@@ -248,8 +280,6 @@ test('runtime TTL environment changes Redis EX, lock PX, local expiry, and capab
   const writeTtl = (key) => setup.redis.writes.find(([writtenKey]) => writtenKey === key)?.slice(2, 4);
   assert.deepEqual(writeTtl('kisskh:match:v1:tv:154825'), ['EX', 11]);
   assert.deepEqual(writeTtl('kisskh:episodes:v2:4608'), ['EX', 12]);
-  assert.deepEqual(writeTtl('kisskh:bundle:current'), ['EX', 16]);
-  assert.deepEqual(writeTtl('kisskh:bundle:last-known'), ['EX', 17]);
   assert.deepEqual(writeTtl('kisskh:not-found:v4:tv:154825:1:99'), ['EX', 13]);
   assert.deepEqual(
     setup.redis.writes.find(([key]) => key === 'kisskh:lock:resolve:tv:154825:1:3').slice(2, 5),
@@ -313,7 +343,7 @@ test('episode and subtitle payloads survive a new cache instance through the dis
 
   await first.setSensitive('episode', 86439, {
     mediaUrl: 'https://media.example/master.m3u8',
-    requiredHeaders: { Referer: 'https://kisskh.nl/', Origin: 'https://kisskh.nl' },
+    requiredHeaders: { Referer: 'https://kisskh.do/', Origin: 'https://kisskh.do' },
   });
   await first.setSensitive('sub', 86439, {
     subtitles: [{ id: 'kisskh-fr-1', lang: 'fr', sourceUrl: 'https://subs.example/fr.srt' }],
@@ -342,7 +372,7 @@ test('a resolved TV request survives a new cache instance through the disk cache
       evidence: { score: 100, titleSource: 'localized' },
     },
     mediaUrl: 'https://media.example/master.m3u8',
-    requiredHeaders: { Referer: 'https://kisskh.nl/', Origin: 'https://kisskh.nl' },
+    requiredHeaders: { Referer: 'https://kisskh.do/', Origin: 'https://kisskh.do' },
     subtitles: [],
   };
 
@@ -390,6 +420,174 @@ test('catalogue retrieval progress is shared through Redis and can be cleared', 
   assert.deepEqual(await reader.getCatalogProgress(), progress);
   await reader.clearCatalogProgress();
   assert.equal(await writer.getCatalogProgress(), null);
+});
+
+test('catalogue snapshots reuse immutable items until publication, including after disk loading', async (t) => {
+  const cacheDir = await fsp.mkdtemp(path.join(os.tmpdir(), 'movix-kisskh-catalogue-immutable-'));
+  t.after(() => fsp.rm(cacheDir, { recursive: true, force: true }));
+  const { createKisskhCache } = require('../kisskhCache');
+  const nowState = { value: 1_000 };
+  const deps = { cacheDir, now: () => nowState.value };
+  const cache = createKisskhCache(deps);
+  const input = [{ id: 1, title: 'Signal', episodesCount: 16 }];
+  const snapshot = await cache.setCatalogSnapshot(input);
+  input[0].title = 'Changed by caller';
+  assert.equal(snapshot.items[0].title, 'Signal');
+  assert.equal(await cache.getCatalogSnapshot(), snapshot);
+  assert.equal(Object.isFrozen(snapshot), true);
+  assert.equal(Object.isFrozen(snapshot.items), true);
+  assert.equal(Object.isFrozen(snapshot.items[0]), true);
+  assert.equal(Reflect.set(snapshot.items[0], 'title', 'Mutation'), false);
+
+  const diskCache = createKisskhCache(deps);
+  const loaded = await diskCache.getCatalogSnapshot();
+  assert.deepEqual(loaded, snapshot);
+  assert.equal(await diskCache.getCatalogSnapshot(), loaded);
+  assert.equal(Object.isFrozen(loaded.items[0]), true);
+  nowState.value += 43_200_000;
+  assert.equal(await diskCache.getCatalogSnapshot(), null);
+  assert.equal(await diskCache.getCatalogSnapshot({ allowStale: true }), loaded);
+
+  const replacement = await cache.setCatalogSnapshot([{ id: 2, title: 'Moving' }]);
+  assert.notEqual(replacement.items, snapshot.items);
+  assert.equal(await cache.getCatalogSnapshot(), replacement);
+  assert.equal(snapshot.items[0].title, 'Signal');
+});
+
+test('workers reuse a refreshed shared catalogue instead of scraping it again after expiry', async (t) => {
+  const cacheDir = await fsp.mkdtemp(path.join(os.tmpdir(), 'movix-kisskh-catalogue-workers-'));
+  t.after(() => fsp.rm(cacheDir, { recursive: true, force: true }));
+  const nowState = { value: 1_000 };
+  let listCalls = 0;
+  const deps = { cacheDir, nowState, kisskhClient: {
+    async list() {
+      listCalls += 1;
+      return { page: 1, pageSize: 100, totalCount: 1, data: [{ id: 2, title: 'New catalogue' }] };
+    },
+  } };
+  const owner = makeResolver(deps);
+  const reader = makeResolver({ ...deps, redis: owner.redis });
+  await owner.cache.setCatalogSnapshot([{ id: 1, title: 'Old catalogue' }]);
+  assert.equal((await reader.cache.getCatalogSnapshot()).items[0].id, 1);
+  nowState.value += 43_200_000;
+  await owner.resolver.warmCatalog();
+  assert.equal(listCalls, 1);
+  await reader.resolver.warmCatalog();
+  assert.equal(listCalls, 1, 'The second worker must reuse the catalogue published on disk');
+  assert.equal((await reader.cache.getCatalogSnapshot()).items[0].id, 2);
+});
+
+test('concurrent cold catalogue reads share one immutable snapshot', async (t) => {
+  const cacheDir = await fsp.mkdtemp(path.join(os.tmpdir(), 'movix-kisskh-catalogue-concurrent-'));
+  t.after(() => fsp.rm(cacheDir, { recursive: true, force: true }));
+  const { createKisskhCache } = require('../kisskhCache');
+  await createKisskhCache({ cacheDir }).setCatalogSnapshot([{ id: 1, title: 'Signal' }]);
+  const reader = createKisskhCache({ cacheDir });
+  const snapshots = await Promise.all(Array.from({ length: 20 }, () => reader.getCatalogSnapshot()));
+  assert.ok(snapshots[0]);
+  assert.ok(snapshots.every((snapshot) => snapshot === snapshots[0]));
+});
+
+test('a delayed lock acquisition rechecks the catalogue published by the preceding owner', async (t) => {
+  const cacheDir = await fsp.mkdtemp(path.join(os.tmpdir(), 'movix-kisskh-catalogue-lock-race-'));
+  t.after(() => fsp.rm(cacheDir, { recursive: true, force: true }));
+  const nowState = { value: 1_000 };
+  let listCalls = 0;
+  const deps = { cacheDir, nowState, kisskhClient: {
+    async list() {
+      listCalls += 1;
+      return { page: 1, pageSize: 100, totalCount: 1, data: [{ id: 2, title: 'Refreshed' }] };
+    },
+  } };
+  const owner = makeResolver(deps);
+  const reader = makeResolver({ ...deps, redis: owner.redis });
+  await owner.cache.setCatalogSnapshot([{ id: 1, title: 'Expired' }]);
+  await reader.cache.getCatalogSnapshot();
+  nowState.value += 43_200_000;
+  let startAcquisition;
+  let releaseAcquisition;
+  const started = new Promise((resolve) => { startAcquisition = resolve; });
+  const released = new Promise((resolve) => { releaseAcquisition = resolve; });
+  const redisSet = owner.redis.set.bind(owner.redis);
+  let delayOnce = true;
+  owner.redis.set = async (...args) => {
+    if (args[0] === 'kisskh:lock:catalog-refresh:v1' && delayOnce) {
+      delayOnce = false;
+      startAcquisition();
+      await released;
+    }
+    return redisSet(...args);
+  };
+  const waitingReader = reader.resolver.warmCatalog();
+  try {
+    await started;
+    await owner.resolver.warmCatalog();
+  } finally {
+    releaseAcquisition();
+    await waitingReader;
+  }
+  assert.equal(listCalls, 1);
+  assert.equal((await reader.cache.getCatalogSnapshot()).items[0].id, 2);
+});
+
+test('failed stale catalogue reads are bounded and preserve the valid snapshot and shared file', async (t) => {
+  const cacheDir = await fsp.mkdtemp(path.join(os.tmpdir(), 'movix-kisskh-catalogue-invalid-'));
+  t.after(() => fsp.rm(cacheDir, { recursive: true, force: true }));
+  const file = path.join(cacheDir, 'catalog-v1.json');
+  let now = 1_000;
+  const { createKisskhCache } = require('../kisskhCache');
+  const cache = createKisskhCache({ cacheDir, now: () => now });
+  const valid = await cache.setCatalogSnapshot([{ id: 1, title: 'Last complete catalogue' }]);
+  await fsp.writeFile(file, '{invalid JSON', 'utf8');
+  const readFile = fsp.readFile.bind(fsp);
+  let reads = 0;
+  t.mock.method(fsp, 'readFile', async (...args) => {
+    if (args[0] === file) reads += 1;
+    return readFile(...args);
+  });
+  now += 43_200_000;
+  for (let index = 0; index < 50; index += 1) {
+    assert.equal(await cache.getCatalogSnapshot(), null);
+    assert.equal(await cache.getCatalogSnapshot({ allowStale: true }), valid);
+  }
+  assert.equal(reads, 1);
+  assert.equal(await readFile(file, 'utf8'), '{invalid JSON');
+  now += 1_000;
+  await createKisskhCache({ cacheDir, now: () => now }).setCatalogSnapshot([{ id: 2, title: 'Recovered' }]);
+  assert.equal((await cache.getCatalogSnapshot()).items[0].id, 2);
+  assert.equal(reads, 2);
+});
+
+test('a local catalogue publication cannot be overwritten by an older disk read already in flight', async (t) => {
+  const cacheDir = await fsp.mkdtemp(path.join(os.tmpdir(), 'movix-kisskh-catalogue-read-race-'));
+  t.after(() => fsp.rm(cacheDir, { recursive: true, force: true }));
+  const file = path.join(cacheDir, 'catalog-v1.json');
+  const { createKisskhCache } = require('../kisskhCache');
+  await createKisskhCache({ cacheDir }).setCatalogSnapshot([{ id: 1, title: 'Old' }]);
+  const reader = createKisskhCache({ cacheDir });
+  const readFile = fsp.readFile.bind(fsp);
+  let startRead;
+  let releaseRead;
+  const started = new Promise((resolve) => { startRead = resolve; });
+  const released = new Promise((resolve) => { releaseRead = resolve; });
+  t.mock.method(fsp, 'readFile', async (...args) => {
+    const content = await readFile(...args);
+    if (args[0] === file) {
+      startRead();
+      await released;
+    }
+    return content;
+  });
+  const pendingRead = reader.getCatalogSnapshot();
+  let published;
+  try {
+    await started;
+    published = await reader.setCatalogSnapshot([{ id: 2, title: 'New' }]);
+  } finally {
+    releaseRead();
+  }
+  assert.equal(await pendingRead, published);
+  assert.equal(await reader.getCatalogSnapshot(), published);
 });
 
 test('match cache v2 keeps seasons independently while mirroring v1 for code rollback', async () => {
@@ -480,7 +678,7 @@ test('cached legacy txt2 subtitles are rehydrated from the current approved a3 a
       evidence: { score: 126, titleSource: 'alternative' },
     },
     mediaUrl: 'https://media.example/master.m3u8',
-    requiredHeaders: { Referer: 'https://kisskh.nl/', Origin: 'https://kisskh.nl' },
+    requiredHeaders: { Referer: 'https://kisskh.do/', Origin: 'https://kisskh.do' },
     subtitles: [{
       id: 'kisskh-en-1',
       lang: 'en',
@@ -525,7 +723,7 @@ test('legacy txt2 from the sensitive subtitle cache is rehydrated before the pub
   await setup.cache.setEpisodes(4608, [{ id: 86439, number: request.episode }]);
   await setup.cache.setSensitive('episode', 86439, {
     mediaUrl: 'https://media.example/master.m3u8',
-    requiredHeaders: { Referer: 'https://kisskh.nl/', Origin: 'https://kisskh.nl' },
+    requiredHeaders: { Referer: 'https://kisskh.do/', Origin: 'https://kisskh.do' },
   });
   await setup.cache.setSensitive('sub', 86439, {
     subtitles: [{
@@ -574,7 +772,7 @@ test('cached txt2 AES subtitles do not revalidate the approved bundle', async ()
       evidence: { score: 126, titleSource: 'alternative' },
     },
     mediaUrl: 'https://media.example/master.m3u8',
-    requiredHeaders: { Referer: 'https://kisskh.nl/', Origin: 'https://kisskh.nl' },
+    requiredHeaders: { Referer: 'https://kisskh.do/', Origin: 'https://kisskh.do' },
     subtitles: [{
       id: 'kisskh-en-1',
       lang: 'en',
@@ -674,6 +872,11 @@ test('default orchestration reuses TMDB, matcher, client and approved algorithm 
       return { id, results: [{ title: 'A Business Proposal' }] };
     },
     kisskhClient: {
+      async list(page, pageSize) {
+        clientCalls.push(['list', page]);
+        return { page, pageSize, totalCount: 1,
+          data: [{ id: 4608, title: 'A Business Proposal', episodesCount: 12 }] };
+      },
       async search(query) {
         clientCalls.push(['search', query]);
         return [{ id: 4608, title: 'A Business Proposal', releaseDate: '2022', country: 'Korea', episodesCount: 12 }];
@@ -706,7 +909,7 @@ test('default orchestration reuses TMDB, matcher, client and approved algorithm 
     ['details', 154825, 'tv', 'en-US'],
     ['alternatives', 154825],
   ]);
-  assert.ok(clientCalls.filter(([kind]) => kind === 'search').length > 0);
+  assert.equal(clientCalls.filter(([kind]) => kind === 'search').length, 0);
   assert.deepEqual(clientCalls.slice(-3), [['drama', 4608], ['episode', 86439], ['sub', 86439]]);
 });
 
@@ -727,7 +930,9 @@ test('resolving episode 1 never collapses the cached drama list before episode 2
     },
     async fetchTmdbAlternativeTitles(_url, _key, id) { return { id, results: [] }; },
     kisskhClient: {
-      async search() { return [{ id: 975, title: 'True Beauty', releaseDate: '2020', episodesCount: 2 }]; },
+      async list(page, pageSize) { return { page, pageSize, totalCount: 1,
+        data: [{ id: 975, title: 'True Beauty', episodesCount: 2 }] }; },
+      async search() { throw new Error('Search must not run'); },
       async getDrama() {
         dramaCalls += 1;
         return {
@@ -768,12 +973,13 @@ test('the tmdb-only match key never reuses a season-one drama for a distinct lat
     },
     async fetchTmdbAlternativeTitles(_url, _key, id) { return { id, results: [] }; },
     kisskhClient: {
-      async search() {
-        return [
+      async list(page, pageSize) {
+        return { page, pageSize, totalCount: 2, data: [
           { id: 1, title: 'Split Drama', releaseDate: '2024', country: 'Korea', episodesCount: 1 },
           { id: 2, title: 'Split Drama Season 2', releaseDate: '2024', country: 'Korea', episodesCount: 1 },
-        ];
+        ] };
       },
+      async search() { throw new Error('Search must not run'); },
       async getDrama(id) {
         dramaCalls.push(id);
         return { id, title: id === 1 ? 'Split Drama' : 'Split Drama Season 2', episodes: [{ id: id * 100 + 1, number: 1 }] };
@@ -814,7 +1020,17 @@ test('TV and movie catalogue caches isolate identical TMDB coordinates on disk a
     'tv-9910-0-1.json',
   ]);
   assert.ok(redis.values.has('kisskh:not-found:v4:tv:9910:0:2'));
-  assert.ok(redis.values.has('kisskh:not-found:v4:movie:9910:0:2'));
+  assert.ok(redis.values.has('kisskh:not-found:v5:movie:9910:0:2'));
+});
+
+test('movie negatives ignore the old episode-zero failures while TV negatives remain valid', async () => {
+  const { cache, redis } = makeResolver();
+  await redis.set('kisskh:not-found:v4:movie:157336:0:1', 'not_found', 'EX', 900);
+  await redis.set('kisskh:not-found:v4:tv:157336:0:1', 'episode_missing', 'EX', 900);
+  assert.equal(await cache.getNotFound('movie', 157336, 0, 1), null);
+  assert.equal(await cache.getNotFound('tv', 157336, 0, 1), 'episode_missing');
+  await cache.setNotFound('movie', 42, 0, 1, 'not_found');
+  assert.equal(await cache.getNotFound('movie', 42, 0, 1), 'not_found');
 });
 
 function discoveryFixture(overrides = {}) {
@@ -841,9 +1057,168 @@ function discoveryFixture(overrides = {}) {
   };
 }
 
-test('discovery falls through incompatible categories and confirms the first compatible type', async () => {
+function absentTitleSetup(overrides = {}) {
+  const calls = { search: 0 };
+  const setup = makeResolver(discoveryFixture({
+    async fetchTmdbDetails() {
+      return { name: 'Absent Drama', original_name: 'Other Absent Drama', number_of_seasons: 2,
+        seasons: [{ season_number: 1, episode_count: 10 }, { season_number: 2, episode_count: 10 }] };
+    },
+    async fetchTmdbAlternativeTitles() {
+      return { results: Array.from({ length: 10 }, (_, index) => ({ title: `Absent Alias ${index}` })) };
+    },
+    ...overrides,
+    kisskhClient: {
+      async list() { return { page: 1, pageSize: 100, totalCount: 1, data: [{ id: 99, title: 'Unrelated' }] }; },
+      async search() { calls.search += 1; return []; },
+      async getDrama() { throw new Error('Unexpected drama'); },
+      async getEpisode() { throw new Error('Unexpected episode'); },
+      async getSubtitles() { throw new Error('Unexpected subtitles'); },
+      ...overrides.kisskhClient,
+    },
+  }));
+  return { ...setup, calls };
+}
+
+test('a fresh catalogue confirms title absence without Search across episodes, workers and negative-cache expiry', async () => {
+  const setup = absentTitleSetup();
+  const request = { tmdbId: 42, season: 1, episode: 1 };
+  await assert.rejects(setup.resolver.warmTv(request), (error) => error.code === 'not_found');
+  assert.equal(setup.calls.search, 0);
+  await assert.rejects(setup.resolver.warmTv({ ...request, episode: 2 }), (error) => error.code === 'not_found');
+  assert.equal(setup.calls.search, 0);
+  assert.equal(await setup.cache.getNotFound('tv', 42, 1, 1), null, 'Title absence must not also retain a longer episode negative');
+
+  const other = absentTitleSetup({ redis: setup.redis, nowState: setup.nowState });
+  await assert.rejects(other.resolver.warmTv({ ...request, episode: 3 }), (error) => error.code === 'not_found');
+  assert.equal(other.calls.search, 0);
+  assert.equal(await other.cache.getTitleNotFound('movie', 42, 1), false);
+  assert.equal(await other.cache.getTitleNotFound('tv', 42, 2), false);
+  assert.equal(await other.cache.getTitleNotFound('tv', 43, 1), false);
+
+  setup.nowState.value += 300_000;
+  await assert.rejects(setup.resolver.warmTv(request), (error) => error.code === 'not_found');
+  assert.equal(setup.calls.search, 0);
+});
+
+test('title negative cache is bounded, provider-specific and usable while Redis is disconnected', async () => {
+  const { createKisskhCache } = require('../kisskhCache');
+  let now = 1_000;
+  const disconnected = { status: 'reconnecting',
+    async get() { throw new Error('Redis must not be queued'); },
+    async set() { throw new Error('Redis must not be queued'); } };
+  const cache = createKisskhCache({ redis: disconnected, now: () => now });
+  for (let id = 1; id <= 257; id += 1) await cache.setTitleNotFound('tv', id, 1);
+  assert.equal(await cache.getTitleNotFound('tv', 1, 1), false);
+  assert.equal(await cache.getTitleNotFound('tv', 257, 1), true);
+  now += 300_000;
+  assert.equal(await cache.getTitleNotFound('tv', 257, 1), false);
+
+  const redis = createRedisDouble(() => now);
+  const first = createKisskhCache({ redis, now: () => now, providerBaseUrl: 'https://kisskh.do' });
+  await first.setTitleNotFound('tv', 42, 1);
+  const changed = createKisskhCache({ redis, now: () => now, providerBaseUrl: 'https://kisskh.tv' });
+  assert.equal(await changed.getTitleNotFound('tv', 42, 1), false);
+});
+
+test('title cache respects a shorter configured TTL without extending it on another worker', async () => {
+  const { createKisskhCache } = require('../kisskhCache');
+  let now = 1_000;
+  const redis = createRedisDouble(() => now);
+  const deps = { redis, now: () => now, notFoundTtlSeconds: 60 };
+  await createKisskhCache(deps).setTitleNotFound('tv', 42, 0);
+  now += 59_000;
+  const reader = createKisskhCache(deps);
+  assert.equal(await reader.getTitleNotFound('tv', 42, 0), true);
+  now += 1_000;
+  assert.equal(await reader.getTitleNotFound('tv', 42, 0), false);
+});
+
+test('title cache bounds repeated waves of Redis operations that never settle', async () => {
+  const { createKisskhCache } = require('../kisskhCache');
+  let reads = 0;
+  const cache = createKisskhCache({ redis: { status: 'ready', get() {
+    reads += 1;
+    return new Promise(() => {});
+  } } });
+  for (let wave = 0; wave < 3; wave += 1) {
+    const results = await Promise.all(Array.from({ length: 16 }, (_, index) => cache.getTitleNotFound('tv', wave * 16 + index + 1, 1)));
+    assert.ok(results.every((value) => value === false));
+  }
+  assert.equal(reads, 8);
+  await cache.setTitleNotFound('tv', 99, 1);
+  assert.equal(await cache.getTitleNotFound('tv', 99, 1), true);
+});
+
+test('a catalogue candidate with a missing episode never marks its whole season absent', async () => {
+  const setup = makeResolver(discoveryFixture({
+    kisskhClient: {
+      async list() { return { page: 1, pageSize: 100, totalCount: 1, data: [{ id: 22, title: 'Fallback Drama', episodesCount: 1 }] }; },
+      async search() { return []; },
+      async getDrama() { return { id: 22, title: 'Fallback Drama', episodes: [{ id: 2201, number: 1 }] }; },
+      async getEpisode() { return { Video: 'https://media.example/2201.mp4' }; },
+      async getSubtitles() { return []; },
+    },
+  }));
+  await assert.rejects(setup.resolver.warmTv({ tmdbId: 42, season: 1, episode: 99 }), (error) => error.code === 'not_found');
+  assert.equal(await setup.cache.getTitleNotFound('tv', 42, 1), false);
+  const available = await setup.resolver.resolveTv({ tmdbId: 42, season: 1, episode: 1 });
+  assert.equal(available.match.episodeId, 2201);
+});
+
+test('incomplete catalogues, failed details and stale misses never become negative matches or fall back to Search', async (t) => {
+  const { KisskhError } = require('../errors');
+  for (const [name, overrides, code, staleCatalogue] of [
+    ['invalid catalogue payload', { list: async () => ({ error: 'invalid response' }) }, 'provider_unavailable'],
+    ['429', { list: async () => { throw new KisskhError('provider_rate_limited', 'Limited'); } }, 'provider_rate_limited'],
+    ['incomplete catalogue', { list: async () => { throw new KisskhError('provider_unavailable', 'Offline'); } }, 'provider_unavailable'],
+    ['stale catalogue after failed refresh', { list: async () => { throw new KisskhError('provider_unavailable', 'Offline'); } }, 'provider_unavailable', true],
+    ['failed details', {
+      list: async () => ({ page: 1, pageSize: 100, totalCount: 1, data: [{ id: 23, title: 'Absent Drama' }] }),
+      getDrama: async () => { throw new KisskhError('provider_unavailable', 'Offline'); },
+    }, 'provider_unavailable'],
+  ]) {
+    await t.test(name, async () => {
+      const setup = absentTitleSetup({ kisskhClient: overrides });
+      if (staleCatalogue) {
+        await setup.cache.setCatalogSnapshot([{ id: 99, title: 'Unrelated' }]);
+        setup.nowState.value += 43_200_000;
+      }
+      await assert.rejects(setup.resolver.warmTv({ tmdbId: 42, season: 1, episode: 1 }), (error) => error.code === code);
+      assert.equal(await setup.cache.getTitleNotFound('tv', 42, 1), false);
+      assert.equal(await setup.cache.getNotFound('tv', 42, 1, 1), null);
+      assert.equal(setup.calls.search, 0);
+    });
+  }
+});
+
+test('catalogue matching keeps the English TMDB name when the original title uses another script', async () => {
+  let searchCalls = 0;
+  const setup = makeResolver(discoveryFixture({
+    async fetchTmdbDetails(_url, _key, id, _type, language) {
+      return { id, name: language === 'fr-FR' ? 'Proposition commerciale' : 'Business Proposal',
+        original_name: '사내맞선', number_of_seasons: 1,
+        seasons: [{ season_number: 1, episode_count: 12 }] };
+    },
+    kisskhClient: {
+      async list() { return { page: 1, pageSize: 100, totalCount: 1,
+        data: [{ id: 4608, title: 'Business Proposal', episodesCount: 12 }] }; },
+      async search() { searchCalls += 1; return []; },
+      async getDrama(id) { return { id, title: 'Business Proposal', type: 'TVSeries',
+        episodes: [{ id: 460801, number: 1 }] }; },
+      async getEpisode() { return { Video: 'https://media.example/business-proposal.mp4' }; },
+      async getSubtitles() { return []; },
+    },
+  }));
+  const result = await setup.resolver.resolveTv({ tmdbId: 154825, season: 1, episode: 1 });
+  assert.equal(result.match.kisskhDramaId, 4608);
+  assert.equal(searchCalls, 0);
+});
+
+test('explicit legacy discovery falls through incompatible categories and confirms the first compatible type', async () => {
   const searchTypes = [];
   const setup = makeResolver(discoveryFixture({
+    useEnhancedCatalogMatching: false,
     kisskhClient: {
       async search(_query, type) {
         searchTypes.push(type);
@@ -864,7 +1239,7 @@ test('discovery falls through incompatible categories and confirms the first com
   assert.deepEqual([...new Set(searchTypes)], [0, 1, 2]);
 });
 
-test('season four discovery finds From through the bare title in Hollywood category', async () => {
+test('season four discovery finds Hollywood titles in the complete catalogue without Search', async () => {
   const searches = [];
   const setup = makeResolver(discoveryFixture({
     async fetchTmdbDetails(_url, _key, id) {
@@ -879,6 +1254,8 @@ test('season four discovery finds From through the bare title in Hollywood categ
       };
     },
     kisskhClient: {
+      async list(page, pageSize) { return { page, pageSize, totalCount: 1,
+        data: [{ id: 12852, title: 'From - Season 4', episodesCount: 10 }] }; },
       async search(query, type) {
         searches.push([query, type]);
         return query === 'From' && type === 4
@@ -897,12 +1274,12 @@ test('season four discovery finds From through the bare title in Hollywood categ
   const result = await setup.resolver.resolveTv({ tmdbId: 124364, season: 4, episode: 1 });
 
   assert.equal(result.match.kisskhDramaId, 12852);
-  assert.ok(searches.some(([query, type]) => query === 'From' && type === 4));
+  assert.equal(searches.length, 0);
 });
 
-test('discovery overlaps independent TMDB, search, episode and subtitle requests', async () => {
-  const active = { tmdb: 0, search: 0, media: 0 };
-  const maximum = { tmdb: 0, search: 0, media: 0 };
+test('discovery overlaps independent TMDB, catalogue, episode and subtitle requests', async () => {
+  const active = { tmdb: 0, catalogue: 0, media: 0 };
+  const maximum = { tmdb: 0, catalogue: 0, media: 0 };
   async function overlap(kind, value) {
     active[kind] += 1;
     maximum[kind] = Math.max(maximum[kind], active[kind]);
@@ -925,9 +1302,11 @@ test('discovery overlaps independent TMDB, search, episode and subtitle requests
       return overlap('tmdb', { id: 903, results: [{ title: 'Parallel Drama' }] });
     },
     kisskhClient: {
-      async search() {
-        return overlap('search', [{ id: 9030, title: 'Parallel Drama', episodesCount: 1 }]);
+      async list(page, pageSize) {
+        return overlap('catalogue', { page, pageSize, totalCount: 1,
+          data: [{ id: 9030, title: 'Parallel Drama', episodesCount: 1 }] });
       },
+      async search() { throw new Error('Search must not run'); },
       async getDrama(id) {
         return { id, title: 'Parallel Drama', episodes: [{ id: 90301, number: 1 }] };
       },
@@ -941,13 +1320,14 @@ test('discovery overlaps independent TMDB, search, episode and subtitle requests
   await setup.resolver.resolveTv({ tmdbId: 903, season: 1, episode: 1 });
 
   assert.equal(maximum.tmdb, 3);
-  assert.ok(maximum.search > 1);
+  assert.equal(maximum.catalogue, 1);
   assert.equal(maximum.media, 2);
 });
 
-test('discovery stops category fallback immediately on provider transport failure', async () => {
+test('explicit legacy discovery stops category fallback immediately on provider transport failure', async () => {
   const searchTypes = [];
   const setup = makeResolver(discoveryFixture({
+    useEnhancedCatalogMatching: false,
     kisskhClient: {
       async search(_query, type) {
         searchTypes.push(type);
@@ -983,13 +1363,14 @@ test('segment discovery fetches the selected drama local episode while preservin
       };
     },
     kisskhClient: {
-      async search(_query, type) {
+      async list(page, pageSize, type) {
         assert.equal(type, 0);
-        return [
+        return { page, pageSize, totalCount: 2, data: [
           { id: 1272, title: 'Swallowed Star', episodesCount: 26 },
           { id: 4529, title: 'Swallowed Star Season 2+3+4', episodesCount: 208 },
-        ];
+        ] };
       },
+      async search() { throw new Error('Search must not run'); },
       async getDrama(id) {
         if (id === 1272) {
           return {
@@ -1034,6 +1415,8 @@ test('movie discovery uses the TMDB movie namespace and resolves public episode 
       return { id, titles: [{ title: 'Movie Match', iso_3166_1: 'US' }] };
     },
     kisskhClient: {
+      async list(page, pageSize) { return { page, pageSize, totalCount: 1,
+        data: [{ id: 991001, title: 'Movie Match', episodesCount: 1 }] }; },
       async search(_query, type) {
         searchTypes.push(type);
         return [{ id: 991001, title: 'Movie Match', episodesCount: 1 }];
@@ -1059,8 +1442,73 @@ test('movie discovery uses the TMDB movie namespace and resolves public episode 
     ['details', 9910, 'movie', 'en-US'],
     ['alternatives', 9910, 'movie'],
   ]);
-  assert.ok(searchTypes.length > 0);
-  assert.ok(searchTypes.every((type) => type === 0));
+  assert.equal(searchTypes.length, 0);
+});
+
+test('Interstellar resolves its sole episode zero as movie episode one in catalogue and legacy discovery', async (t) => {
+  for (const useEnhancedCatalogMatching of [true, false]) {
+    await t.test(useEnhancedCatalogMatching ? 'catalogue' : 'legacy Search', async () => {
+      const drama = Object.freeze({
+        id: 4226, title: 'Interstellar', type: 'Hollywood', episodesCount: 1,
+        releaseDate: '2014-01-01T04:00:00',
+        episodes: Object.freeze([Object.freeze({ id: 79340, number: 0 })]),
+      });
+      let dramaCalls = 0;
+      const setup = makeResolver(discoveryFixture({
+        useEnhancedCatalogMatching,
+        async fetchTmdbDetails() {
+          return { title: 'Interstellar', original_title: 'Interstellar', release_date: '2014-11-05' };
+        },
+        async fetchTmdbAlternativeTitles() { return { titles: [] }; },
+        kisskhClient: {
+          async list(page, pageSize) { return { page, pageSize, totalCount: 1,
+            data: [{ id: drama.id, title: drama.title, episodesCount: 1 }] }; },
+          async search() { return [{ id: drama.id, title: drama.title, episodesCount: 1 }]; },
+          async getDrama() { dramaCalls += 1; return drama; },
+          async getEpisode(id) { assert.equal(id, 79340); return { Video: 'https://media.example/interstellar.mp4' }; },
+          async getSubtitles(id) { assert.equal(id, 79340); return []; },
+        },
+      }));
+      const request = { tmdbId: 157336, season: 0, episode: 1 };
+      const result = await setup.resolver.resolveMovie(request);
+      assert.deepEqual(result.match, { ...request, kisskhDramaId: 4226, episodeId: 79340 });
+      assert.deepEqual(await setup.cache.getEpisodes(4226), [{ id: 79340, number: 1 }]);
+      assert.equal(drama.episodes[0].number, 0, 'The upstream metadata must remain unchanged');
+      assert.equal(await setup.cache.getNotFound('movie', 157336, 0, 1), null);
+
+      assert.deepEqual((await setup.resolver.resolveMovie(request)).match, result.match);
+      assert.equal(dramaCalls, 1, 'A cached movie must not fetch its details again');
+      // La même fiche doit encore fonctionner après expiration des caches.
+      setup.nowState.value += 43_200_000;
+      assert.deepEqual((await setup.resolver.resolveMovie(request)).match, result.match);
+      assert.equal(dramaCalls, 2);
+    });
+  }
+});
+
+test('episode zero never replaces a numbered movie episode or a missing TV episode', async (t) => {
+  for (const mediaNamespace of ['movie', 'tv']) {
+    await t.test(mediaNamespace, async () => {
+      const setup = makeResolver(discoveryFixture({
+        kisskhClient: {
+          async list(page, pageSize) { return { page, pageSize, totalCount: 1,
+            data: [{ id: 22, title: 'Fallback Drama', episodesCount: 1 }] }; },
+          async search() { throw new Error('Unexpected Search'); },
+          async getDrama() { return { id: 22, title: 'Fallback Drama',
+            episodes: [{ id: 2200, number: 0 }, ...(mediaNamespace === 'movie' ? [{ id: 2201, number: 1 }] : [])] }; },
+          async getEpisode(id) { assert.equal(id, 2201); return { Video: 'https://media.example/2201.mp4' }; },
+          async getSubtitles(id) { assert.equal(id, 2201); return []; },
+        },
+      }));
+      if (mediaNamespace === 'movie') {
+        const result = await setup.resolver.resolveMovie({ tmdbId: 42, season: 0, episode: 1 });
+        assert.equal(result.match.episodeId, 2201);
+      } else {
+        await assert.rejects(setup.resolver.resolveTv({ tmdbId: 42, season: 1, episode: 1 }),
+          (error) => error.code === 'not_found');
+      }
+    });
+  }
 });
 
 test('explicit catalogue warm-up builds the complete disk snapshot independently of an episode match', async (t) => {
@@ -1126,12 +1574,6 @@ test('enhanced discovery builds every catalogue page and treats decimal episodes
   };
   const setup = makeResolver(discoveryFixture({
     cacheDir,
-    logger: {
-      info(message, value) {
-        if (message === '[KISSKH] catalogue retrieval progress') progressEvents.push(value);
-      },
-      warn() {},
-    },
     async fetchTmdbDetails(_url, _key, id) {
       return {
         id,
@@ -1146,7 +1588,14 @@ test('enhanced discovery builds every catalogue page and treats decimal episodes
     kisskhClient: client,
   }));
 
-  const result = await setup.resolver.resolveTv({ tmdbId: 93405, season: 2, episode: 7 });
+  const result = await setup.resolver.resolveTv({ tmdbId: 93405, season: 2, episode: 7 }, {
+    onProgress(event) {
+      if (event.phase === 'catalog_progress') {
+        progressEvents.push({ phase: event.catalogPhase, completed: event.completed,
+          total: event.total, percent: event.percent });
+      }
+    },
+  });
   assert.equal(result.match.kisskhDramaId, 975);
   assert.equal(result.match.episodeId, 97_506);
   assert.deepEqual(listCalls, [[1, 100, 0], [2, 100, 0]]);
@@ -1225,6 +1674,33 @@ test('enhanced discovery enriches ambiguous titles with Drama year and country',
   assert.deepEqual(dramaCalls.sort((left, right) => left - right), [11, 22]);
 });
 
+test('catalogue discovery replaces its index even when publications have the same timestamp', async () => {
+  let currentDrama = { id: 11, title: 'Fallback Drama', episodesCount: 1 };
+  const setup = makeResolver(discoveryFixture({
+    kisskhClient: {
+      async list() { throw new Error('fresh catalogue must avoid List'); },
+      async search() { throw new Error('indexed candidate must avoid Search'); },
+      async getDrama(id) {
+        assert.equal(id, currentDrama.id);
+        return { ...currentDrama, type: 'TVSeries', episodes: [{ id: id * 100, number: 1 }] };
+      },
+      async getEpisode(id) { return { Video: `https://media.example/${id}.mp4` }; },
+      async getSubtitles() { return []; },
+    },
+  }));
+  const firstSnapshot = await setup.cache.setCatalogSnapshot([currentDrama]);
+  for (const tmdbId of [901, 902]) {
+    const result = await setup.resolver.resolveTv({ tmdbId, season: 1, episode: 1 });
+    assert.equal(result.match.kisskhDramaId, 11);
+  }
+  currentDrama = { ...currentDrama, id: 22 };
+  const nextSnapshot = await setup.cache.setCatalogSnapshot([currentDrama]);
+  assert.equal(nextSnapshot.refreshedAt, firstSnapshot.refreshedAt);
+  const result = await setup.resolver.resolveTv({ tmdbId: 903, season: 1, episode: 1 });
+  assert.equal(result.match.kisskhDramaId, 22);
+  assert.equal(result.match.episodeId, 2200);
+});
+
 test('legacy discovery remains selectable without reading or refreshing the catalogue', async () => {
   let listCalls = 0;
   let searchCalls = 0;
@@ -1284,7 +1760,90 @@ test('failed catalogue refresh keeps using the complete stale disk snapshot', as
   assert.equal((await setup.cache.getCatalogSnapshot({ allowStale: true })).items[0].id, 7793);
 });
 
-test('enhanced network fallback regularizes decimal bonuses before choosing an absolute segment', async () => {
+test('failed catalogue refreshes back off before touching Redis, preserve stale data and recover', async () => {
+  let listCalls = 0;
+  let offline = true;
+  const setup = makeResolver({
+    kisskhClient: {
+      async list(page, pageSize) {
+        listCalls += 1;
+        if (offline) throw new Error('metadata timeout');
+        return { page, pageSize, totalCount: 1, data: [{ id: 2, title: 'Recovered' }] };
+      },
+    },
+  });
+  await setup.cache.setCatalogSnapshot([{ id: 1, title: 'Cached' }]);
+  setup.nowState.value += 43_200_000;
+  await setup.resolver.warmCatalog();
+  const before = setup.redis.writes.length;
+  for (let index = 0; index < 100; index += 1) await setup.resolver.warmCatalog();
+  assert.equal(listCalls, 1);
+  assert.equal(setup.redis.writes.length, before);
+  assert.equal((await setup.cache.getCatalogSnapshot({ allowStale: true })).items[0].id, 1);
+  assert.equal(await setup.resolver.getRetrievalProgress(), null);
+  setup.nowState.value += 60_000;
+  offline = false;
+  await setup.resolver.warmCatalog();
+  assert.equal(listCalls, 2);
+  assert.equal((await setup.cache.getCatalogSnapshot()).items[0].id, 2);
+});
+
+test('a failed catalogue page keeps its lock until the other pages have settled', async () => {
+  let release;
+  let started;
+  const pending = new Promise((resolve) => { release = resolve; });
+  const running = new Promise((resolve) => { started = resolve; });
+  const setup = makeResolver({
+    kisskhClient: {
+      async list(page, pageSize) {
+        if (page === 2) throw new Error('provider unavailable');
+        if (page === 3) { started(); await pending; }
+        return { page, pageSize, totalCount: 300, data: Array.from({ length: 100 }, (_, index) => ({
+          id: (page - 1) * 100 + index + 1, title: `Title ${page} ${index}`,
+        })) };
+      },
+    },
+  });
+  let finished = false;
+  const refresh = setup.resolver.warmCatalog().finally(() => { finished = true; });
+  await running;
+  await new Promise((resolve) => setImmediate(resolve));
+  const releasedEarly = finished;
+  const lockHeld = setup.redis.values.has('kisskh:lock:catalog-refresh:v1');
+  release();
+  await refresh;
+  assert.equal(releasedEarly, false);
+  assert.equal(lockHeld, true);
+  assert.equal(await setup.cache.getCatalogSnapshot(), null);
+  assert.equal(await setup.resolver.getRetrievalProgress(), null);
+});
+
+test('catalogue page batches fit within the real metadata and proxy admission limits', async () => {
+  const { createKisskhProxyPolicy } = require('../proxyPolicy');
+  const { createKisskhClient } = require('../kisskhClient');
+  const proxyPolicy = createKisskhProxyPolicy({
+    redis: {}, now: () => 10_000, sleep: async () => {},
+    getProxyCandidates: async () => [{ type: 'socks5', host: 'proxy.example', port: 1080 }],
+    reserveProxy: async () => true,
+  });
+  const kisskhClient = createKisskhClient({
+    proxyPolicy,
+    resolveDns: async () => [{ address: '93.184.216.34' }],
+    async request(options) {
+      const page = Number(new URL(options.url).searchParams.get('page'));
+      return { status: 200, data: { page, pageSize: 100, totalCount: 800,
+        data: Array.from({ length: 100 }, (_, index) => ({
+          id: (page - 1) * 100 + index + 1, title: `Title ${page} ${index}`,
+        })),
+      } };
+    },
+  });
+  const setup = makeResolver({ kisskhClient });
+  await setup.resolver.warmCatalog();
+  assert.equal((await setup.cache.getCatalogSnapshot())?.items.length, 800);
+});
+
+test('catalogue discovery regularizes decimal bonuses before choosing an absolute segment', async () => {
   const detailCalls = [];
   const setup = makeResolver(discoveryFixture({
     async fetchTmdbDetails(_url, _key, id) {
@@ -1299,16 +1858,13 @@ test('enhanced network fallback regularizes decimal bonuses before choosing an a
       };
     },
     kisskhClient: {
-      async list() {
-        const { KisskhError } = require('../errors');
-        throw new KisskhError('provider_unavailable', 'catalogue unavailable');
-      },
-      async search(_query, type) {
-        return type === 0 ? [
+      async list(page, pageSize) {
+        return { page, pageSize, totalCount: 2, data: [
           { id: 31, title: 'Bonus Show', episodesCount: 8 },
           { id: 32, title: 'Bonus Show Season 2', episodesCount: 10 },
-        ] : [];
+        ] };
       },
+      async search() { throw new Error('Search must not run'); },
       async getDrama(id) {
         detailCalls.push(id);
         return id === 31
@@ -1325,4 +1881,87 @@ test('enhanced network fallback regularizes decimal bonuses before choosing an a
   assert.equal(result.match.episodeId, 32_001);
   assert.ok(detailCalls.includes(31));
   assert.ok(detailCalls.includes(32));
+});
+
+test('hourly partial catalogue refresh merges three recent pages across workers without delaying the 12h full refresh', async (t) => {
+  const cacheDir = await fsp.mkdtemp(path.join(os.tmpdir(), 'movix-kisskh-hourly-catalogue-'));
+  t.after(() => fsp.rm(cacheDir, { recursive: true, force: true }));
+  const nowState = { value: 1_000 };
+  const calls = [];
+  const original = Array.from({ length: 400 }, (_, index) => ({ id: index + 1, title: `Title ${index + 1}`, episodesCount: 1 }));
+  const recent = [{ id: 401, title: 'New title', episodesCount: 1 },
+    { ...original[0], episodesCount: 2 }, ...original.slice(1, -1)];
+  const kisskhClient = { async list(page, pageSize, type, order) {
+    calls.push({ page, order });
+    assert.equal(type, 0);
+    return { page, pageSize, totalCount: recent.length, data: recent.slice((page - 1) * pageSize, page * pageSize) };
+  } };
+  const owner = makeResolver({ cacheDir, nowState, kisskhClient });
+  await owner.cache.setCatalogSnapshot(original);
+  const reader = makeResolver({ cacheDir, nowState, kisskhClient, redis: owner.redis });
+  await reader.cache.getCatalogSnapshot();
+
+  nowState.value += 3_600_000 - 1;
+  await owner.resolver.warmCatalog();
+  assert.equal(calls.length, 0);
+  nowState.value += 1;
+  await Promise.all([owner.resolver.warmCatalog(), owner.resolver.warmCatalog()]);
+  assert.deepEqual(calls, [{ page: 1, order: 2 }, { page: 2, order: 2 }, { page: 3, order: 2 }]);
+  const partial = await owner.cache.getCatalogSnapshot();
+  assert.equal(partial.items.length, 401);
+  assert.equal(partial.items.find((item) => item.id === 1).episodesCount, 2);
+  assert.ok(partial.items.some((item) => item.id === 401));
+  assert.ok(partial.items.some((item) => item.id === 400), 'Partial pages cannot prove an old title was deleted');
+  assert.equal(partial.refreshedAt, 1_000);
+  assert.equal(partial.updatedAt, nowState.value);
+  await reader.resolver.warmCatalog();
+  assert.equal(calls.length, 3, 'A peer must reuse the published partial refresh');
+  assert.deepEqual(await reader.cache.getCatalogSnapshot(), partial);
+
+  nowState.value = 1_000 + 11 * 3_600_000;
+  await owner.resolver.warmCatalog();
+  assert.equal(calls.length, 6);
+  assert.equal((await owner.cache.getCatalogSnapshot()).refreshedAt, 1_000);
+  nowState.value += 3_600_000;
+  await owner.resolver.warmCatalog();
+  assert.deepEqual(calls.slice(6), [1, 2, 3, 4].map((page) => ({ page, order: undefined })));
+  const full = await owner.cache.getCatalogSnapshot();
+  assert.equal(full.refreshedAt, nowState.value);
+  assert.equal(full.updatedAt, nowState.value);
+  assert.equal(full.items.length, 400);
+  assert.equal(full.items.some((item) => item.id === 400), false);
+});
+
+test('failed or duplicated partial pages preserve the entire prior catalogue and its refresh dates', async (t) => {
+  for (const failure of ['transport', 'duplicate']) {
+    await t.test(failure, async () => {
+      const original = Array.from({ length: 400 }, (_, index) => ({ id: index + 1, title: `Title ${index + 1}` }));
+      let calls = 0;
+      const setup = makeResolver({ kisskhClient: { async list(page, pageSize) {
+        calls += 1;
+        if (failure === 'transport' && page === 2) throw new Error('Offline');
+        return { page, pageSize, totalCount: 400,
+          data: original.slice(failure === 'duplicate' ? 0 : (page - 1) * 100, failure === 'duplicate' ? 100 : page * 100) };
+      } } });
+      const initial = await setup.cache.setCatalogSnapshot(original);
+      setup.nowState.value += 3_600_000;
+      await setup.resolver.warmCatalog();
+      assert.equal(calls, 3);
+      assert.equal(await setup.cache.getCatalogSnapshot(), initial);
+      await setup.resolver.warmCatalog();
+      assert.equal(calls, 3, 'Failed partial refreshes retain the retry delay');
+    });
+  }
+});
+
+test('old catalogue files inherit their last-update date from the full refresh', async (t) => {
+  const cacheDir = await fsp.mkdtemp(path.join(os.tmpdir(), 'movix-kisskh-old-catalogue-'));
+  t.after(() => fsp.rm(cacheDir, { recursive: true, force: true }));
+  await fsp.writeFile(path.join(cacheDir, 'catalog-v1.json'), JSON.stringify({
+    version: 1, refreshedAt: 1_000, items: [{ id: 1, title: 'Old catalogue' }],
+  }));
+  const cache = require('../kisskhCache').createKisskhCache({ cacheDir, now: () => 2_000 });
+  const snapshot = await cache.getCatalogSnapshot();
+  assert.equal(snapshot.refreshedAt, 1_000);
+  assert.equal(snapshot.updatedAt, 1_000);
 });

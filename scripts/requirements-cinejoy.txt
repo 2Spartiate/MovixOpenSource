@@ -1,0 +1,3 @@
+requests>=2.32.3,<3
+cryptography>=44,<50
+wasmtime>=30,<50

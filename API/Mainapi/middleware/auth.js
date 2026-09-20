@@ -3,10 +3,13 @@
  * Extracted from server.js -- JWT setup, admin checks, session validation.
  */
 
-const fsp = require('fs').promises;
 const path = require('path');
 const jwt = require('jsonwebtoken');
+const { createSecretKey } = require('node:crypto');
 const { getPool } = require('../mysqlPool');
+const { redis } = require('../config/redis');
+const { readAccountData } = require('../utils/accountDataCache');
+const { createSessionActivityUpdater } = require('../utils/sessionActivity');
 const { getUserDataFilePath } = require('../utils/syncPolicy');
 const AUTH_METHODS = ['discord', 'google', 'bip39'];
 const USER_DATA_DIR = path.join(__dirname, '..', 'data');
@@ -56,9 +59,7 @@ async function readStoredAccountData(userType, userId) {
       userType,
       String(userId)
     );
-    const fileContent = await fsp.readFile(filePath, 'utf8');
-    const parsed = JSON.parse(fileContent);
-    return parsed && typeof parsed === 'object' ? parsed : null;
+    return await readAccountData(filePath);
   } catch (error) {
     if (error?.code === 'ENOENT') {
       return null;
@@ -139,12 +140,25 @@ function purgeSessionRecord(sessionId, userId, userType) {
 
 // === Auth validation ===
 
-async function getAuthIfValid(req) {
+const requestAuth = new WeakMap();
+
+function getAuthIfValid(req) {
+  if (!req || typeof req !== 'object') return Promise.resolve(null);
+  const header = req.headers?.authorization || req.headers?.Authorization;
+  const cached = requestAuth.get(req);
+  if (cached && cached.header === header) return cached.promise;
+  const promise = validateAuthRequest(req);
+  requestAuth.set(req, { header, promise });
+  return promise;
+}
+const JWT_SIGNING_KEY = createSecretKey(JWT_SECRET, 'utf8');
+
+async function validateAuthRequest(req) {
   try {
     const authHeader = req.headers['authorization'] || req.headers['Authorization'];
     if (!authHeader || !authHeader.toLowerCase().startsWith('bearer ')) return null;
     const token = authHeader.split(' ')[1];
-    const payload = jwt.verify(token, JWT_SECRET, { algorithms: ['HS256'] });
+    const payload = jwt.verify(token, JWT_SIGNING_KEY, { algorithms: ['HS256'] });
     const { userType, sub: userId, sessionId } = payload;
     const authMethod = AUTH_METHODS.includes(payload?.authMethod)
       ? payload.authMethod
@@ -223,25 +237,11 @@ async function getAuthIfValid(req) {
 
 // === Session access updater (fire-and-forget) ===
 
-const updateSessionAccess = async (userType, userId, sessionId) => {
-  try {
-    const pool = getDbPool();
-    if (!pool) {
-      return false;
-    }
-
-    // Fire-and-forget: ne pas bloquer le flux principal
-    pool.execute(
-      'UPDATE user_sessions SET accessed_at = NOW() WHERE id = ? AND user_id = ? AND user_type = ?',
-      [sessionId, userId, userType]
-    ).catch(err => console.error('Error updating session access:', err));
-
-    return true;
-  } catch (error) {
-    console.error('Error updating session access:', error);
-    return false;
-  }
-};
+const updateSessionAccess = createSessionActivityUpdater({
+  redis,
+  getPool: getDbPool,
+  intervalMs: Number(process.env.SESSION_ACTIVITY_UPDATE_MS || 60_000),
+});
 
 // === Admin middleware ===
 

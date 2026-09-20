@@ -88,29 +88,32 @@ function setCache(cache: Record<string, ImageEntry>) {
   }
 }
 
-// Pick the best image asset by language priority: FR > EN > any tagged > any.
+// Pick the best image asset by language priority: interface lang > EN > untagged > any.
 // IMPORTANT : sans le param API `include_image_language`, TMDB ne renvoie que
 // `iso_639_1: 'en'` et `null` (untagged). On force `fr,en,null` pour avoir le
 // jeu complet — sinon le find('fr') ne match JAMAIS.
 type TmdbImage = { file_path: string; iso_639_1: string | null };
 
-type TmdbImageLanguage = 'fr' | 'en';
+// Langue d'interface (2 lettres, ex. 'fr', 'tr', 'ar') — 'en' en dernier recours.
+const getImageLanguage = (): string =>
+  getTmdbLanguage().split('-')[0].toLowerCase() || 'en';
 
-const getImageLanguage = (): TmdbImageLanguage =>
-  getTmdbLanguage().startsWith('fr') ? 'fr' : 'en';
+// Priorité : langue d'interface > EN > sans langue (untagged).
+const getLanguagePriority = (preferredLanguage: string): Array<string | null> =>
+  preferredLanguage === 'en' ? ['en', null] : [preferredLanguage, 'en', null];
 
-const getCacheEntryKey = (mediaType: 'movie' | 'tv', id: number, language: TmdbImageLanguage) =>
+const getCacheEntryKey = (mediaType: 'movie' | 'tv', id: number, language: string) =>
   `${mediaType}_${id}_${language}`;
 
-function pickBestImage(images: TmdbImage[], preferredLanguage: TmdbImageLanguage): TmdbImage | null {
+/** Remplace la taille dans une URL image TMDB (ex. w342 → w500). */
+export const withTmdbImageSize = (url: string, size: string): string =>
+  url.replace(/\/t\/p\/[^/]+\//, `/t/p/${size}/`);
+
+function pickBestImage(images: TmdbImage[], preferredLanguage: string): TmdbImage | null {
   if (!Array.isArray(images) || images.length === 0) return null;
 
-  const fallbackLanguages: Array<string | null> = preferredLanguage === 'fr'
-    ? ['fr', 'en', null]
-    : ['en', null];
-
   return (
-    fallbackLanguages
+    getLanguagePriority(preferredLanguage)
       .map((language) => images.find((image) => image.iso_639_1 === language))
       .find(Boolean) ||
     images[0] ||
@@ -128,7 +131,7 @@ const inflight = new Map<string, Promise<ImageEntry>>();
 async function fetchAndCache(
   mediaType: 'movie' | 'tv',
   id: number,
-  language: TmdbImageLanguage,
+  language: string,
 ): Promise<ImageEntry> {
   const key = getCacheEntryKey(mediaType, id, language);
   const cache = getCache();
@@ -137,9 +140,12 @@ async function fetchAndCache(
 
   const promise = (async () => {
     try {
-      // include_image_language=fr,en,null = FR + EN + untagged (sinon TMDB
-      // n'expose que en+null par défaut, on perd toutes les FR-versions).
-      const includeImageLanguage = language === 'fr' ? 'fr,en,null' : 'en,null';
+      // include_image_language=<lang>,en,null = langue d'interface + EN +
+      // untagged (sinon TMDB n'expose que en+null par défaut, on perd toutes
+      // les versions localisées).
+      const includeImageLanguage = getLanguagePriority(language)
+        .map((l) => l ?? 'null')
+        .join(',');
       const res = await axios.get(`https://api.themoviedb.org/3/${mediaType}/${id}/images`, {
         params: {
           api_key: TMDB_API_KEY,

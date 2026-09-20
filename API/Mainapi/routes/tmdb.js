@@ -14,6 +14,11 @@ const fsp = require('fs').promises;
 const { CACHE_DIR, generateCacheKey } = require('../utils/cacheManager');
 const { fetchTmdbDetails, searchTmdb } = require('../utils/tmdbCache');
 const { acquireRedisLock } = require('../utils/redisLock');
+const { createSourceRefresh } = require('../utils/sourceRefresh');
+const omegaRefresh = createSourceRefresh();
+const coflixCloneRefresh = createSourceRefresh();
+const coflixRefresh = createSourceRefresh();
+const COFLIX_CHECK_INTERVAL = 2 * 60 * 60 * 1000;
 const { respondWithResolvedSources } = require('../utils/embedExtraction');
 
 // Coflix et FrenchStream n'ont pas de routeur propre : leurs données sortent
@@ -396,72 +401,55 @@ router.get('/tmdb/:type/:id', async (req, res) => {
   try {
     // 1. Verifier le cache sans expiration (stale-while-revalidate)
     const cachedData = await getFromCacheNoExpiration(CACHE_DIR.COFLIX, cacheKey);
-    const hasPlayableCachedData = hasPlayableCoflixResult(cachedData, type);
     let dataReturned = false;
     if (cachedData) {
-      const cachedDataWithClones = await applyCloneUrlsToTmdbResult(cachedData, type, id, season, episode);
-      await respondWithCoflixSources(req, res, filterEmmmmbedReaders(cachedDataWithClones), type);
+      await respondWithCoflixSources(req, res, filterEmmmmbedReaders(cachedData), type);
       dataReturned = true;
-
-      // Lancer la mise a jour en arriere-plan si necessaire
-      (async () => {
-        try {
-          const cachedCloneSync = await syncCloneUrlsOnTmdbResult(cachedDataWithClones, type, id, season, episode);
-          await saveCoflixCachePreservingPlayable(cacheKey, type, cachedCloneSync);
-
-          // Coflix desactive : pas de refresh background
-          if (!COFLIX_ENABLED) {
-            return;
-          }
-
-          // Verifier si le dernier vrai refresh Coflix date de plus de 2h
-          const refreshedAt = cachedCloneSync._coflixRefreshedAt || 0;
-          const twoHours = 2 * 60 * 60 * 1000;
-          if (Date.now() - refreshedAt < twoHours) {
-            return;
-          }
-          await updateCache();
-        } catch (err) {
-          console.error("Erreur non geree dans updateCache (TMDB):", err);
-        }
-      })();
     }
 
+    const syncCachedClones = () => coflixCloneRefresh.run(cacheKey, async () => {
+      if (coflixCloneRefresh.recentlyChecked(cacheKey, COFLIX_CHECK_INTERVAL)) return;
+      const latest = await getFromCacheNoExpiration(CACHE_DIR.COFLIX, cacheKey);
+      if (!latest) return;
+      const withClones = await applyCloneUrlsToTmdbResult(latest, type, id, season, episode);
+      const synced = await syncCloneUrlsOnTmdbResult(withClones, type, id, season, episode);
+      if (JSON.stringify(latest) !== JSON.stringify(synced)) {
+        await saveCoflixCachePreservingPlayable(cacheKey, type, synced);
+      }
+      coflixCloneRefresh.markChecked(cacheKey);
+    });
+
     // 3. Fonction pour recuperer les donnees fraiches et mettre a jour le cache
-    const updateCache = async () => {
+    const updateCache = () => coflixRefresh.run(cacheKey, async () => {
       try {
+        const latest = await getFromCacheNoExpiration(CACHE_DIR.COFLIX, cacheKey);
+        if (latest && (coflixRefresh.recentlyChecked(cacheKey, COFLIX_CHECK_INTERVAL) ||
+            Date.now() - (Number(latest._coflixRefreshedAt) || 0) < COFLIX_CHECK_INTERVAL)) {
+          return { status: 200, data: latest };
+        }
         // Coflix desactive : pas de fetch frais, et on ne pollue pas le cache
         // avec des "Contenu non disponible" qui persisteraient au réveil.
         if (!COFLIX_ENABLED) {
-          if (!dataReturned) {
-            res.status(200).json({ message: 'Contenu non disponible', tmdb_id: id });
-          }
-          return;
+          return { status: 200, data: { message: 'Contenu non disponible', tmdb_id: id } };
         }
 
         // Verifier que le type est valide
         if (type !== 'movie' && type !== 'tv') {
-          if (!dataReturned) {
-            res.status(400).json({ message: 'Type de media non valide' });
-          }
-          return;
+          return { status: 400, data: { message: 'Type de media non valide' } };
         }
 
         // Pour les series, verifier que la saison et l'episode sont fournis pour la mise a jour
         if (type === 'tv' && (!season || !episode)) {
-          if (!dataReturned) {
-            res.status(400).json({ message: 'Parametres de saison/episode manquants' });
-          }
-          return;
+          return { status: 400, data: { message: 'Parametres de saison/episode manquants' } };
         }
 
         // Recuperer les details TMDB
         const tmdbDetails = await getTMDBDetails(id, type);
         if (!tmdbDetails) {
-          if (!dataReturned) {
-            res.status(404).json({ message: 'Contenu non trouve sur TMDB' });
-          }
-          return;
+          const error = new Error('Contenu non trouve sur TMDB');
+          error.code = 'TMDB_DETAILS_UNAVAILABLE';
+          error.httpStatus = 404;
+          throw error;
         }
 
         // Extraire l'annee de la date de sortie
@@ -533,13 +521,11 @@ router.get('/tmdb/:type/:id', async (req, res) => {
             tmdb_details: tmdbDetails,
             _coflixRefreshedAt: Date.now(),
           };
-          if (!hasPlayableCachedData) {
+          if (!hasPlayableCoflixResult(latest, type)) {
             await saveCoflixCachePreservingPlayable(cacheKey, type, unavailableResult);
           }
-          if (!dataReturned) {
-            res.status(200).json(filterEmmmmbedReaders(unavailableResult));
-          }
-          return;
+          coflixRefresh.markChecked(cacheKey);
+          return { status: 200, data: unavailableResult };
         }
 
         // Utiliser le premier resultat trouve
@@ -573,17 +559,19 @@ router.get('/tmdb/:type/:id', async (req, res) => {
         const isEmptyResult = (type === 'movie' && (!result.player_links || result.player_links.length === 0)) ||
           (type === 'tv' && (!result.seasons || result.seasons.length === 0));
 
-        if (!isEmptyResult || !hasPlayableCachedData) {
+        if (!isEmptyResult || !hasPlayableCoflixResult(latest, type)) {
           await saveCoflixCachePreservingPlayable(cacheKey, type, result);
         }
 
-        // Si les donnees n'avaient pas ete retournees initialement, les retourner maintenant
-        if (!dataReturned) {
-          await respondWithCoflixSources(req, res, filterEmmmmbedReaders(result), type);
-        }
+        coflixRefresh.markChecked(cacheKey);
+        coflixCloneRefresh.markChecked(cacheKey);
+        return { status: 200, data: result };
 
       } catch (updateError) {
-        if (updateError && updateError.coflixSiteRateLimited) {
+        if (updateError?.code === 'TMDB_DETAILS_UNAVAILABLE') {
+          // Détails TMDB indisponibles : le rejet sert seulement à espacer les tentatives.
+          // Un résultat null peut aussi être temporaire ; ne pas publier de cache négatif.
+        } else if (updateError && updateError.coflixSiteRateLimited) {
           // Coflix global 429 — announced once by the cooldown; stay silent here.
         } else if (updateError && updateError.isAxiosError) {
           const url = updateError.config && updateError.config.url ? updateError.config.url : '';
@@ -598,23 +586,29 @@ router.get('/tmdb/:type/:id', async (req, res) => {
               : JSON.stringify(updateError));
           console.error(`Erreur lors de la mise a jour du cache TMDB ${id} (${type}): ${msg}`);
         }
-        if (!dataReturned) {
-          res.status(200).json({
-            message: 'Contenu non disponible en raison d\'une erreur',
-            tmdb_id: id
-          });
-        }
+        throw updateError;
       }
-    };
+    });
 
-    // Si pas de donnees en cache, faire la requete normale
-    if (!dataReturned) {
-      await updateCache();
+    if (dataReturned) {
+      void (async () => {
+        await syncCachedClones();
+        if (COFLIX_ENABLED) await updateCache();
+      })().catch(() => {});
+    } else {
+      const result = await updateCache();
+      if (result.status !== 200) return res.status(result.status).json(result.data);
+      await respondWithCoflixSources(req, res, filterEmmmmbedReaders(result.data), type);
     }
 
   } catch (error) {
-    console.error(`Erreur lors de la recuperation des liens TMDB ${id} (${type}):`, error);
+    if (error?.code !== 'TMDB_DETAILS_UNAVAILABLE') {
+      console.error(`Erreur lors de la recuperation des liens TMDB ${id} (${type}):`, error);
+    }
     if (!res.headersSent) {
+      if (error.httpStatus === 404) {
+        return res.status(404).json({ message: 'Contenu non trouve sur TMDB' });
+      }
       res.status(200).json({
         message: 'Contenu non disponible en raison d\'une erreur',
         tmdb_id: id
@@ -678,17 +672,11 @@ router.get('/imdb/:type/:id', async (req, res) => {
       dataReturned = true;
     }
 
-    // 3. Function to fetch fresh data and update cache
-    const updateCache = async () => {
-      try {
-        // Verifier si le cache doit etre mis a jour (pour TV uniquement)
-        if (type === 'tv') {
-          const shouldUpdate = await shouldUpdateCacheFrenchStream(cacheDir, cacheKey);
-          if (!shouldUpdate) {
-            return;
-          }
-        }
-
+    // La tâche partagée ne capture jamais la réponse HTTP d'un appelant.
+    const updateCache = () => omegaRefresh.run(cacheKey, async () => {
+        const latest = await getFromCacheNoExpiration(cacheDir, cacheKey);
+        if (latest && (omegaRefresh.recentlyChecked(cacheKey, 3 * 60 * 60 * 1000) ||
+            !await shouldUpdateCacheFrenchStream(cacheDir, cacheKey))) return latest;
         let responseData = {};
 
         if (type === 'movie') {
@@ -696,6 +684,12 @@ router.get('/imdb/:type/:id', async (req, res) => {
           const movieData = await getFrenchStreamMovie(id);
           if (movieData.error) {
             responseData = { message: 'Contenu non disponible', french_stream_id: id, details: movieData.error };
+            if (!['Movie not found on FrenchCloud', 'Movie not found on FrenchStream', 'Iframe not found on movie page'].includes(movieData.error)) {
+              const error = new Error(movieData.error);
+              error.responseData = responseData;
+              error.httpStatus = 200;
+              throw error;
+            }
           } else {
             responseData = {
               ...movieData
@@ -703,7 +697,7 @@ router.get('/imdb/:type/:id', async (req, res) => {
           }
 
         } else if (type === 'tv') {
-          // --- Handle TV Series (using FrenchStream ID and FrenchStream logic) ---
+          // FrenchCloud fournit toutes les saisons à partir de l'identifiant IMDb.
           const frenchStreamId = id;
           const seriesList = await getFrenchStreamSeries(frenchStreamId);
 
@@ -713,16 +707,22 @@ router.get('/imdb/:type/:id', async (req, res) => {
             if (seriesList.error.includes('404')) {
               responseData = { message: 'Contenu non disponible', french_stream_id: frenchStreamId };
             } else {
-              responseData = { error: 'Failed to retrieve series list from FrenchStream', details: seriesList.error, french_stream_id: frenchStreamId };
+              const error = new Error(seriesList.error);
+              error.responseData = { error: 'Failed to retrieve series list from FrenchStream', details: seriesList.error, french_stream_id: frenchStreamId };
+              error.httpStatus = 500;
+              throw error;
             }
           } else {
             const MAX_SERIES = 10;
             const seriesToProcess = seriesList.slice(0, MAX_SERIES);
 
+            let detailsFailed = false;
             await Promise.all(seriesToProcess.map(async (series) => {
               if (series.link) {
                 try {
-                  const seriesDetails = await getFrenchStreamSeriesDetails(series.link, series.title);
+                  const seriesDetails = series.seasons?.length
+                    ? series
+                    : await getFrenchStreamSeriesDetails(series.link, series.title);
                   if (!seriesDetails.error) {
                     series.seasons = seriesDetails.seasons;
                     series.release_date = seriesDetails.release_date;
@@ -732,10 +732,12 @@ router.get('/imdb/:type/:id', async (req, res) => {
                     series.baseName = baseName;
                     series.partNumber = partNumber;
                   } else {
+                    detailsFailed = true;
                     console.warn(`Could not fetch details for series: ${series.title} (${series.link}), Error: ${seriesDetails.error}`);
                     series.seasons = [];
                   }
                 } catch (detailsError) {
+                  detailsFailed = true;
                   console.error(`Exception fetching details for ${series.title} (${series.link}):`, detailsError);
                   series.seasons = [];
                 }
@@ -743,6 +745,8 @@ router.get('/imdb/:type/:id', async (req, res) => {
                 series.seasons = [];
               }
             }));
+
+            if (detailsFailed) throw new Error('FrenchStream series details unavailable');
 
             // Group and Merge Series Parts
             const seriesGroups = {};
@@ -776,27 +780,31 @@ router.get('/imdb/:type/:id', async (req, res) => {
           return;
         }
 
-        // 4. Save to cache (only if no error occurred during fetch)
-        if (!responseData.error) {
-          await saveToCache(cacheDir, cacheKey, responseData);
-        }
+        // Conserver les sources utilisables si le catalogue ne fournit plus de liens.
+        const playable = type === 'movie'
+          ? Array.isArray(responseData.player_links) && responseData.player_links.length > 0
+          : Array.isArray(responseData.series) && responseData.series.length > 0;
+        if (playable || !latest) await saveToCache(cacheDir, cacheKey, responseData);
+        omegaRefresh.markChecked(cacheKey);
+        return playable || !latest ? responseData : latest;
+    });
 
-        // If data was not returned initially, return it now
+    const finishUpdate = async () => {
+      try {
+        // Un cache frais a déjà été lu pour la réponse : ne pas le relire dans Redis.
+        if (cachedData && (omegaRefresh.recentlyChecked(cacheKey, 3 * 60 * 60 * 1000) ||
+            !await shouldUpdateCacheFrenchStream(cacheDir, cacheKey))) return;
+        const responseData = await updateCache();
         if (!dataReturned) {
-          if (responseData.error) {
-            const statusCode = responseData.error.includes('No series found') ? 404 : 500;
-            res.status(statusCode).json(responseData);
-          } else if (responseData.message === 'Contenu non disponible') {
-            res.status(200).json(responseData);
-          } else {
-            await respondWithFrenchStreamSources(req, res, responseData, type);
-          }
+          if (responseData?.message === 'Contenu non disponible') res.status(200).json(responseData);
+          else await respondWithFrenchStreamSources(req, res,
+              type === 'tv' ? cleanTvCacheData(responseData) : responseData, type);
         }
-
       } catch (updateError) {
-        console.error(`Erreur lors de la mise a jour du cache ${type} ${id}:`, updateError);
         if (!dataReturned && !res.headersSent) {
-          if (updateError.message && updateError.message.includes('404')) {
+          if (updateError.responseData) {
+            res.status(updateError.httpStatus).json(updateError.responseData);
+          } else if (updateError.message && updateError.message.includes('404')) {
             res.status(200).json({ message: 'Contenu non disponible', french_stream_id: id });
           } else {
             res.status(500).json({ error: 'Erreur lors de la mise a jour du cache', details: updateError.message });
@@ -804,9 +812,8 @@ router.get('/imdb/:type/:id', async (req, res) => {
         }
       }
     };
-
-    // Run cache update in the background
-    updateCache().catch(err => console.error(`Erreur non geree dans updateCache (${type} ${id}):`, err));
+    if (dataReturned) void finishUpdate();
+    else await finishUpdate();
 
   } catch (error) {
     console.error(`Erreur initiale dans /api/imdb/${type}/${id}:`, error);
@@ -817,128 +824,6 @@ router.get('/imdb/:type/:id', async (req, res) => {
         res.status(500).json({ error: 'Erreur serveur interne lors du traitement initial', details: error.message });
       }
     }
-  }
-});
-
-// ---------------------------------------------------------------------------
-// GET /tmdb/cache/series/:id  -- clear all Coflix cache for a TMDB series
-// ---------------------------------------------------------------------------
-router.get('/tmdb/cache/series/:id', async (req, res) => {
-  const { id } = req.params;
-  const cacheDir = CACHE_DIR.COFLIX;
-
-  try {
-    await fsp.mkdir(cacheDir, { recursive: true });
-    const files = await fsp.readdir(cacheDir);
-
-    let removed = 0;
-    const removedFiles = [];
-
-    for (const file of files) {
-      if (!file.endsWith('.json')) continue;
-      const fullPath = path.join(cacheDir, file);
-
-      try {
-        const content = await fsp.readFile(fullPath, 'utf-8');
-        const data = JSON.parse(content);
-
-        const isSameId = data && String(data.tmdb_id) === String(id);
-        const isTvSeries = data && data.tmdb_details && (typeof data.tmdb_details.title === 'string' || typeof data.tmdb_details.original_title === 'string');
-
-        if (isSameId && isTvSeries) {
-          await fsp.unlink(fullPath);
-          removed++;
-          removedFiles.push(file);
-        }
-      } catch (parseError) {
-        continue;
-      }
-    }
-
-    console.log(`Cache Coflix supprime pour la serie TMDB ${id}: ${removed} fichiers`);
-    res.json({
-      message: `Cache Coflix supprime pour la serie TMDB ${id}`,
-      removed_files: removed,
-      files: removedFiles
-    });
-
-  } catch (error) {
-    console.error(`Erreur lors de la suppression du cache Coflix pour la serie ${id}: ${error.message}`);
-    res.status(500).json({
-      error: 'Erreur lors de la suppression du cache Coflix',
-      message: error.message
-    });
-  }
-});
-
-// ---------------------------------------------------------------------------
-// DELETE /tmdb/cache/:type/:id  -- delete specific Coflix cache entry
-// ---------------------------------------------------------------------------
-router.delete('/tmdb/cache/:type/:id', async (req, res) => {
-  const { id, type } = req.params;
-  const cacheKey = generateCacheKey(`tmdb_links_${type}_${id}_${req.query.season || ''}_${req.query.episode || ''}`);
-  const cacheFile = path.join(CACHE_DIR.COFLIX, `${cacheKey}.json`);
-
-  try {
-    await fsp.unlink(cacheFile);
-    console.log(`Cache supprime pour TMDB ${type} ${id}`);
-    res.json({ message: `Cache supprime pour TMDB ${type} ${id}` });
-  } catch (error) {
-    if (error.code === 'ENOENT') {
-      res.json({ message: `Aucun cache trouve pour TMDB ${type} ${id}` });
-    } else {
-      console.error(`Erreur lors de la suppression du cache: ${error.message}`);
-      res.status(500).json({ error: 'Erreur lors de la suppression du cache' });
-    }
-  }
-});
-
-// ---------------------------------------------------------------------------
-// GET /SenpaiStream/tv/cache/:tmdbId  -- clear SenpaiStream TV cache
-// ---------------------------------------------------------------------------
-router.get('/SenpaiStream/tv/cache/:tmdbId', async (req, res) => {
-  const { tmdbId } = req.params;
-  const cacheDir = path.join(__dirname, '..', 'cache', 'SenpaiStream');
-
-  try {
-    await fsp.mkdir(cacheDir, { recursive: true });
-    const files = await fsp.readdir(cacheDir);
-
-    let removed = 0;
-    for (const file of files) {
-      if (!file.endsWith('.json')) continue;
-      const fullPath = path.join(cacheDir, file);
-      try {
-        const content = await fsp.readFile(fullPath, 'utf-8');
-        const data = JSON.parse(content);
-        const isSameId = data && String(data.tmdb_id) === String(tmdbId);
-        const isTvByFields = data && data.tmdb_details && (typeof data.tmdb_details.name === 'string' || typeof data.tmdb_details.original_name === 'string');
-        const hasEpisodeFields = typeof data?.season !== 'undefined' && typeof data?.episode !== 'undefined';
-        if (isSameId && (hasEpisodeFields || isTvByFields)) {
-          await fsp.unlink(fullPath);
-          removed++;
-        }
-      } catch (err) {
-        continue;
-      }
-    }
-
-    return res.json({
-      success: true,
-      tmdb_id: tmdbId,
-      removed,
-      cache_dir: cacheDir,
-      timestamp: new Date().toISOString()
-    });
-  } catch (error) {
-    console.error(`[SenpaiStream TV CACHE CLEAR] Erreur: ${error.message}`);
-    return res.status(500).json({
-      success: false,
-      error: 'Erreur lors de la suppression du cache SenpaiStream TV',
-      message: error.message,
-      tmdb_id: tmdbId,
-      timestamp: new Date().toISOString()
-    });
   }
 });
 

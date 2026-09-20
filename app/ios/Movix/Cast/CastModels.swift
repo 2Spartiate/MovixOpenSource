@@ -285,9 +285,56 @@ struct PreparedCastRelay: Sendable {
   let contentURL: URL
   let profile: CastMediaProfile
   let textTracks: [PreparedCastTextTrack]
+  let lifetime: CastRelayLifetime
   let stop: @Sendable () async -> Void
 
   var contentType: String { profile.contentType }
+
+  init(
+    contentURL: URL,
+    profile: CastMediaProfile,
+    textTracks: [PreparedCastTextTrack],
+    lifetime: CastRelayLifetime = CastRelayLifetime(),
+    stop: @escaping @Sendable () async -> Void
+  ) {
+    self.contentURL = contentURL
+    self.profile = profile
+    self.textTracks = textTracks
+    self.lifetime = lifetime
+    self.stop = stop
+  }
+}
+
+/// Le signal reste terminal même lorsque l'observateur arrive après l'arrêt.
+/// L'appel a lieu hors du verrou pour permettre de consulter l'état depuis le callback.
+final class CastRelayLifetime: @unchecked Sendable {
+  private let lock = NSLock()
+  private var terminal = false
+  private var observer: (@Sendable () -> Void)?
+
+  var isActive: Bool {
+    lock.lock()
+    defer { lock.unlock() }
+    return !terminal
+  }
+
+  func observeTermination(_ callback: @escaping @Sendable () -> Void) {
+    lock.lock()
+    let alreadyTerminated = terminal
+    if !alreadyTerminated { observer = callback }
+    lock.unlock()
+    if alreadyTerminated { callback() }
+  }
+
+  func terminate() {
+    lock.lock()
+    guard !terminal else { lock.unlock(); return }
+    terminal = true
+    let callback = observer
+    observer = nil
+    lock.unlock()
+    callback?()
+  }
 }
 
 enum CastSourceValidation {

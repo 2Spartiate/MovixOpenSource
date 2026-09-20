@@ -1,4 +1,4 @@
-import React, { useCallback, useEffect, useRef, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import useEmblaCarousel from 'embla-carousel-react';
 import type { EmblaOptionsType } from 'embla-carousel';
 import { PrefetchLink as Link } from '@/routing/PrefetchLink';
@@ -9,6 +9,7 @@ import { useTranslation } from 'react-i18next';
 import { encodeId } from '../utils/idEncoder';
 import ShinyText from './ui/shiny-text';
 import { useAgeRestrictedContent } from '../hooks/useAgeRestrictedContent';
+import { useLightMode } from '@/context/LightModeContext';
 
 const TMDB_API_KEY = import.meta.env.VITE_TMDB_API_KEY || '';
 const AUTO_SLIDE_MS = 6000;
@@ -29,28 +30,6 @@ const HERO_EMBLA_OPTIONS: EmblaOptionsType = {
   loop: true,
   duration: 40,
   watchDrag: (_emblaApi, evt) => !isInteractiveTarget(evt.target),
-};
-
-// Detect weak hardware (TVs, low-end Android, etc.) and start the slider in
-// pause + skip the GPU-heavy animations. Without this, the original was
-// hot-loading 5×original-quality backdrops (~25MB) + animating ShinyText at
-// 60fps + running an infinite CSS animation, which froze TV browsers.
-const detectLowEndDevice = (): boolean => {
-  if (typeof window === 'undefined' || typeof navigator === 'undefined') return false;
-  const dm = (navigator as Navigator & { deviceMemory?: number }).deviceMemory;
-  const hc = navigator.hardwareConcurrency;
-  const ua = navigator.userAgent || '';
-  const isLowEnd = (typeof dm === 'number' && dm <= 2) || (typeof hc === 'number' && hc <= 2);
-  const isTV = /Tizen|WebOS|SmartTV|GoogleTV|HbbTV|NetCast|VIDAA|AppleTV|AndroidTV|BRAVIA|Hisense|Aquos/i.test(ua);
-  const reducedMotion = window.matchMedia?.('(prefers-reduced-motion: reduce)').matches ?? false;
-  // Settings → Performance → "Carrousels automatiques" or master Mode léger.
-  // Either disables auto-rotation; user can still swipe/drag manually.
-  let userDisabled = false;
-  try {
-    userDisabled = localStorage.getItem('settings_anim_carousel') === 'false'
-      || localStorage.getItem('settings_light_mode') === 'on';
-  } catch { /* localStorage unavailable (private mode, etc.) */ }
-  return isLowEnd || isTV || reducedMotion || userDisabled;
 };
 
 interface Media {
@@ -76,13 +55,16 @@ interface HeroSliderProps {
 // entirely → 0 RAM, 0 CPU, no logo fetch, no images downloaded.
 const HeroSliderInner: React.FC<HeroSliderProps> = ({ items }) => {
   const { t } = useTranslation();
-  const [emblaRef, emblaApi] = useEmblaCarousel(HERO_EMBLA_OPTIONS);
-  const autoSlideInterval = useRef<NodeJS.Timeout | null>(null);
+  const { effectivePrefs } = useLightMode();
+  const options = useMemo(() => ({ ...HERO_EMBLA_OPTIONS, duration: effectivePrefs.transitions ? 40 : 0 }), [effectivePrefs.transitions]);
+  const [emblaRef, emblaApi] = useEmblaCarousel(options);
+  const autoSlideInterval = useRef<ReturnType<typeof setTimeout> | null>(null);
   const [logoUrls, setLogoUrls] = useState<{ [key: number]: string | null }>({});
   const [selectedIndex, setSelectedIndex] = useState(0);
-  // On weak hardware we boot in pause to avoid the freeze the user reported.
-  const [isPaused, setIsPaused] = useState(detectLowEndDevice);
+  const [userPaused, setUserPaused] = useState(false);
+  const isPaused = userPaused || !effectivePrefs.carouselAutoplay || items.length < 2;
   const [isVisible, setIsVisible] = useState(true);
+  const [documentVisible, setDocumentVisible] = useState(() => !document.hidden);
   const logoCache = useRef<{ [key: number]: string | null }>({});
   const progressStartRef = useRef<number>(performance.now());
   // Incrémenté à chaque redémarrage du cycle (changement de slide OU
@@ -92,15 +74,22 @@ const HeroSliderInner: React.FC<HeroSliderProps> = ({ items }) => {
 
   // Fetch logo URLs for all items with sessionStorage caching
   useEffect(() => {
+    let cancelled = false;
     const fetchLogos = async () => {
-      const storedCache = sessionStorage.getItem('movix_hero_logos');
-      const storedTimestamp = sessionStorage.getItem('movix_hero_logos_timestamp');
-      const oneDayMs = 24 * 60 * 60 * 1000;
-
-      let sessionCache: { [key: number]: string | null } = {};
-      if (storedCache && storedTimestamp && (Date.now() - parseInt(storedTimestamp)) < oneDayMs) {
-        sessionCache = JSON.parse(storedCache);
-        logoCache.current = { ...logoCache.current, ...sessionCache };
+      try {
+        const storedCache = sessionStorage.getItem('movix_hero_logos');
+        const storedTimestamp = sessionStorage.getItem('movix_hero_logos_timestamp');
+        const oneDayMs = 24 * 60 * 60 * 1000;
+        if (storedCache && storedTimestamp && (Date.now() - Number(storedTimestamp)) < oneDayMs) {
+          const sessionCache: unknown = JSON.parse(storedCache);
+          if (sessionCache && typeof sessionCache === 'object' && !Array.isArray(sessionCache)) {
+            for (const [id, url] of Object.entries(sessionCache)) {
+              if (url === null || typeof url === 'string') logoCache.current[Number(id)] = url;
+            }
+          }
+        }
+      } catch {
+        // Cache facultatif : stockage bloqué ou ancienne valeur corrompue.
       }
 
       const urls: { [key: number]: string | null } = { ...logoCache.current };
@@ -114,6 +103,7 @@ const HeroSliderInner: React.FC<HeroSliderProps> = ({ items }) => {
       }
 
       if (missing.length === 0) {
+        setLogoUrls(urls);
         return;
       }
 
@@ -137,6 +127,7 @@ const HeroSliderInner: React.FC<HeroSliderProps> = ({ items }) => {
           : null;
       }));
 
+      if (cancelled) return;
       results.forEach((result, idx) => {
         const item = missing[idx];
         const logoUrl = result.status === 'fulfilled' ? result.value : null;
@@ -145,11 +136,20 @@ const HeroSliderInner: React.FC<HeroSliderProps> = ({ items }) => {
       });
 
       setLogoUrls(urls);
-      sessionStorage.setItem('movix_hero_logos', JSON.stringify(logoCache.current));
-      sessionStorage.setItem('movix_hero_logos_timestamp', Date.now().toString());
+      // Conserver uniquement les logos de cette sélection : le cache ne doit
+      // pas grossir à chaque navigation. Les logos affichés restent en mémoire
+      // si le quota de sessionStorage est atteint.
+      try {
+        const currentLogos = Object.fromEntries(items.map(item => [item.id, urls[item.id]]));
+        sessionStorage.setItem('movix_hero_logos', JSON.stringify(currentLogos));
+        sessionStorage.setItem('movix_hero_logos_timestamp', Date.now().toString());
+      } catch {
+        // Un cache plein ne doit pas rejeter fetchLogos().
+      }
     };
 
-    fetchLogos();
+    void fetchLogos();
+    return () => { cancelled = true; };
   }, [items]);
 
   // Track pause timing so unpause resumes from where we left off
@@ -195,11 +195,17 @@ const HeroSliderInner: React.FC<HeroSliderProps> = ({ items }) => {
     return () => obs.disconnect();
   }, [emblaApi]);
 
+  useEffect(() => {
+    const sync = () => setDocumentVisible(!document.hidden);
+    document.addEventListener('visibilitychange', sync);
+    return () => document.removeEventListener('visibilitychange', sync);
+  }, []);
+
   // Auto-slide timer + progress bar — resumes cleanly after pause
   useEffect(() => {
     if (!emblaApi) return;
 
-    const frozen = isPaused || !isVisible;
+    const frozen = isPaused || !isVisible || !documentVisible;
     if (frozen) {
       // Freeze: remember when we paused
       if (pausedAtRef.current === null) {
@@ -221,7 +227,7 @@ const HeroSliderInner: React.FC<HeroSliderProps> = ({ items }) => {
       if (autoSlideInterval.current) clearTimeout(autoSlideInterval.current);
       const elapsed = performance.now() - progressStartRef.current;
       const remaining = Math.max(AUTO_SLIDE_MS - elapsed, 50);
-      autoSlideInterval.current = setTimeout(() => emblaApi.scrollNext(), remaining);
+      autoSlideInterval.current = setTimeout(() => emblaApi.scrollNext(!effectivePrefs.transitions), remaining);
     };
     scheduleNext();
 
@@ -252,7 +258,7 @@ const HeroSliderInner: React.FC<HeroSliderProps> = ({ items }) => {
       root?.removeEventListener('pointerup', restartCycle);
       root?.removeEventListener('pointercancel', restartCycle);
     };
-  }, [emblaApi, isPaused, isVisible, progressKey, restartCycle]);
+  }, [emblaApi, isPaused, isVisible, documentVisible, effectivePrefs.transitions, progressKey, restartCycle]);
 
   // Horizontal wheel support
   useEffect(() => {
@@ -272,27 +278,27 @@ const HeroSliderInner: React.FC<HeroSliderProps> = ({ items }) => {
       if (now - lastWheel < THROTTLE_MS) return;
       lastWheel = now;
       progressStartRef.current = performance.now();
-      if (e.deltaX > 0) emblaApi.scrollNext();
-      else emblaApi.scrollPrev();
+      if (e.deltaX > 0) emblaApi.scrollNext(!effectivePrefs.transitions);
+      else emblaApi.scrollPrev(!effectivePrefs.transitions);
     };
 
     rootNode.addEventListener('wheel', onWheel, { passive: false });
     return () => rootNode.removeEventListener('wheel', onWheel);
-  }, [emblaApi]);
+  }, [emblaApi, effectivePrefs.transitions]);
 
   const scrollTo = useCallback((idx: number) => {
     if (emblaApi) {
       restartCycle();
-      emblaApi.scrollTo(idx);
+      emblaApi.scrollTo(idx, !effectivePrefs.transitions);
     }
-  }, [emblaApi, restartCycle]);
+  }, [emblaApi, effectivePrefs.transitions, restartCycle]);
 
   const getYear = (item: Media) => {
     const date = item.release_date || item.first_air_date;
     return date ? new Date(date).getFullYear() : null;
   };
 
-  const frozen = isPaused || !isVisible;
+  const frozen = isPaused || !isVisible || !documentVisible;
 
   return (
     <motion.div
@@ -465,8 +471,10 @@ const HeroSliderInner: React.FC<HeroSliderProps> = ({ items }) => {
               {items.map((_, idx) => (
                 <button
                   key={idx}
+                  type="button"
                   onClick={() => scrollTo(idx)}
-                  aria-label={`Slide ${idx + 1}`}
+                  aria-label={t('settings.carouselSlide', { position: idx + 1, total: items.length })}
+                  aria-current={idx === selectedIndex ? 'true' : undefined}
                   className="group flex items-center justify-center px-1 -mx-1 py-3 -my-3 touch-manipulation"
                 >
                   <span
@@ -481,25 +489,26 @@ const HeroSliderInner: React.FC<HeroSliderProps> = ({ items }) => {
             </div>
 
             {/* Divider */}
-            <div className="w-px h-4 bg-white/20" />
+            {effectivePrefs.carouselAutoplay && items.length > 1 && <div className="w-px h-4 bg-white/20" />}
 
             {/* Progress bar */}
-            <div className="w-12 sm:w-20 h-1 bg-white/15 rounded-full overflow-hidden">
+            {effectivePrefs.carouselAutoplay && items.length > 1 && <div className="w-12 sm:w-20 h-1 bg-white/15 rounded-full overflow-hidden">
               <div
                 key={progressKey}
                 className={`h-full w-full bg-red-500 rounded-full hero-progress-fill ${frozen ? 'is-paused' : ''}`}
                 style={{ ['--hero-duration' as string]: `${AUTO_SLIDE_MS}ms` } as React.CSSProperties}
               />
-            </div>
+            </div>}
 
             {/* Pause toggle */}
-            <button
-              onClick={() => setIsPaused((p) => !p)}
-              aria-label={isPaused ? 'Play' : 'Pause'}
+            {effectivePrefs.carouselAutoplay && items.length > 1 && <button
+              type="button"
+              onClick={() => setUserPaused((p) => !p)}
+              aria-label={t(isPaused ? 'settings.carouselResume' : 'settings.carouselPause')}
               className="flex items-center justify-center p-2 -m-2 text-white/70 hover:text-white transition-colors touch-manipulation"
             >
               {isPaused ? <Play className="w-3.5 h-3.5 fill-current" /> : <Pause className="w-3.5 h-3.5 fill-current" />}
-            </button>
+            </button>}
           </div>
         </div>
       </div>
@@ -512,17 +521,19 @@ const HeroSliderInner: React.FC<HeroSliderProps> = ({ items }) => {
 // the freeze: no inner = no Embla, no logo fetch, no images, no timers.
 const HeroSlider: React.FC<HeroSliderProps> = ({ items }) => {
   const { items: allowedItems } = useAgeRestrictedContent(items);
-  const [isHidden, setIsHidden] = useState(() => {
-    if (typeof localStorage === 'undefined') return false;
-    return localStorage.getItem('settings_hide_hero') === 'true';
-  });
+  const readVisibility = () => {
+    try { return localStorage.getItem('settings_hide_hero') === 'true'; } catch { return false; }
+  };
+  const [isHidden, setIsHidden] = useState(readVisibility);
 
   useEffect(() => {
-    const sync = () => setIsHidden(localStorage.getItem('settings_hide_hero') === 'true');
+    const sync = () => setIsHidden(readVisibility());
     window.addEventListener('storage', sync);
+    window.addEventListener('sync_storage_updated', sync);
     window.addEventListener('hero_visibility_changed', sync as EventListener);
     return () => {
       window.removeEventListener('storage', sync);
+      window.removeEventListener('sync_storage_updated', sync);
       window.removeEventListener('hero_visibility_changed', sync as EventListener);
     };
   }, []);

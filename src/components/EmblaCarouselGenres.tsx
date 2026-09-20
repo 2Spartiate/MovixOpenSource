@@ -1,3 +1,4 @@
+import { useLightMode } from '@/context/LightModeContext';
 import React, { useCallback, useEffect, useState } from 'react';
 import useEmblaCarousel from 'embla-carousel-react';
 import { ChevronLeft, ChevronRight } from 'lucide-react';
@@ -18,13 +19,14 @@ interface EmblaCarouselGenresProps {
 
 const EmblaCarouselGenres: React.FC<EmblaCarouselGenresProps> = ({ title, items }) => {
   const { t } = useTranslation();
+  const { effectivePrefs } = useLightMode();
   const [emblaRef, emblaApi] = useEmblaCarousel({
     align: 'start',
     dragFree: true,
     containScroll: 'keepSnaps',
     slidesToScroll: 1,
     skipSnaps: false,
-    duration: 25,
+    duration: effectivePrefs.transitions ? 25 : 0,
     loop: false
   });
   const [canScrollPrev, setCanScrollPrev] = useState(false);
@@ -66,11 +68,11 @@ const EmblaCarouselGenres: React.FC<EmblaCarouselGenresProps> = ({ title, items 
     try {
       const current = emblaApi.selectedScrollSnap();
       const target = Math.max(0, current - getStep());
-      emblaApi.scrollTo(target);
+      emblaApi.scrollTo(target, !effectivePrefs.transitions);
     } catch (_) {
-      emblaApi.scrollPrev();
+      emblaApi.scrollPrev(!effectivePrefs.transitions);
     }
-  }, [emblaApi, getStep]);
+  }, [emblaApi, getStep, effectivePrefs.transitions]);
 
   const handleNext = useCallback((e?: React.MouseEvent) => {
     if (e) { e.preventDefault(); e.stopPropagation(); }
@@ -79,11 +81,11 @@ const EmblaCarouselGenres: React.FC<EmblaCarouselGenresProps> = ({ title, items 
       const current = emblaApi.selectedScrollSnap();
       const snaps = emblaApi.scrollSnapList().length;
       const target = Math.min(snaps - 1, current + getStep());
-      emblaApi.scrollTo(target);
+      emblaApi.scrollTo(target, !effectivePrefs.transitions);
     } catch (_) {
-      emblaApi.scrollNext();
+      emblaApi.scrollNext(!effectivePrefs.transitions);
     }
-  }, [emblaApi, getStep]);
+  }, [emblaApi, getStep, effectivePrefs.transitions]);
 
   return (
     <div className="w-full relative">

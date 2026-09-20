@@ -16,6 +16,11 @@ internal data class CastRemoteTextTrack(
     val name: String?,
 )
 
+internal class CastCommandException(
+    errorCode: String,
+    val nativeErrorCode: String,
+) : IllegalStateException(errorCode)
+
 internal data class CastRemoteMetadata(
     val title: String,
     val poster: String?,
@@ -277,7 +282,9 @@ internal class GoogleCastRemoteClient(
         return if (isSuccess) {
             Result.success(Unit)
         } else {
-            Result.failure(IllegalStateException(errorCode))
+            val code = statusCode.toLong()
+            val nativeCode = if (code < 0) "GCK_STATUS_NEG_${-code}" else "GCK_STATUS_$code"
+            Result.failure(CastCommandException(errorCode, nativeCode))
         }
     }
 }

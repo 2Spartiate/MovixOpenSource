@@ -1,0 +1,16 @@
+<html>
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+</head>
+<body>
+<div id="player"></div>
+<script>
+const f=document.createElement("iframe");
+f.src=atob("aHR0cHM6Ly9lbWJlZC5zdC9lbWJlZC9pbmdlc3QvbnJlYWxtYWRyaWQvMQ==");
+f.allow="autoplay;encrypted-media;picture-in-picture;fullscreen";
+f.allowFullscreen=true;
+document.getElementById("player").appendChild(f);
+</script>
+</body>
+</html>

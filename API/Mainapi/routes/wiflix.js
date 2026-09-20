@@ -21,6 +21,8 @@ const {
   makeWiflixSearchRequest,
 } = require("../utils/proxyManager");
 const { acquireRedisLock } = require("../utils/redisLock");
+const { createWiflixRefreshState } = require("../utils/wiflixRefreshState");
+const refreshState = createWiflixRefreshState();
 const { respondWithResolvedSources } = require("../utils/embedExtraction");
 
 // Wiflix range la map de langues à même l'épisode (`{ vf: [], vostfr: [] }`),
@@ -45,10 +47,10 @@ const TMDB_API_URL = "https://api.themoviedb.org/3";
 const WIFLIX_BASE_URL = process.env.WIFLIX_BASE_URL || "https://flemmix.fast";
 
 // === Cache helpers (local, since getFromCacheNoExpiration is not yet in cacheManager) ===
-const getFromCacheNoExpiration = async (cacheDir, key) => {
+const getFromCacheNoExpiration = async (cacheDir, key, bypassMemory = false) => {
   try {
     const memKey = `${cacheDir}:${key}`;
-    const memData = await memoryCache.get(memKey);
+    const memData = bypassMemory ? null : await memoryCache.get(memKey);
     if (memData) return memData;
 
     const cacheFilePath = path.join(cacheDir, `${key}.json`);
@@ -104,6 +106,17 @@ const stripTitleNoise = (str) => {
     .replace(/\b(the|a|an|le|la|les|l|un|une|des|de|du|d)\b/g, '')
     .replace(/\s+/g, ' ')
     .trim();
+};
+
+const prepareWiflixTitle = (str) => {
+  const title = str.toLowerCase().replace(/\s+saison\s+\d+\b/g, "").trim();
+  // Le site ajoute parfois l'année au titre : « From (2022) ».
+  // Conserver les nombres du titre lui-même, comme « 1899 » ou « 1923 ».
+  const yearMatch = title.match(/\s+(?:\(((?:19|20)\d{2})\)|\[((?:19|20)\d{2})\])$/);
+  return {
+    title: yearMatch ? title.slice(0, yearMatch.index).trim() : title,
+    year: yearMatch ? yearMatch[1] || yearMatch[2] : null,
+  };
 };
 
 const getLevenshteinSimilarity = (str1, str2) => {
@@ -188,6 +201,7 @@ async function searchWiflixMovie(title, baseUrl = WIFLIX_BASE_URL) {
 
     let bestMatch = null;
     let bestSimilarity = 0;
+    const { title: cleanSearchTitle, year: searchYear } = prepareWiflixTitle(title);
 
     movBlocks.each((_, block) => {
       const $block = $(block);
@@ -243,14 +257,8 @@ async function searchWiflixMovie(title, baseUrl = WIFLIX_BASE_URL) {
         }
       }
 
-      const cleanSearchTitle = title
-        .toLowerCase()
-        .replace(/\s+saison\s+\d+/g, "")
-        .trim();
-      const cleanResultTitle = resultTitle
-        .toLowerCase()
-        .replace(/\s+saison\s+\d+/g, "")
-        .trim();
+      const { title: cleanResultTitle, year: resultYear } = prepareWiflixTitle(resultTitle);
+      if (searchYear && resultYear && searchYear !== resultYear) return;
 
       let similarity = 0;
       if (cleanResultTitle === cleanSearchTitle) {
@@ -271,6 +279,17 @@ async function searchWiflixMovie(title, baseUrl = WIFLIX_BASE_URL) {
             similarity = Math.max(similarity, coreSim);
           }
         }
+      }
+
+      // Certains titres de séries portent un préfixe de franchise sur le site,
+      // ex. « Game Of Thrones: House of the Dragon ». Accepter uniquement le
+      // suffixe complet d'un titre de plusieurs mots, après contrôle de saison.
+      // Un titre complet exact conserve la priorité (1 contre 0.95).
+      const prefixEnd = cleanResultTitle.indexOf(":");
+      if (searchIsSeries && prefixEnd > 0
+        && stripTitleNoise(cleanSearchTitle).split(" ").filter(Boolean).length >= 2
+        && normalizeString(cleanResultTitle.slice(prefixEnd + 1)) === normalizeString(cleanSearchTitle)) {
+        similarity = Math.max(similarity, 0.95);
       }
 
       let fullUrl = href;
@@ -596,7 +615,9 @@ const updateWiflixCache = async (
   if (!lock) return; // Another worker (or this one) is already updating this key
 
   try {
-    const existingCache = await getFromCacheNoExpiration(cacheDir, cacheKey);
+    // Une autre actualisation peut s'être terminée depuis la réponse au visiteur.
+    const existingCache = await getFromCacheNoExpiration(cacheDir, cacheKey, true);
+    if (await refreshState.remaining(cacheDir, cacheKey, existingCache) > 0) return;
 
     let newData;
     if (type === "movie")
@@ -619,16 +640,26 @@ const updateWiflixCache = async (
 
     if (newData) {
       const isFailedResult = newData.success === false;
-      if (isFailedResult && existingCache?.success) return;
+      // Les extracteurs peuvent également retourner l'ancien objet sur panne.
+      if (isFailedResult || newData === existingCache) {
+        await refreshState.defer(cacheDir, cacheKey);
+        if (existingCache?.success) return;
+      }
+      let saved;
       if (newData.success) {
         const { debugHtml: _dh, ...cacheableData } = newData;
-        await saveToCache(cacheDir, cacheKey, cacheableData);
+        saved = await saveToCache(cacheDir, cacheKey, cacheableData);
       } else {
-        await saveToCache(cacheDir, cacheKey, newData);
+        saved = await saveToCache(cacheDir, cacheKey, newData);
       }
+      if (saved === false) await refreshState.defer(cacheDir, cacheKey);
+      else if (newData.success) await refreshState.clear(cacheDir, cacheKey);
     }
   } catch (error) {
     console.error(`[WIFLIX UPDATE] ${type} ${tmdbId}: ${error.message}`);
+    await refreshState.defer(cacheDir, cacheKey).catch((retryError) => {
+      console.error(`[WIFLIX UPDATE] Délai de reprise non enregistré: ${retryError.message}`);
+    });
   } finally {
     await lock.release();
   }
@@ -649,22 +680,9 @@ router.get("/movie/:tmdbId", async (req, res) => {
     let dataReturned = false;
 
     if (cachedData) {
-      const RECENT_UPDATE_THRESHOLD = cachedData.success === false
-        ? 5 * 60 * 1000
-        : 3 * 60 * 60 * 1000; // 3h pour les succes
-      const cachePath = path.join(cacheDir, `${cacheKey}.json`);
-      let nextUpdateIn = null;
-      let shouldSkipUpdate = false;
-      try {
-        const stats = await fsp.stat(cachePath);
-        const remaining = RECENT_UPDATE_THRESHOLD - (Date.now() - stats.mtime.getTime());
-        if (remaining > 0) {
-          shouldSkipUpdate = true;
-          nextUpdateIn = formatNextUpdate(remaining);
-        } else {
-          nextUpdateIn = 'imminent';
-        }
-      } catch (e) {}
+      const remaining = await refreshState.remaining(cacheDir, cacheKey, cachedData).catch(() => 0);
+      const shouldSkipUpdate = remaining > 0;
+      const nextUpdateIn = shouldSkipUpdate ? formatNextUpdate(remaining) : 'imminent';
 
       await respondWithMovieSources(req, res, { ...cachedData, next_update_in: nextUpdateIn });
       dataReturned = true;
@@ -709,22 +727,9 @@ router.get("/tv/:tmdbId/:season", async (req, res) => {
     let dataReturned = false;
 
     if (cachedData) {
-      const RECENT_UPDATE_THRESHOLD = cachedData.success === false
-        ? 5 * 60 * 1000
-        : 3 * 60 * 60 * 1000; // 3h pour les succes
-      const cachePath = path.join(cacheDir, `${cacheKey}.json`);
-      let nextUpdateIn = null;
-      let shouldSkipUpdate = false;
-      try {
-        const stats = await fsp.stat(cachePath);
-        const remaining = RECENT_UPDATE_THRESHOLD - (Date.now() - stats.mtime.getTime());
-        if (remaining > 0) {
-          shouldSkipUpdate = true;
-          nextUpdateIn = formatNextUpdate(remaining);
-        } else {
-          nextUpdateIn = 'imminent';
-        }
-      } catch (e) {}
+      const remaining = await refreshState.remaining(cacheDir, cacheKey, cachedData).catch(() => 0);
+      const shouldSkipUpdate = remaining > 0;
+      const nextUpdateIn = shouldSkipUpdate ? formatNextUpdate(remaining) : 'imminent';
 
       await respondWithEpisodeSources(req, res, { ...cachedData, next_update_in: nextUpdateIn });
       dataReturned = true;

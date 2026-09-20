@@ -11,6 +11,7 @@ const axios = require('axios');
 const fsp = require('fs').promises;
 const path = require('path');
 const writeFileAtomic = require('write-file-atomic');
+const { isHydrackerBlackout, buildBlackoutError } = require('./hydrackerBlackout');
 
 const {
   ENABLE_DARKINO_PROXY,
@@ -24,7 +25,7 @@ const {
   PROXIES,
   HTTP_PROXIES,
   CLOUDFLARE_WORKERS_PROXIES,
-  getProxyAgent,
+  withFStreamProxy,
   getDarkinoHttpProxyAgent,
   getAvailableProxies,
   markProxyAsErrored,
@@ -239,6 +240,13 @@ async function buildDarkinoRequestHeaders(config) {
 
 // Fonction utilitaire pour requ\u00eates Darkino avec proxies (SOCKS5h)
 async function axiosDarkinoRequest(config) {
+  // Blackout global : aucune requ\u00eate ne sort vers darkiworld/hydracker.
+  // Plac\u00e9 en tout premier pour couvrir chaque appelant (seasons, episodes,
+  // recherche, refresh de session) sans exception.
+  if (isHydrackerBlackout()) {
+    throw buildBlackoutError(`darkino ${String(config.method || 'get').toUpperCase()} ${config.url || ''}`);
+  }
+
   // V\u00e9rifier si on est en cooldown apr\u00e8s une erreur 403 (cluster-wide via Redis)
   const cd403Ms = await proxyManager.getDarkinoCooldownRemainingMs('403');
   if (cd403Ms > 0) {
@@ -628,17 +636,9 @@ async function axiosFStreamRequest(config) {
   const proxyLabel = `${entry.type}:${entry.proxy.host}:${entry.proxy.port}`;
 
   try {
-    let agents;
-    if (entry.type === 'socks5') {
-      const agent = getProxyAgent(entry.proxy);
-      agents = { httpAgent: agent, httpsAgent: agent };
-    } else {
-      agents = getDarkinoHttpProxyAgent(entry.proxy);
-    }
-
     await deps.ensureFStreamSession();
     const existingHeaders = config.headers || {};
-    const response = await deps.axiosFStream({
+    const response = await withFStreamProxy(entry, (agents) => deps.axiosFStream({
       ...config,
       timeout: 8000,
       decompress: true,
@@ -646,7 +646,7 @@ async function axiosFStreamRequest(config) {
       httpsAgent: agents.httpsAgent,
       proxy: false,
       headers: withOptionalFStreamCookies(existingHeaders)
-    });
+    }));
     deps.incrementFstreamRequestCounter();
     return response;
   } catch (error) {

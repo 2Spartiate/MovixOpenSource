@@ -129,6 +129,7 @@ Légende : 🔏 = URL signée obligatoire · 🔑 = clé interne mainapi + clé 
 | Route | Rôle |
 | --- | --- |
 | `GET /proxy` et `GET /proxy/{path}` | 🔏 Proxy streaming générique |
+| `GET /streamed-proxy` | 🔏 [Relais Streamed via SOCKS5](STREAMED.md), playlists HD et segments PNG/WebP |
 | `GET /health` | Healthcheck |
 | `GET /stats` | Stats runtime |
 | `GET /api/voe/m3u8` | 🔑 Extraction VOE (paramètre `url` en base64) |

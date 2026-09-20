@@ -64,6 +64,7 @@ API/cache/
 API/data/
 API/Mainapi/cache/
 API/Mainapi/data/
+API/Mainapi/diagnostics/
 API/Mainapi/darkino-backups
 
 # Discord bot (private; published separately)
@@ -71,7 +72,14 @@ API/BOT/
 
 # Fichiers du dépôt privé jamais publiés ici (garde-fou de synchro)
 API/Mainapi/cinepulse_accounts.json
+API/Mainapi/linkzy.json
 API/Mainapi/mirror.sqlite*
+RESTIC.md
+DESIGN.md
+PRODUCT.md
+Poulpix-demo.html
+Poulpix.png
+Poulpix.svg
 docs/
 extension/Chrome/Chrome.zip
 movix-mcp/

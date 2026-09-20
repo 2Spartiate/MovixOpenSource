@@ -3,15 +3,21 @@ const fsp = require('node:fs/promises');
 const path = require('node:path');
 const writeFileAtomic = require('write-file-atomic');
 const { KisskhError } = require('./errors');
+const { getProviderBaseUrl } = require('./config');
 
 const MATCH_TTL_SECONDS = 86_400;
 const EPISODES_TTL_SECONDS = 21_600;
 const SENSITIVE_TTL_SECONDS = 600;
 const SENSITIVE_MAX_ENTRIES = 256;
 const NOT_FOUND_TTL_SECONDS = 900;
+const TITLE_NOT_FOUND_TTL_SECONDS = 300;
+const TITLE_CACHE_REDIS_TIMEOUT_MS = 50;
+const TITLE_CACHE_MAX_REDIS_OPERATIONS = 8;
 const RESOLVE_LOCK_MS = 30_000;
 const FALLBACK_TOKEN_TTL_SECONDS = 120;
 const CATALOG_TTL_SECONDS = 43_200;
+const CATALOG_PARTIAL_REFRESH_MS = 3_600_000;
+const CATALOG_DISK_RECHECK_MS = 1_000;
 const RESOLUTION_REFRESH_SECONDS = 43_200;
 const CATALOG_MAX_ENTRIES = 20_000;
 const CATALOG_PROGRESS_TTL_SECONDS = 900;
@@ -129,6 +135,14 @@ function sanitizeCatalogItems(value) {
   });
 }
 
+function createCatalogSnapshot(items, refreshedAt, updatedAt = refreshedAt) {
+  return Object.freeze({
+    refreshedAt,
+    updatedAt,
+    items: Object.freeze(sanitizeCatalogItems(items).map((item) => Object.freeze(item))),
+  });
+}
+
 function sanitizeCatalogProgress(value) {
   if (!value || typeof value !== 'object' || Array.isArray(value)
       || Object.keys(value).sort().join(',') !== 'completed,percent,phase,total'
@@ -188,6 +202,9 @@ function createKisskhCache(deps = {}) {
   const notFoundTtlSeconds = boundedPositiveInteger(
     deps.notFoundTtlSeconds, NOT_FOUND_TTL_SECONDS, NOT_FOUND_TTL_SECONDS, 'not-found TTL KissKH',
   );
+  const titleNotFoundTtlSeconds = Math.min(notFoundTtlSeconds, TITLE_NOT_FOUND_TTL_SECONDS);
+  const titleCacheNamespace = crypto.createHash('sha256')
+    .update(getProviderBaseUrl(deps.providerBaseUrl)).digest('hex');
   const resolveLockMs = boundedPositiveInteger(
     deps.resolveLockMs, RESOLVE_LOCK_MS, RESOLVE_LOCK_MS, 'lock TTL KissKH',
   );
@@ -208,7 +225,12 @@ function createKisskhCache(deps = {}) {
   const sensitive = new Map();
   const resolutions = new Map();
   const inFlight = new Map();
+  const titleNotFound = new Map();
+  let titleRedisOperations = 0;
   let catalogSnapshot = null;
+  let catalogRead = null;
+  let catalogDiskRecheckAt = 0;
+  let catalogDigest = null;
   let catalogProgress = null;
   let catalogProgressLocalOnly = false;
 
@@ -244,6 +266,43 @@ function createKisskhCache(deps = {}) {
     while (resolutions.size > SENSITIVE_MAX_ENTRIES) resolutions.delete(resolutions.keys().next().value);
   }
 
+  function titleNotFoundKey(mediaType, tmdbId, season) {
+    assertMediaType(mediaType);
+    assertPositiveInteger(tmdbId, 'tmdbId');
+    if (!Number.isSafeInteger(season) || season < 0) throw new TypeError('season invalide');
+    return `kisskh:title-not-found:v1:${titleCacheNamespace}:${mediaType}:${tmdbId}:${season}`;
+  }
+
+  function notFoundKey(mediaType, tmdbId, season, episode) {
+    assertMediaType(mediaType);
+    // Ignorer les faux négatifs de films créés avant la prise en charge de l'épisode 0.
+    const version = mediaType === 'movie' ? 5 : 4;
+    return `kisskh:not-found:v${version}:${mediaType}:${tmdbId}:${season}:${episode}`;
+  }
+
+  function rememberTitleNotFound(key, expiresAt) {
+    titleNotFound.delete(key);
+    titleNotFound.set(key, expiresAt);
+    while (titleNotFound.size > SENSITIVE_MAX_ENTRIES) titleNotFound.delete(titleNotFound.keys().next().value);
+  }
+
+  async function titleRedisOperation(operation) {
+    if (!redis || (redis.status !== undefined && redis.status !== 'ready')
+        || titleRedisOperations >= TITLE_CACHE_MAX_REDIS_OPERATIONS) return null;
+    titleRedisOperations += 1;
+    const pending = Promise.resolve().then(operation).catch(() => null)
+      .finally(() => { titleRedisOperations -= 1; });
+    let timer;
+    try {
+      return await Promise.race([
+        pending,
+        new Promise((resolve) => { timer = setTimeout(() => resolve(null), TITLE_CACHE_REDIS_TIMEOUT_MS); }),
+      ]);
+    } finally {
+      clearTimeout(timer);
+    }
+  }
+
   async function readJson(key) {
     if (typeof redis?.get !== 'function') return null;
     try {
@@ -261,6 +320,39 @@ function createKisskhCache(deps = {}) {
     } catch {
       // Provider resolution may continue with process-local single-flight.
       return false;
+    }
+  }
+
+  async function readCatalogSnapshot(file, revalidate = false) {
+    if (catalogRead && revalidate) await catalogRead;
+    if (catalogRead) return catalogRead;
+    if (!revalidate && now() < catalogDiskRecheckAt) return catalogSnapshot;
+    catalogDiskRecheckAt = now() + CATALOG_DISK_RECHECK_MS;
+    const previous = catalogSnapshot;
+    catalogRead = (async () => {
+      try {
+        const serialized = await fsp.readFile(file, 'utf8');
+        // Une publication locale terminee pendant la lecture reste prioritaire.
+        if (catalogSnapshot !== previous) return catalogSnapshot;
+        const digest = crypto.createHash('sha256').update(serialized).digest('hex');
+        if (digest === catalogDigest) return catalogSnapshot;
+        const parsed = JSON.parse(serialized);
+        if (parsed?.version !== 1 || !Number.isSafeInteger(parsed.refreshedAt)
+            || parsed.refreshedAt < 0 || parsed.refreshedAt > now()) throw securityError();
+        const updatedAt = parsed.updatedAt ?? parsed.refreshedAt;
+        if (!Number.isSafeInteger(updatedAt) || updatedAt < parsed.refreshedAt || updatedAt > now()) throw securityError();
+        catalogSnapshot = createCatalogSnapshot(parsed.items, parsed.refreshedAt, updatedAt);
+        catalogDigest = digest;
+      } catch {
+        // Conserver le dernier catalogue valide. Ne pas supprimer un fichier
+        // partage qu'un autre worker peut avoir remplace pendant cette lecture.
+      }
+      return catalogSnapshot;
+    })();
+    try {
+      return await catalogRead;
+    } finally {
+      catalogRead = null;
     }
   }
 
@@ -393,43 +485,41 @@ function createKisskhCache(deps = {}) {
     },
     async getCatalogSnapshot(options = {}) {
       if (!options || typeof options !== 'object' || Array.isArray(options)
-          || Object.keys(options).some((key) => key !== 'allowStale')
-          || (options.allowStale !== undefined && typeof options.allowStale !== 'boolean')) {
+          || Object.keys(options).some((key) => !['allowStale', 'revalidate'].includes(key))
+          || (options.allowStale !== undefined && typeof options.allowStale !== 'boolean')
+          || (options.revalidate !== undefined && typeof options.revalidate !== 'boolean')) {
         throw new TypeError('options catalogue KissKH invalides');
       }
       const allowStale = options.allowStale === true;
       let snapshot = catalogSnapshot;
       const file = diskCacheDir ? path.join(diskCacheDir, 'catalog-v1.json') : null;
-      if (!snapshot && file) {
-        try {
-          const parsed = JSON.parse(await fsp.readFile(file, 'utf8'));
-          snapshot = {
-            version: parsed?.version,
-            refreshedAt: parsed?.refreshedAt,
-            items: sanitizeCatalogItems(parsed?.items),
-          };
-          if (snapshot.version !== 1 || !Number.isSafeInteger(snapshot.refreshedAt)
-              || snapshot.refreshedAt < 0 || snapshot.refreshedAt > now()) throw securityError();
-          catalogSnapshot = snapshot;
-        } catch (error) {
-          if (error?.code !== 'ENOENT') await fsp.unlink(file).catch(() => {});
-          return null;
-        }
+      if (file && (options.revalidate || !snapshot
+          || now() - snapshot.updatedAt >= CATALOG_PARTIAL_REFRESH_MS
+          || now() - snapshot.refreshedAt >= CATALOG_TTL_SECONDS * 1000)) {
+        snapshot = await readCatalogSnapshot(file, options.revalidate === true);
       }
       if (!snapshot) return null;
       if (!allowStale && now() - snapshot.refreshedAt >= CATALOG_TTL_SECONDS * 1000) return null;
-      return { refreshedAt: snapshot.refreshedAt, items: snapshot.items.map((item) => ({ ...item })) };
+      return snapshot;
     },
-    async setCatalogSnapshot(items) {
-      const sanitized = sanitizeCatalogItems(items);
-      const snapshot = { version: 1, refreshedAt: now(), items: sanitized };
+    async setCatalogSnapshot(items, options = {}) {
+      if (!options || typeof options !== 'object' || Array.isArray(options)
+          || Object.keys(options).some((key) => key !== 'refreshedAt')) {
+        throw new TypeError('options publication catalogue KissKH invalides');
+      }
+      const updatedAt = now();
+      const refreshedAt = options.refreshedAt ?? updatedAt;
+      if (!Number.isSafeInteger(refreshedAt) || refreshedAt < 0 || refreshedAt > updatedAt) throw securityError();
+      const snapshot = createCatalogSnapshot(items, refreshedAt, updatedAt);
       const file = diskCacheDir ? path.join(diskCacheDir, 'catalog-v1.json') : null;
       if (file) {
+        const serialized = JSON.stringify({ version: 1, ...snapshot });
         await fsp.mkdir(diskCacheDir, { recursive: true });
-        await writeFileAtomic(file, JSON.stringify(snapshot), { encoding: 'utf8', fsync: false });
+        await writeFileAtomic(file, serialized, { encoding: 'utf8', fsync: false });
+        catalogDigest = crypto.createHash('sha256').update(serialized).digest('hex');
       }
       catalogSnapshot = snapshot;
-      return { refreshedAt: snapshot.refreshedAt, items: sanitized.map((item) => ({ ...item })) };
+      return snapshot;
     },
     async getCatalogProgress() {
       if (typeof redis?.get === 'function') {
@@ -477,34 +567,53 @@ function createKisskhCache(deps = {}) {
       await writeJson(`kisskh:episodes:v2:${dramaId}`, sanitized, episodesTtlSeconds);
       return sanitized;
     },
-    async getCurrentBundleMetadata() {
-      const value = await readJson('kisskh:bundle:current');
-      if (!value || !Number.isSafeInteger(value.checkedAt) || value.checkedAt < 0) return null;
-      const checkedAt = now();
-      if (value.checkedAt > checkedAt
-          || checkedAt - value.checkedAt >= bundleCheckTtlSeconds * 1000) return null;
-      try {
-        return { ...sanitizeBundleMetadata(value), checkedAt: value.checkedAt };
-      } catch {
-        return null;
+    async getCurrentBundleMetadata({ allowStale = false } = {}) {
+      const keys = allowStale ? ['current', 'last-known'] : ['current'];
+      for (const name of keys) {
+        const value = await readJson(`kisskh:bundle:${name}`);
+        const maxAge = (name === 'current' ? bundleCheckTtlSeconds : bundleStaleMaxSeconds) * 1000;
+        if (!value || !Number.isSafeInteger(value.checkedAt) || value.checkedAt < 0
+            || value.checkedAt > now() || now() - value.checkedAt >= maxAge) continue;
+        try {
+          return { ...sanitizeBundleMetadata(value), checkedAt: value.checkedAt };
+        } catch {
+          // Une entree invalide ne remplace jamais une validation approuvee.
+        }
       }
+      return null;
     },
     async recordBundleMetadata(value) {
       const sanitized = sanitizeBundleMetadata(value);
-      const record = { ...sanitized, checkedAt: now() };
+      const ageMs = now() - value.checkedAt;
+      if (!Number.isSafeInteger(value.checkedAt) || value.checkedAt < 0
+          || ageMs < 0 || ageMs >= bundleCheckTtlSeconds * 1000) throw securityError();
+      const record = { ...sanitized, checkedAt: value.checkedAt };
       if (typeof redis?.set !== 'function') return record;
       const serialized = JSON.stringify(record);
       try {
-        await redis.set('kisskh:bundle:current', serialized, 'EX', bundleCheckTtlSeconds);
-        const existing = parseJson(await redis.get?.('kisskh:bundle:last-known'));
-        const same = existing && existing.algorithmVersion === sanitized.algorithmVersion
-          && existing.bundleSha256 === sanitized.bundleSha256
-          && existing.moduleSha256 === sanitized.moduleSha256;
-        if (!same) await redis.set('kisskh:bundle:last-known', serialized, 'EX', bundleStaleMaxSeconds);
+        await redis.set('kisskh:bundle:current', serialized, 'EX', Math.ceil(bundleCheckTtlSeconds - ageMs / 1000));
+        if (ageMs < bundleStaleMaxSeconds * 1000) {
+          await redis.set('kisskh:bundle:last-known', serialized, 'EX', Math.ceil(bundleStaleMaxSeconds - ageMs / 1000));
+        }
       } catch {
         // Bundle trust remains enforced by the in-process approved registry.
       }
       return record;
+    },
+    async getBundleCheckFailure() {
+      const value = await readJson(`kisskh:bundle:retry:${titleCacheNamespace}`);
+      if (!value || !['provider_unavailable', 'provider_changed', 'provider_security'].includes(value.code)
+          || !Number.isSafeInteger(value.retryAt) || value.retryAt <= now()
+          || value.retryAt > now() + 60_000) return null;
+      return { code: value.code, retryAt: value.retryAt };
+    },
+    async recordBundleCheckFailure(value) {
+      if (!value || !['provider_unavailable', 'provider_changed', 'provider_security'].includes(value.code)
+          || !Number.isSafeInteger(value.retryAt) || value.retryAt <= now()
+          || value.retryAt > now() + 60_000) throw securityError();
+      await writeJson(`kisskh:bundle:retry:${titleCacheNamespace}`, {
+        code: value.code, retryAt: value.retryAt,
+      }, Math.ceil((value.retryAt - now()) / 1000));
     },
     async getSensitive(kind, episodeId) {
       if (!['episode', 'sub'].includes(kind)) throw new TypeError('cache sensible KissKH invalide');
@@ -556,8 +665,30 @@ function createKisskhCache(deps = {}) {
         // Le cache disque accélère les requêtes suivantes mais ne bloque jamais la résolution.
       }
     },
+    async getTitleNotFound(mediaType, tmdbId, season) {
+      const key = titleNotFoundKey(mediaType, tmdbId, season);
+      const localExpiry = titleNotFound.get(key);
+      if (localExpiry !== undefined && now() < localExpiry) {
+        rememberTitleNotFound(key, localExpiry);
+        return true;
+      }
+      titleNotFound.delete(key);
+      const raw = await titleRedisOperation(() => redis.get?.(key));
+      const record = typeof raw === 'string' && raw.length <= 100 ? parseJson(raw) : null;
+      if (!record || Object.keys(record).join(',') !== 'expiresAt'
+          || !Number.isSafeInteger(record.expiresAt) || record.expiresAt <= now()
+          || record.expiresAt > now() + titleNotFoundTtlSeconds * 1000) return false;
+      rememberTitleNotFound(key, record.expiresAt);
+      return true;
+    },
+    async setTitleNotFound(mediaType, tmdbId, season) {
+      const key = titleNotFoundKey(mediaType, tmdbId, season);
+      const expiresAt = now() + titleNotFoundTtlSeconds * 1000;
+      rememberTitleNotFound(key, expiresAt);
+      await titleRedisOperation(() => redis.set?.(key, JSON.stringify({ expiresAt }), 'EX', titleNotFoundTtlSeconds));
+    },
     async getNotFound(mediaType, tmdbId, season, episode) {
-      const key = `kisskh:not-found:v4:${assertMediaType(mediaType)}:${tmdbId}:${season}:${episode}`;
+      const key = notFoundKey(mediaType, tmdbId, season, episode);
       if (typeof redis?.get !== 'function') return null;
       try {
         const code = await redis.get(key);
@@ -571,7 +702,7 @@ function createKisskhCache(deps = {}) {
       if (!['not_found', 'episode_missing'].includes(code)) throw new TypeError('code not-found KissKH invalide');
       if (typeof redis?.set === 'function') {
         try {
-          await redis.set(`kisskh:not-found:v4:${mediaType}:${tmdbId}:${season}:${episode}`, code, 'EX', notFoundTtlSeconds);
+          await redis.set(notFoundKey(mediaType, tmdbId, season, episode), code, 'EX', notFoundTtlSeconds);
         } catch {
           // Negative caching is optional when Redis is unavailable.
         }
@@ -638,7 +769,7 @@ function createFallbackCapabilityStore(deps = {}) {
   const redis = deps.redis;
   const now = deps.now || Date.now;
   const randomBytes = deps.randomBytes || crypto.randomBytes;
-  const providerOrigin = validateProviderOrigin(deps.providerBaseUrl || 'https://kisskh.nl');
+  const providerOrigin = validateProviderOrigin(getProviderBaseUrl(deps.providerBaseUrl));
   const fallbackTokenTtlSeconds = boundedPositiveInteger(
     deps.fallbackTokenTtlSeconds,
     FALLBACK_TOKEN_TTL_SECONDS,
@@ -703,7 +834,7 @@ function createFallbackCapabilityStore(deps = {}) {
 }
 
 function createFallbackDescriptorValidator(deps = {}) {
-  const providerOrigin = validateProviderOrigin(deps.providerBaseUrl || 'https://kisskh.nl');
+  const providerOrigin = validateProviderOrigin(getProviderBaseUrl(deps.providerBaseUrl));
   const now = deps.now || Date.now;
   if (typeof now !== 'function') throw new TypeError('horloge capability KissKH invalide');
   return (value) => {
@@ -719,6 +850,7 @@ function createFallbackDescriptorValidator(deps = {}) {
 }
 
 module.exports = {
+  CATALOG_PARTIAL_REFRESH_MS,
   assertMediaType,
   createFallbackDescriptorValidator,
   createFallbackCapabilityStore,

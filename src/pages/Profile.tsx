@@ -332,6 +332,9 @@ const Profile: React.FC = () => {
   const [collectionMovies, setCollectionMovies] = useState<any[]>([]);
   const [loadingCollectionMovies, setLoadingCollectionMovies] = useState(false);
   const [selectedListCollections, setSelectedListCollections] = useState<any[]>([]);
+  // Mode d'affichage d'une liste ouverte : ses entrées (films, séries, sagas)
+  // réordonnables, ou bien tous les films de ses sagas aplatis
+  const [listViewMode, setListViewMode] = useState<'items' | 'collections'>('items');
   const [loadingListCollections, setLoadingListCollections] = useState(false);
   const [userProfile, setUserProfile] = useState<UserProfile>({
     username: '',
@@ -953,10 +956,11 @@ const Profile: React.FC = () => {
     );
 
     setCustomLists(updatedLists);
+    setSelectedList(updatedList);
     localStorage.setItem('custom_lists', JSON.stringify(updatedLists));
 
-    // Recharger la vue des collections si nécessaire
-    if (selectedListCollections.length > 0) {
+    // Recharger la vue aplatie si c'est elle qui est affichée
+    if (listViewMode === 'collections') {
       loadListCollections(updatedList);
     }
   };
@@ -978,18 +982,23 @@ const Profile: React.FC = () => {
     );
 
     setCustomLists(updatedLists);
+    setSelectedList(updatedList);
     localStorage.setItem('custom_lists', JSON.stringify(updatedLists));
 
-    // Recharger la vue des collections si nécessaire
-    if (selectedListCollections.length > 0) {
-      loadListCollections(updatedList);
+    // Recharger la vue aplatie si elle est affichée ; sans plus aucune saga,
+    // repasser sur la vue classique des entrées (son état vide est adapté)
+    if (listViewMode === 'collections') {
+      if (updatedItems.some(item => item.type === 'collection')) {
+        loadListCollections(updatedList);
+      } else {
+        showListItems();
+      }
     }
   };
 
   // Fonction pour charger toutes les collections d'une liste
   const loadListCollections = async (list: CustomList) => {
     setLoadingListCollections(true);
-    setSelectedListName(list.name);
     try {
       const collections = list.items.filter(item => item.type === 'collection');
       const individualItems = list.items.filter(item => item.type !== 'collection');
@@ -1072,18 +1081,34 @@ const Profile: React.FC = () => {
     }
   };
 
-  // Fonction pour ouvrir une liste de collections
+  // Vue classique d'une liste : ses entrées, réordonnables et supprimables
+  const showListItems = () => {
+    setListViewMode('items');
+    setSelectedListCollections([]);
+  };
+
+  // Vue aplatie d'une liste : tous les films de ses sagas, plus ses entrées
+  const showListCollections = (list: CustomList) => {
+    setListViewMode('collections');
+    loadListCollections(list);
+  };
+
+  // Ouvrir une liste : avec au moins une saga on démarre sur la vue aplatie,
+  // sinon sur la vue classique. Dans les deux cas selectedList est posé : c'est
+  // lui qui porte l'en-tête commun (renommage, partage, publication, suppression)
   const openListCollections = (list: CustomList) => {
-    const hasCollections = list.items.some(item => item.type === 'collection');
-    if (hasCollections) {
-      loadListCollections(list);
+    setSelectedList(list);
+    if (list.items.some(item => item.type === 'collection')) {
+      showListCollections(list);
     } else {
-      setSelectedList(list);
+      showListItems();
     }
   };
 
-  // État pour stocker le nom de la liste sélectionnée
-  const [selectedListName, setSelectedListName] = useState<string>('');
+  const closeSelectedList = () => {
+    setSelectedList(null);
+    showListItems();
+  };
 
 
 
@@ -3479,7 +3504,7 @@ const Profile: React.FC = () => {
     setCustomLists(updatedLists);
     localStorage.setItem('custom_lists', JSON.stringify(updatedLists));
     if (selectedList && selectedList.id === listId) {
-      setSelectedList(null);
+      closeSelectedList();
     }
   };
 
@@ -3812,62 +3837,34 @@ const Profile: React.FC = () => {
     );
   };
 
-  const renderCustomLists = () => {
-    if (selectedListCollections.length > 0) {
+  // Corps de la vue aplatie d'une liste : les films de ses sagas plus ses
+  // entrées individuelles. L'en-tête (renommage, partage, publication,
+  // suppression) est celui de la vue classique, commun aux deux modes.
+  const renderListCollectionsBody = () => {
+    if (loadingListCollections) {
       return (
-        <div className="space-y-6">
-          <div className="flex flex-col gap-4 md:flex-row md:justify-between md:items-center">
-            <div className="flex flex-wrap items-center gap-3 md:gap-4">
-              <motion.button
-                whileHover={{ scale: 1.05 }}
-                whileTap={{ scale: 0.95 }}
-                onClick={() => setSelectedListCollections([])}
-                className="text-gray-300 hover:text-white bg-gray-800/70 p-2 rounded-full"
-              >
-                <ArrowLeft className="w-5 h-5" />
-              </motion.button>
-              <h2 className="text-2xl font-bold bg-gradient-to-r from-purple-400 to-purple-600 bg-clip-text text-transparent">
-                {selectedListName}
-              </h2>
-            </div>
-            <div className="flex items-center gap-2">
-              <motion.button
-                whileHover={{ scale: 1.05 }}
-                whileTap={{ scale: 0.95 }}
-                onClick={() => {
-                  if (selectedList) {
-                    const collections = selectedList.items.filter(item => item.type === 'collection');
-                    if (collections.length > 0) {
-                      // Retirer la première collection (ou on pourrait ajouter un menu pour choisir)
-                      removeCollectionFromList(collections[0].id);
-                    }
-                  }
-                }}
-                className="flex items-center gap-2 text-white bg-gradient-to-r from-orange-600 to-orange-700 hover:from-orange-700 hover:to-orange-800 px-3 py-2 rounded-lg transition-colors shadow-md"
-                title={t('profilePage.collectionView.removeCollectionTitle')}
-              >
-                <Trash2 className="w-4 h-4" />
-                <span className="text-xs">{t('profilePage.collectionView.removeCollection')}</span>
-              </motion.button>
-            </div>
-          </div>
+        <div className="flex items-center justify-center py-16">
+          <div className="animate-spin rounded-full h-12 w-12 border-t-2 border-purple-500"></div>
+        </div>
+      );
+    }
 
-          {loadingListCollections ? (
-            <div className="flex items-center justify-center py-16">
-              <div className="animate-spin rounded-full h-12 w-12 border-t-2 border-purple-500"></div>
-            </div>
-          ) : selectedListCollections.length === 0 ? (
-            <motion.div
-              initial={{ opacity: 0, y: 10 }}
-              animate={{ opacity: 1, y: 0 }}
-              transition={{ duration: 0.5 }}
-              className="flex flex-col items-center justify-center py-16 px-4 text-center bg-gray-900/50  rounded-2xl border border-gray-800/50 shadow-inner"
-            >
-              <Film className="w-16 h-16 text-purple-500 opacity-50 mb-4" />
-              <h3 className="text-xl md:text-2xl font-bold text-white mb-2">{t('profilePage.collectionView.noMovieFound')}</h3>
-              <p className="text-gray-400 max-w-md mb-6">{t('profilePage.collectionView.noMovieFoundDesc')}</p>
-            </motion.div>
-          ) : (
+    if (selectedListCollections.length === 0) {
+      return (
+        <motion.div
+          initial={{ opacity: 0, y: 10 }}
+          animate={{ opacity: 1, y: 0 }}
+          transition={{ duration: 0.5 }}
+          className="flex flex-col items-center justify-center py-16 px-4 text-center bg-gray-900/50  rounded-2xl border border-gray-800/50 shadow-inner"
+        >
+          <Film className="w-16 h-16 text-purple-500 opacity-50 mb-4" />
+          <h3 className="text-xl md:text-2xl font-bold text-white mb-2">{t('profilePage.collectionView.noMovieFound')}</h3>
+          <p className="text-gray-400 max-w-md mb-6">{t('profilePage.collectionView.noMovieFoundDesc')}</p>
+        </motion.div>
+      );
+    }
+
+    return (
             <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 xl:grid-cols-6 gap-4 px-2 md:px-4 relative z-0">
               {selectedListCollections.map((movie, index) => (
                 <AgeRestrictedMedia
@@ -3956,11 +3953,10 @@ const Profile: React.FC = () => {
                 </AgeRestrictedMedia>
               ))}
             </div>
-          )}
-        </div>
-      );
-    }
+    );
+  };
 
+  const renderCustomLists = () => {
     if (selectedCollection) {
       return (
         <div className="space-y-6">
@@ -4060,6 +4056,9 @@ const Profile: React.FC = () => {
       const shareInfo = sharedListsStatus[String(selectedList.id)];
       const isShared = !!shareInfo;
       const isCurrentlySharing = sharingListId === selectedList.id;
+      const listCollections = selectedList.items.filter(item => item.type === 'collection');
+      const hasCollections = listCollections.length > 0;
+      const isCollectionsView = listViewMode === 'collections';
 
       return (
         <div className="space-y-6">
@@ -4068,7 +4067,7 @@ const Profile: React.FC = () => {
               <motion.button
                 whileHover={{ scale: 1.05 }}
                 whileTap={{ scale: 0.95 }}
-                onClick={() => setSelectedList(null)}
+                onClick={closeSelectedList}
                 className="text-gray-300 hover:text-white bg-gray-800/70 p-2 rounded-full"
               >
                 <ArrowLeft className="w-5 h-5" />
@@ -4193,6 +4192,33 @@ const Profile: React.FC = () => {
                   </motion.button>
                 </div>
               )}
+              {/* Basculer entre les entrées de la liste et tous les films de ses sagas */}
+              {hasCollections && (
+                <motion.button
+                  whileHover={{ scale: 1.05 }}
+                  whileTap={{ scale: 0.95 }}
+                  onClick={() => (isCollectionsView ? showListItems() : showListCollections(selectedList))}
+                  className="w-full sm:w-auto justify-center flex items-center gap-2 text-white bg-gradient-to-r from-blue-600 to-blue-700 hover:from-blue-700 hover:to-blue-800 px-3 py-2 rounded-lg transition-colors shadow-md"
+                >
+                  {isCollectionsView ? (
+                    <><List className="w-4 h-4" /><span className="text-xs">{t('profilePage.collectionView.editList')}</span></>
+                  ) : (
+                    <><Film className="w-4 h-4" /><span className="text-xs">{t('profilePage.collectionView.viewAllMovies')}</span></>
+                  )}
+                </motion.button>
+              )}
+              {isCollectionsView && hasCollections && (
+                <motion.button
+                  whileHover={{ scale: 1.05 }}
+                  whileTap={{ scale: 0.95 }}
+                  onClick={() => removeCollectionFromList(listCollections[0].id)}
+                  className="w-full sm:w-auto justify-center flex items-center gap-2 text-white bg-gradient-to-r from-orange-600 to-orange-700 hover:from-orange-700 hover:to-orange-800 px-3 py-2 rounded-lg transition-colors shadow-md"
+                  title={t('profilePage.collectionView.removeCollectionTitle')}
+                >
+                  <Trash2 className="w-4 h-4" />
+                  <span className="text-xs">{t('profilePage.collectionView.removeCollection')}</span>
+                </motion.button>
+              )}
               <button
                 onClick={() => handleDeleteList(selectedList.id)}
                 className="w-full sm:w-auto justify-center flex items-center gap-2 text-white bg-gradient-to-r from-red-600 to-red-700 hover:from-red-700 hover:to-red-800 px-3 py-2 rounded-lg transition-colors shadow-md"
@@ -4203,7 +4229,7 @@ const Profile: React.FC = () => {
             </div>
           </div>
 
-          {selectedList.items.length === 0 ? (
+          {isCollectionsView ? renderListCollectionsBody() : selectedList.items.length === 0 ? (
             <motion.div
               initial={{ opacity: 0, y: 10 }}
               animate={{ opacity: 1, y: 0 }}

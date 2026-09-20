@@ -1,7 +1,11 @@
 import React from 'react';
 import { Skeleton } from '@/components/ui/Skeleton';
+import { useLightMode } from '@/context/LightModeContext';
+import { LightweightLoading } from '@/components/LightweightLoading';
 
 const HeroSkeleton: React.FC = () => {
+  const { isLightMode } = useLightMode();
+  if (isLightMode) return <LightweightLoading className="min-h-[340px] sm:min-h-[400px] md:min-h-[480px]" />;
   return (
     <div className="embla relative w-full select-none px-3 sm:px-6 md:px-12 lg:px-20 mx-auto max-w-[1920px] animate-skeleton-fade">
       <div

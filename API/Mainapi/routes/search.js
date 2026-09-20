@@ -8,6 +8,7 @@
 const express = require('express');
 const router = express.Router();
 const { generateCacheKey } = require('../utils/cacheManager');
+const { isHydrackerBlackout } = require('../utils/hydrackerBlackout');
 
 // ---------------------------------------------------------------------------
 // Dependencies injected via configure()
@@ -224,6 +225,8 @@ router.get('/api/search', async (req, res) => {
       // Update cache in background only if no error occurs
       (async () => {
         try {
+          // Blackout : pas de revalidation en arrière-plan, le cache reste tel quel.
+          if (isHydrackerBlackout()) return;
           const shouldUpdate_ = await shouldUpdateCache(DARKINOS_CACHE_DIR, cacheKey);
           if (!shouldUpdate_) {
             return;
@@ -244,6 +247,10 @@ router.get('/api/search', async (req, res) => {
         }
       })();
     } else {
+      // Blackout et pas de cache : résultat vide, aucune requête upstream.
+      if (isHydrackerBlackout()) {
+        return res.status(200).json({ results: [], query: sanitizedTitle, loader: 'searchPage', seo: null });
+      }
       // Si en maintenance et pas de cache, erreur
       if (DARKINO_MAINTENANCE) {
         return res.status(200).json({ error: 'Service Darkino temporairement indisponible (maintenance)' });

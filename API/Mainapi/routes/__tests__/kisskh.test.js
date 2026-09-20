@@ -68,14 +68,14 @@ test('runtime reuses the shared public proxy origin when the KissKH-specific URL
   assert.equal(runtime.publicProxyUrl, 'https://proxiesembed.example');
 });
 
-test('runtime dependency wiring applies a non-default fallback TTL from environment to Redis EX', async () => {
+test('runtime wiring applies the configured provider domain, default allowlist and fallback TTL', async () => {
   const { createRuntimeDependencies } = require('../kisskh');
   const writes = [];
   const runtime = createRuntimeDependencies({
     env: {
       KISSKH_ENABLED: 'true',
-      KISSKH_BASE_URL: 'https://kisskh.nl',
-      KISSKH_ALLOWED_HOSTS: 'kisskh.nl',
+      KISSKH_BASE_URL: 'https://kisskh.tv/',
+      KISSKH_ALLOWED_HOSTS: '',
       KISSKH_MEDIA_ALLOWED_HOSTS: 'auto.cdnvideo11.shop',
       KISSKH_SUBTITLE_ALLOWED_HOSTS: 'sub.cdnvideo11.shop',
       KISSKH_FALLBACK_TOKEN_TTL_SECONDS: '7',
@@ -91,9 +91,10 @@ test('runtime dependency wiring applies a non-default fallback TTL from environm
     kisskhRequest: async () => { throw new Error('unexpected metadata request'); },
   });
 
+  assert.equal(runtime.providerBaseUrl, 'https://kisskh.tv');
   await runtime.capabilityStore.create({
     url: 'https://auto.cdnvideo11.shop/video.mp4',
-    requiredHeaders: { Referer: 'https://kisskh.nl/', Origin: 'https://kisskh.nl' },
+    requiredHeaders: { Referer: 'https://kisskh.tv/', Origin: 'https://kisskh.tv' },
   });
   const capabilityWrite = writes.find(([key]) => key.startsWith('kisskh:fallback:v1:'));
   assert.deepEqual(capabilityWrite.slice(2, 5), ['EX', 7, 'NX']);
@@ -104,7 +105,7 @@ test('GET returns the exact safe contract with no-store and rejects non-public p
   const router = createKisskhRouter({
     enabled: true,
     publicProxyUrl: 'https://proxy.example',
-    providerBaseUrl: 'https://kisskh.nl',
+    providerBaseUrl: 'https://kisskh.do',
     mediaAllowedHosts: ['media.example'],
     resolver: { async resolveTv() { return resolution(); } },
     capabilityStore: { async consume() { return null; } },
@@ -120,7 +121,7 @@ test('GET returns the exact safe contract with no-store and rejects non-public p
   const badRouter = createKisskhRouter({
     enabled: true,
     publicProxyUrl: 'https://proxy.example',
-    providerBaseUrl: 'https://kisskh.nl',
+    providerBaseUrl: 'https://kisskh.do',
     mediaAllowedHosts: ['media.example'],
     resolver: { async resolveTv() {
       const value = resolution();
@@ -147,7 +148,7 @@ test('GET returns 202 immediately on a cold disk cache and warms it in backgroun
   const router = createKisskhRouter({
     enabled: true,
     publicProxyUrl: 'https://proxy.example',
-    providerBaseUrl: 'https://kisskh.nl',
+    providerBaseUrl: 'https://kisskh.do',
     resolver: {
       async getCachedTv() { return cached; },
       async getRetrievalProgress() {
@@ -205,7 +206,7 @@ test('a genuine background failure is returned with diagnostics instead of conso
   const router = createKisskhRouter({
     enabled: true,
     publicProxyUrl: 'https://proxy.example',
-    providerBaseUrl: 'https://kisskh.nl',
+    providerBaseUrl: 'https://kisskh.do',
     resolver: {
       async getCachedTv() { return null; },
       async warmTv() {
@@ -244,7 +245,7 @@ test('a follower stops after one distributed lock contention instead of joining 
   const router = createKisskhRouter({
     enabled: true,
     publicProxyUrl: 'https://proxy.example',
-    providerBaseUrl: 'https://kisskh.nl',
+    providerBaseUrl: 'https://kisskh.do',
     now: () => clock,
     waitForRetrievalRetry: async () => {
       clock += 1_000;
@@ -301,7 +302,7 @@ test('a ready KissKH request starts the full catalogue warm-up without delaying 
   const router = createKisskhRouter({
     enabled: true,
     publicProxyUrl: 'https://proxy.example',
-    providerBaseUrl: 'https://kisskh.nl',
+    providerBaseUrl: 'https://kisskh.do',
     resolver: {
       async warmCatalog() {
         warmCatalogCalls += 1;
@@ -357,7 +358,7 @@ test('movie and TV routes warm and serve isolated entries for the same numeric T
   const server = await serve(createKisskhRouter({
     enabled: true,
     publicProxyUrl: 'https://proxy.example',
-    providerBaseUrl: 'https://kisskh.nl',
+    providerBaseUrl: 'https://kisskh.do',
     resolver,
     capabilityStore: { async consume() { return null; } },
     proxyPolicy: { async assertCircuitClosed() {} },
@@ -404,7 +405,7 @@ test('GET accepts exactly hls and mp4 source types', async (t) => {
     const server = await serve(createKisskhRouter({
       enabled: true,
       publicProxyUrl: 'https://proxy.example',
-      providerBaseUrl: 'https://kisskh.nl',
+      providerBaseUrl: 'https://kisskh.do',
       resolver: { async resolveTv() { return { ...resolution(), sources: [{ ...resolution().sources[0], type }] }; } },
       capabilityStore: { async consume() { return null; } },
       proxyPolicy: { async assertCircuitClosed() {} },
@@ -418,7 +419,7 @@ test('GET accepts exactly hls and mp4 source types', async (t) => {
   const badServer = await serve(createKisskhRouter({
     enabled: true,
     publicProxyUrl: 'https://proxy.example',
-    providerBaseUrl: 'https://kisskh.nl',
+    providerBaseUrl: 'https://kisskh.do',
     resolver: { async resolveTv() { return { ...resolution(), sources: [{ ...resolution().sources[0], type: 'dash' }] }; } },
     capabilityStore: { async consume() { return null; } },
     proxyPolicy: { async assertCircuitClosed() {} },
@@ -448,7 +449,7 @@ test('route accepts txt2 AES and rejects the legacy unsupported a3 descriptor', 
   const createServer = async (cipher) => serve(createKisskhRouter({
     enabled: true,
     publicProxyUrl: 'https://proxy.example',
-    providerBaseUrl: 'https://kisskh.nl',
+    providerBaseUrl: 'https://kisskh.do',
     resolver: {
       async resolveTv() {
         return { ...resolution(), subtitles: [{ ...txt2Track, cipher }] };
@@ -476,7 +477,7 @@ test('GET returns direct KissKH URLs without VIP and proxy URLs with a valid VIP
   const router = createKisskhRouter({
     enabled: true,
     publicProxyUrl: 'https://proxy.example',
-    providerBaseUrl: 'https://kisskh.nl',
+    providerBaseUrl: 'https://kisskh.do',
     verifyAccessKey: async (accessKey) => ({ vip: accessKey === 'valid-vip-key' }),
     resolver: {
       async resolveTv(_request, options) {
@@ -526,7 +527,7 @@ test('movie route returns direct URLs for free access and proxy descendants for 
   const server = await serve(createKisskhRouter({
     enabled: true,
     publicProxyUrl: 'https://proxy.example',
-    providerBaseUrl: 'https://kisskh.nl',
+    providerBaseUrl: 'https://kisskh.do',
     verifyAccessKey: async (accessKey) => ({ vip: accessKey === 'valid-vip-key' }),
     resolver: {
       async getCachedMovie(_request, options) {
@@ -575,7 +576,7 @@ test('route status mapping is normalized', async (t) => {
     const server = await serve(createKisskhRouter({
       enabled: true,
       publicProxyUrl: 'https://proxy.example',
-      providerBaseUrl: 'https://kisskh.nl',
+      providerBaseUrl: 'https://kisskh.do',
       mediaAllowedHosts: ['media.example'],
       resolver: { async resolveTv() { throw new KisskhError(code, 'safe'); } },
       capabilityStore: { async consume() { return null; } },
@@ -604,22 +605,22 @@ test('fallback capability is atomically consumed once and returns only the stric
     redis,
     now: () => now,
     mediaAllowedHosts: ['media.example'],
-    providerBaseUrl: 'https://kisskh.nl',
+    providerBaseUrl: 'https://kisskh.do',
   });
   const expiredToken = await store.create({
     url: 'https://media.example/video.mp4?sig=sensitive',
-    requiredHeaders: { Referer: 'https://kisskh.nl/', Origin: 'https://kisskh.nl' },
+    requiredHeaders: { Referer: 'https://kisskh.do/', Origin: 'https://kisskh.do' },
   });
   now += 120_000;
   const token = await store.create({
     url: 'https://media.example/video.mp4?sig=sensitive',
-    requiredHeaders: { Referer: 'https://kisskh.nl/', Origin: 'https://kisskh.nl' },
+    requiredHeaders: { Referer: 'https://kisskh.do/', Origin: 'https://kisskh.do' },
   });
   const { createKisskhRouter } = require('../kisskh');
   const server = await serve(createKisskhRouter({
     enabled: true,
     publicProxyUrl: 'https://proxy.example',
-    providerBaseUrl: 'https://kisskh.nl',
+    providerBaseUrl: 'https://kisskh.do',
     mediaAllowedHosts: ['media.example'],
     now: () => now,
     resolver: { async resolveTv() { return resolution(token); } },
@@ -634,7 +635,7 @@ test('fallback capability is atomically consumed once and returns only the stric
   assert.deepEqual(await first.json(), {
     url: 'https://media.example/video.mp4?sig=sensitive',
     expiresAt: 1_240_000,
-    requiredHeaders: { Referer: 'https://kisskh.nl/', Origin: 'https://kisskh.nl' },
+    requiredHeaders: { Referer: 'https://kisskh.do/', Origin: 'https://kisskh.do' },
   });
   const reused = await fetch(`${server.url}/api/kisskh/fallback/${token}`, { method: 'POST' });
   const malformed = await fetch(`${server.url}/api/kisskh/fallback/not-a-token`, { method: 'POST' });
@@ -661,7 +662,7 @@ test('fallback consumes before the shared breaker and cannot be retried after 42
   const server = await serve(require('../kisskh').createKisskhRouter({
     enabled: true,
     publicProxyUrl: 'https://proxy.example',
-    providerBaseUrl: 'https://kisskh.nl',
+    providerBaseUrl: 'https://kisskh.do',
     mediaAllowedHosts: ['media.example'],
     resolver: { async resolveTv() { return resolution(); } },
     capabilityStore: store,
@@ -690,7 +691,7 @@ test('fallback exchange accepts a bounded HTTP URL without host allowlist or DNS
   const server = await serve(createKisskhRouter({
     enabled: true,
     publicProxyUrl: 'https://proxy.example',
-    providerBaseUrl: 'https://kisskh.nl',
+    providerBaseUrl: 'https://kisskh.do',
     mediaAllowedHosts: ['media.example'],
     resolver: { async resolveTv() { return resolution(); } },
     capabilityStore: {
@@ -699,7 +700,7 @@ test('fallback exchange accepts a bounded HTTP URL without host allowlist or DNS
         return {
           url: 'http://127.0.0.1:8080/video.mp4?sig=sensitive',
           expiresAt,
-          requiredHeaders: { Referer: 'https://kisskh.nl/', Origin: 'https://kisskh.nl' },
+          requiredHeaders: { Referer: 'https://kisskh.do/', Origin: 'https://kisskh.do' },
         };
       },
     },
@@ -715,7 +716,7 @@ test('fallback exchange accepts a bounded HTTP URL without host allowlist or DNS
   assert.deepEqual(await response.json(), {
     url: 'http://127.0.0.1:8080/video.mp4?sig=sensitive',
     expiresAt,
-    requiredHeaders: { Referer: 'https://kisskh.nl/', Origin: 'https://kisskh.nl' },
+    requiredHeaders: { Referer: 'https://kisskh.do/', Origin: 'https://kisskh.do' },
   });
 });
 
@@ -727,12 +728,12 @@ test('capability creation keeps strict headers and URL bounds but accepts arbitr
     now: () => 1,
     randomBytes: () => Buffer.alloc(32, 1),
     mediaAllowedHosts: ['media.example'],
-    providerBaseUrl: 'https://kisskh.nl',
+    providerBaseUrl: 'https://kisskh.do',
   });
   for (const requiredHeaders of [
     { Cookie: 'secret' }, { Referer: 'ok\r\nX-Evil: yes' }, { Origin: 'x'.repeat(2049) },
-    { Origin: 'https://evil.example' }, { Origin: 'https://kisskh.nl/path' },
-    { Referer: 'http://kisskh.nl/' }, { Referer: 'https://evil.example/' },
+    { Origin: 'https://evil.example' }, { Origin: 'https://kisskh.do/path' },
+    { Referer: 'http://kisskh.do/' }, { Referer: 'https://evil.example/' },
   ]) {
     await assert.rejects(store.create({ url: 'https://media.example/video.mp4', requiredHeaders }),
       (error) => error.code === 'provider_security');
@@ -748,7 +749,7 @@ test('capability creation keeps strict headers and URL bounds but accepts arbitr
   }
   assert.equal(writes, 0);
   const token = await store.create({
-    url: 'http://127.0.0.1:8080/video.mp4', requiredHeaders: { Origin: 'https://kisskh.nl' },
+    url: 'http://127.0.0.1:8080/video.mp4', requiredHeaders: { Origin: 'https://kisskh.do' },
   });
   assert.match(token, /^[A-Za-z0-9_-]{22,128}$/);
   assert.equal(writes, 1);
@@ -763,13 +764,13 @@ test('fallback response revalidates provider headers and bounded URL syntax afte
     },
     {
       url: 'ftp://media.example/video.mp4', expiresAt: Date.now() + 10_000,
-      requiredHeaders: { Origin: 'https://kisskh.nl' },
+      requiredHeaders: { Origin: 'https://kisskh.do' },
     },
   ];
   const server = await serve(createKisskhRouter({
     enabled: true,
     publicProxyUrl: 'https://proxy.example',
-    providerBaseUrl: 'https://kisskh.nl',
+    providerBaseUrl: 'https://kisskh.do',
     mediaAllowedHosts: ['media.example'],
     resolver: { async resolveTv() { return resolution(); } },
     capabilityStore: { async consume() { return records.shift(); } },

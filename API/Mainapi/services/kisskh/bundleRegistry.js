@@ -4,13 +4,16 @@ const https = require('node:https');
 const net = require('node:net');
 const { APPROVED_ALGORITHMS } = require('./approvedAlgorithms');
 const { KisskhError } = require('./errors');
+const { getProviderBaseUrl } = require('./config');
 
-const BUNDLE_URL = 'https://kisskh.nl/502.33bac7b53e9897b8.js';
-const MODULE_URL = 'https://kisskh.nl/common.js?v=9082123';
+const BUNDLE_PATH = '/502.33bac7b53e9897b8.js';
+const MODULE_PATH = '/common.js?v=9082123';
 const MAX_SOURCE_BYTES = 2 * 1024 * 1024;
 const MAX_REDIRECTS = 5;
 const CHECK_TTL_SECONDS = 900;
 const STALE_MAX_SECONDS = 86_400;
+const CHECK_RETRY_MS = 60_000;
+const LOCK_RETRY_MS = 1_000;
 
 function sha256(value) {
   return crypto.createHash('sha256').update(value).digest('hex');
@@ -24,7 +27,7 @@ function boundedTtlSeconds(value, fallback, maximum, label) {
   return resolved;
 }
 
-function validateKisskhUrl(value) {
+function validateKisskhUrl(value, providerOrigin) {
   if (typeof value !== 'string' || /[\r\n]/.test(value)) {
     throw new KisskhError('provider_security', 'URL KissKH non autorisee');
   }
@@ -34,7 +37,7 @@ function validateKisskhUrl(value) {
   } catch (cause) {
     throw new KisskhError('provider_security', 'URL KissKH non autorisee', { cause });
   }
-  if (url.protocol !== 'https:' || url.hostname !== 'kisskh.nl'
+  if (url.protocol !== 'https:' || url.origin !== providerOrigin
       || (url.port && url.port !== '443') || url.username || url.password || url.hash) {
     throw new KisskhError('provider_security', 'URL KissKH non autorisee');
   }
@@ -216,12 +219,13 @@ function createPinnedLookup(addresses) {
   };
 }
 
-function createPinnedHttpsFetcher({ request = https.request, timeoutMs = 10_000 } = {}) {
+function createPinnedHttpsFetcher({ request = https.request, timeoutMs = 10_000, providerBaseUrl } = {}) {
+  const providerOrigin = getProviderBaseUrl(providerBaseUrl);
   if (typeof request !== 'function' || !Number.isSafeInteger(timeoutMs) || timeoutMs <= 0) {
     throw new TypeError('transport HTTPS KissKH invalide');
   }
   return (urlValue, options = {}) => {
-    const url = validateKisskhUrl(urlValue);
+    const url = validateKisskhUrl(urlValue, providerOrigin);
     const maxBytes = options.maxBytes === undefined ? MAX_SOURCE_BYTES : options.maxBytes;
     if (!Number.isSafeInteger(maxBytes) || maxBytes <= 0 || maxBytes > MAX_SOURCE_BYTES) {
       return Promise.reject(new KisskhError('provider_security', 'Limite bundle KissKH invalide'));
@@ -347,8 +351,8 @@ function createPinnedHttpsFetcher({ request = https.request, timeoutMs = 10_000 
   };
 }
 
-async function fetchBoundedText(initialUrl, fetchText, resolveDns) {
-  let current = validateKisskhUrl(initialUrl);
+async function fetchBoundedText(initialUrl, fetchText, resolveDns, providerOrigin) {
+  let current = validateKisskhUrl(initialUrl, providerOrigin);
   for (let redirects = 0; redirects <= MAX_REDIRECTS; redirects += 1) {
     const addresses = await validatePublicDns(current.hostname, resolveDns);
     let response;
@@ -369,7 +373,7 @@ async function fetchBoundedText(initialUrl, fetchText, resolveDns) {
       if (redirects === MAX_REDIRECTS) throw new KisskhError('provider_security', 'Trop de redirections KissKH');
       const location = getHeader(response.headers, 'location');
       if (!location || /[\r\n]/.test(location)) throw new KisskhError('provider_security', 'Redirection KissKH invalide');
-      current = validateKisskhUrl(new URL(location, current).href);
+      current = validateKisskhUrl(new URL(location, current).href, providerOrigin);
       continue;
     }
     if (status < 200 || status >= 300) {
@@ -381,13 +385,14 @@ async function fetchBoundedText(initialUrl, fetchText, resolveDns) {
 }
 
 function createBundleRegistry(deps = {}) {
+  const providerOrigin = getProviderBaseUrl(deps.providerBaseUrl);
   const checkTtlMs = boundedTtlSeconds(
     deps.checkTtlSeconds, CHECK_TTL_SECONDS, CHECK_TTL_SECONDS, 'bundle check TTL KissKH',
   ) * 1000;
   const staleMaxMs = boundedTtlSeconds(
     deps.staleMaxSeconds, STALE_MAX_SECONDS, STALE_MAX_SECONDS, 'bundle stale TTL KissKH',
   ) * 1000;
-  const fetchText = deps.fetchText || createPinnedHttpsFetcher();
+  const fetchText = deps.fetchText || createPinnedHttpsFetcher({ providerBaseUrl: providerOrigin });
   const resolveDns = deps.resolveDns || defaultResolveDns;
   const hashText = deps.hashText || sha256;
   const approved = deps.approved || APPROVED_ALGORITHMS;
@@ -395,20 +400,21 @@ function createBundleRegistry(deps = {}) {
     ? approved.values().next().value
     : null;
   const now = deps.now || Date.now;
-  const loadCurrentMetadata = deps.loadCurrentMetadata;
-  if (loadCurrentMetadata !== undefined && typeof loadCurrentMetadata !== 'function') {
+  const cache = deps.cache;
+  if (deps.loadCurrentMetadata !== undefined && typeof deps.loadCurrentMetadata !== 'function') {
     throw new TypeError('cache bundle KissKH invalide');
   }
-  const bundleUrl = deps.bundleUrl || BUNDLE_URL;
-  const moduleUrl = deps.moduleUrl || MODULE_URL;
+  const loadCurrentMetadata = deps.loadCurrentMetadata
+    ?? (cache ? () => cache.getCurrentBundleMetadata({ allowStale: true }) : undefined);
+  const bundleUrl = deps.bundleUrl || new URL(BUNDLE_PATH, providerOrigin).href;
+  const moduleUrl = deps.moduleUrl || new URL(MODULE_PATH, providerOrigin).href;
   let current = null;
   let lastKnown = null;
-  let cacheLoaded = false;
   let pendingResolution = null;
+  let failure = null;
 
   async function loadCachedCurrent() {
-    if (cacheLoaded || !loadCurrentMetadata) return;
-    cacheLoaded = true;
+    if (!loadCurrentMetadata) return;
     let metadata;
     try {
       metadata = await loadCurrentMetadata();
@@ -418,7 +424,8 @@ function createBundleRegistry(deps = {}) {
     if (!metadata || !Number.isSafeInteger(metadata.checkedAt)) return;
     const checkedAt = now();
     if (metadata.checkedAt < 0 || metadata.checkedAt > checkedAt
-        || checkedAt - metadata.checkedAt >= checkTtlMs) return;
+        || checkedAt - metadata.checkedAt > Math.max(checkTtlMs, staleMaxMs)
+        || (current && metadata.checkedAt < current.checkedAt)) return;
     const algorithm = approved.get(metadata.bundleSha256);
     if (!algorithm || algorithm.algorithmVersion !== metadata.algorithmVersion
         || algorithm.moduleSha256 !== metadata.moduleSha256) return;
@@ -426,46 +433,126 @@ function createBundleRegistry(deps = {}) {
     lastKnown = current;
   }
 
+  async function loadSharedState() {
+    await Promise.all([
+      loadCachedCurrent(),
+      (async () => {
+        try {
+          const shared = await cache?.getBundleCheckFailure();
+          if (shared) failure = {
+            error: new KisskhError(shared.code, 'Verification KissKH indisponible'),
+            retryAt: shared.retryAt,
+          };
+        } catch {
+          // La protection locale reste active sans Redis.
+        }
+      })(),
+    ]);
+  }
+
+  function fallbackAfterFailure() {
+    const { error } = failure;
+    if (['provider_changed', 'provider_security'].includes(error.code)) throw error;
+    const age = lastKnown ? now() - lastKnown.checkedAt : Infinity;
+    if (age >= 0 && age <= staleMaxMs) return lastKnown.algorithm;
+    // Ce secours compile n'est pas une nouvelle validation des bundles distants.
+    if (compiledFallback && error.details?.reason !== 'lock_contended') return compiledFallback;
+    throw error;
+  }
+
+  function reusableAlgorithm() {
+    if (failure && now() < failure.retryAt) return fallbackAfterFailure();
+    if (current && now() >= current.checkedAt && now() - current.checkedAt < checkTtlMs) return current.algorithm;
+    return null;
+  }
+
   async function checkCurrent() {
-    const bundleText = await fetchBoundedText(bundleUrl, fetchText, resolveDns);
+    const bundleText = await fetchBoundedText(bundleUrl, fetchText, resolveDns, providerOrigin);
     const bundleSha256 = hashText(bundleText);
     const algorithm = approved.get(bundleSha256);
     if (!algorithm) throw new KisskhError('provider_changed', 'Version KissKH non approuvee');
     if (typeof algorithm.moduleSha256 !== 'string' || !/^[0-9a-f]{64}$/.test(algorithm.moduleSha256)) {
       throw new KisskhError('provider_changed', 'Module KissKH non approuve');
     }
-    const moduleText = await fetchBoundedText(moduleUrl, fetchText, resolveDns);
+    const moduleText = await fetchBoundedText(moduleUrl, fetchText, resolveDns, providerOrigin);
     const moduleSha256 = hashText(moduleText);
     if (moduleSha256 !== algorithm.moduleSha256) {
       throw new KisskhError('provider_changed', 'Module KissKH non approuve');
     }
-    return algorithm;
+    return { algorithm, bundleSha256, moduleSha256 };
+  }
+
+  async function refresh(lease) {
+    // Le proprietaire precedent peut avoir publie entre la lecture et le verrou.
+    if (lease) {
+      await loadSharedState();
+      const reusable = reusableAlgorithm();
+      if (reusable) return reusable;
+    }
+    let verified;
+    try {
+      verified = await checkCurrent();
+    } catch (cause) {
+      const code = cause instanceof KisskhError
+        && ['provider_changed', 'provider_security'].includes(cause.code)
+        ? cause.code : 'provider_unavailable';
+      failure = {
+        error: new KisskhError(code, 'Verification KissKH indisponible', { cause }),
+        retryAt: now() + CHECK_RETRY_MS,
+      };
+      try {
+        await lease?.assertOwned();
+      } catch (lockError) {
+        // La perte du verrou ne doit pas masquer un refus de securite observe.
+        if (code !== 'provider_unavailable') throw failure.error;
+        throw lockError;
+      }
+      try {
+        await cache?.recordBundleCheckFailure({ code, retryAt: failure.retryAt });
+      } catch {
+        // La pause locale suffit lorsque la publication partagee echoue.
+      }
+      return fallbackAfterFailure();
+    }
+    await lease?.assertOwned();
+    current = { algorithm: verified.algorithm, checkedAt: now() };
+    lastKnown = current;
+    failure = null;
+    try {
+      await cache?.recordBundleMetadata({
+        algorithmVersion: verified.algorithm.algorithmVersion,
+        bundleSha256: verified.bundleSha256,
+        moduleSha256: verified.moduleSha256,
+        checkedAt: current.checkedAt,
+      });
+    } catch {
+      // Une validation locale reussie reste utilisable si Redis est indisponible.
+    }
+    return current.algorithm;
   }
 
   return {
     async resolveApprovedAlgorithm() {
-      const checkedAt = now();
-      if (current && checkedAt - current.checkedAt < checkTtlMs) return current.algorithm;
+      const reusable = reusableAlgorithm();
+      if (reusable) return reusable;
       if (pendingResolution) return pendingResolution;
       pendingResolution = (async () => {
-        await loadCachedCurrent();
-        const refreshedAt = now();
-        if (current && refreshedAt - current.checkedAt < checkTtlMs) return current.algorithm;
+        await loadSharedState();
+        const shared = reusableAlgorithm();
+        if (shared) return shared;
         try {
-          const algorithm = await checkCurrent();
-          current = { algorithm, checkedAt: refreshedAt };
-          lastKnown = current;
-          return algorithm;
+          return await (typeof cache?.singleFlight === 'function'
+            ? cache.singleFlight(`kisskh:lock:bundle-check:${providerOrigin}`, refresh, {
+              lockMs: 30_000, renewEveryMs: 10_000,
+            }) : refresh());
         } catch (cause) {
-          if (cause instanceof KisskhError && ['provider_changed', 'provider_security'].includes(cause.code)) throw cause;
-          if (lastKnown && refreshedAt - lastKnown.checkedAt <= staleMaxMs) return lastKnown.algorithm;
-          if (compiledFallback) {
-            current = { algorithm: compiledFallback, checkedAt: refreshedAt };
-            lastKnown = current;
-            return compiledFallback;
+          if (cause?.details?.reason === 'lock_contended') {
+            // Un autre worker verifie deja : attendre brievement avant de relire
+            // son resultat, sans publier une panne globale ni prolonger le stale.
+            failure = { error: cause, retryAt: now() + LOCK_RETRY_MS };
+            return fallbackAfterFailure();
           }
-          if (cause instanceof KisskhError) throw cause;
-          throw new KisskhError('provider_unavailable', 'Verification KissKH indisponible', { cause });
+          throw cause;
         }
       })();
       try {

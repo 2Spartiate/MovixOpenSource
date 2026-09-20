@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback, useRef } from 'react';
+import { useState, useEffect, useCallback, useRef, useMemo } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
 import { PrefetchLink as Link } from '@/routing/PrefetchLink';
 import axios from 'axios';
@@ -29,6 +29,8 @@ import { isLikelyAnime } from '../utils/animeSignals';
 import { loadDetailCharacters, type DetailCharacters } from '../services/detailCharacters';
 import { normalizeAlternateTitles, normalizeKeywords, type AlternateTitle } from '../utils/tmdbMetadata';
 import { rememberMedia } from '../utils/mediaSearchIndex';
+import { formatMovieReleaseDate, getMovieReleaseLabel, isMovieReleaseDatePending, needsMovieReleaseWarning, parseMovieReleases } from '@/utils/movieRelease';
+import { useMovieReleaseWarnings } from '@/hooks/useMovieReleaseWarnings';
 
 const MAIN_API = import.meta.env.VITE_MAIN_API;
 const TMDB_API_KEY = import.meta.env.VITE_TMDB_API_KEY || '';
@@ -846,6 +848,27 @@ const MovieDetails = (): JSX.Element => {
   });
 
   const [movie, setMovie] = useState<MovieExtended | null>(null);
+  const movieReleaseWarningsEnabled = useMovieReleaseWarnings();
+  const [releaseDates, setReleaseDates] = useState<{ id: string; data: unknown } | null>(null);
+  const [releaseNow, setReleaseNow] = useState(Date.now);
+  const releaseWarningRef = useRef<HTMLHeadingElement>(null);
+  const movieReleases = useMemo(() => parseMovieReleases(
+    releaseDates?.id === id ? releaseDates.data : null, movie?.release_date,
+  ), [id, movie?.release_date, releaseDates]);
+  const hasReleaseWarning = movieReleaseWarningsEnabled && needsMovieReleaseWarning(movieReleases, releaseNow);
+
+  useEffect(() => {
+    const update = () => setReleaseNow(Date.now());
+    update();
+    const interval = window.setInterval(update, 60_000);
+    window.addEventListener('focus', update);
+    document.addEventListener('visibilitychange', update);
+    return () => {
+      window.clearInterval(interval);
+      window.removeEventListener('focus', update);
+      document.removeEventListener('visibilitychange', update);
+    };
+  }, []);
   const [movixVoteStats, setMovixVoteStats] = useState<LikeDislikeStats>({ likes: 0, dislikes: 0 });
   const [showMovixRatingInfo, setShowMovixRatingInfo] = useState(false);
   const [loading, setLoading] = useState(true);
@@ -923,13 +946,7 @@ const MovieDetails = (): JSX.Element => {
 
   // Nouvel état pour le film suivant recommandé (film disponible)
   const [nextRecommendedMovie, setNextRecommendedMovie] = useState<NextMovieType | null>(null);
-  const [isReleased, setIsReleased] = useState(true);
   const [releaseYear, setReleaseYear] = useState<number | null>(null);
-
-
-
-  // Ajout d'un état pour suivre si le film est sorti
-  const [showPlayerAnyway, setShowPlayerAnyway] = useState<boolean>(false);
 
   const [collection, setCollection] = useState<Collection | null>(null);
   const [loadingCollection, setLoadingCollection] = useState(false);
@@ -1071,6 +1088,8 @@ const MovieDetails = (): JSX.Element => {
       const releaseDatesResponse = await axios.get(
         `https://api.themoviedb.org/3/movie/${id}/release_dates?api_key=${TMDB_API_KEY}`
       );
+      // La même réponse alimente les dates et les classifications existantes.
+      setReleaseDates({ id, data: releaseDatesResponse.data });
       const releaseDatesData = releaseDatesResponse.data.results;
       const newCertifications: { [key: string]: string } = {};
       const frRelease = releaseDatesData.find((r: any) => r.iso_3166_1 === 'FR');
@@ -1500,8 +1519,14 @@ const MovieDetails = (): JSX.Element => {
   // Watch progress tracking functionality removed
 
   const handleWatchClick = () => {
+    if (!id) return;
+    if (movieReleaseWarningsEnabled && needsMovieReleaseWarning(movieReleases, Date.now())) {
+      scrollToPlayer();
+      releaseWarningRef.current?.focus({ preventScroll: true });
+      return;
+    }
     // Mode cinéma toujours actif - naviguer vers la page de visionnage
-    navigate(`/watch/movie/${encodeId(id || '')}`);
+    navigate(`/watch/movie/${encodeId(id)}`);
   };
 
   const fetchRecommendations = async () => {
@@ -1547,12 +1572,6 @@ const MovieDetails = (): JSX.Element => {
       const year = movie.release_date ? new Date(movie.release_date).getFullYear() : '';
       const rating = movie.vote_average?.toFixed(1);
       const genres = movie.genres?.map(g => g.name).join(', ') || '';
-
-      // Vérifie si le film est sorti ou non
-      const releaseDate = movie.release_date && !isNaN(new Date(movie.release_date).getTime())
-        ? new Date(movie.release_date)
-        : null;
-      setIsReleased(releaseDate ? releaseDate <= new Date() : true);
 
       // Simple movie title
       document.title = `${movie.title} - Movix`;
@@ -1730,8 +1749,10 @@ const MovieDetails = (): JSX.Element => {
   // Trouver le réalisateur, s'il existe
   const director = crew.find(member => member.jobs.includes('Director'));
   const movieYear = movie.release_date && !isNaN(new Date(movie.release_date).getTime())
-    ? new Date(movie.release_date).getFullYear()
+    ? Number(movie.release_date.slice(0, 4))
     : null;
+  const movieIsReleased = movieReleases.referenceDate !== null
+    && !isMovieReleaseDatePending(movieReleases.referenceDate, releaseNow);
   const movieTitle = movieYear ? `${movie.title} (${movieYear}) - Movix` : `${movie.title} - Movix`;
   const movieCanonicalUrl = buildSiteUrl(`/movie/${encodedId || id}`);
   const movieSocialImage = movie.backdrop_path || movie.poster_path
@@ -1936,15 +1957,32 @@ const MovieDetails = (): JSX.Element => {
           className="mb-8"
         >
           <h1 className="section-title text-4xl md:text-5xl font-bold">
-            {movie.title} ({movie.release_date && !isNaN(new Date(movie.release_date).getTime()) ? new Date(movie.release_date).getFullYear() : ''})
-            {movie.release_date && !isNaN(new Date(movie.release_date).getTime()) ? (
-              new Date(movie.release_date) > new Date() ?
-                <span className="ml-2 text-sm font-medium bg-yellow-600 text-white px-2 py-1 rounded-md">{t('details.upcomingBadge')}</span> :
-                <span className="ml-2 text-sm font-medium bg-green-600 text-white px-2 py-1 rounded-md">{t('details.releasedBadge')}</span>
-            ) : (
-              <span className="ml-2 text-sm font-medium bg-yellow-600 text-white px-2 py-1 rounded-md">{t('details.notReleasedBadge')}</span>
+            {movie.title} {movieYear && <>({movieYear})</>}
+            {!movieReleaseWarningsEnabled && (
+              <span className={`inline-block ml-2 align-middle text-sm font-medium px-2 py-1 rounded-md ${movieIsReleased ? 'bg-green-700 text-white' : 'bg-yellow-800 text-yellow-50'}`}>
+                {t(movieIsReleased ? 'details.releasedBadge' : 'details.notReleasedBadge')}
+              </span>
             )}
           </h1>
+          {movieReleaseWarningsEnabled && (
+            <>
+              <div className="mt-3 flex flex-wrap items-start gap-2 text-sm font-medium">
+                <span className={`max-w-full px-2 py-1 rounded-md ${movieReleases.homeVideo && isMovieReleaseDatePending(movieReleases.homeVideo.date, releaseNow) ? 'bg-yellow-800 text-yellow-50' : 'bg-gray-800 text-gray-100'}`}>
+                  {getMovieReleaseLabel(movieReleases.homeVideo, 'homeVideo', t, i18n.language, releaseNow)}
+                </span>
+                {movieReleases.theatrical ? (
+                  <span className="max-w-full px-2 py-1 rounded-md bg-gray-800 text-gray-100">
+                    {getMovieReleaseLabel(movieReleases.theatrical, 'theatrical', t, i18n.language, releaseNow)}
+                  </span>
+                ) : movieReleases.referenceDate && (
+                  <span className="max-w-full px-2 py-1 rounded-md bg-gray-800 text-gray-100">
+                    {t('details.movieRelease.announcedDate', { date: formatMovieReleaseDate(movieReleases.referenceDate, i18n.language) })}
+                  </span>
+                )}
+              </div>
+              <p className="mt-2 text-xs text-gray-400">{t('details.movieRelease.availabilityNote')}</p>
+            </>
+          )}
         </motion.div>
 
         {/* Contenu principal - poster à gauche, infos à droite */}
@@ -2593,7 +2631,7 @@ const MovieDetails = (): JSX.Element => {
                   >
                     <h3 className="text-lg font-semibold mb-3 flex items-center gap-2">
                       <Calendar className="w-5 h-5" />
-                      {t('details.releaseDateLabel')}
+                      {t(movieReleaseWarningsEnabled ? 'details.movieRelease.referenceDate' : 'details.releaseDateLabel')}
                     </h3>
                     <motion.div
                       className="bg-gray-800 px-3 py-2 rounded-lg inline-block border border-gray-700"
@@ -2604,14 +2642,7 @@ const MovieDetails = (): JSX.Element => {
                         transition: { duration: 0.2 }
                       }}
                     >
-                      {movie.release_date && !isNaN(new Date(movie.release_date).getTime())
-                        ? new Date(movie.release_date).toLocaleDateString(i18n.language, {
-                          day: 'numeric',
-                          month: 'long',
-                          year: 'numeric'
-                        })
-                        : t('details.dateNotAvailable')
-                      }
+                      {formatMovieReleaseDate(movieReleases.referenceDate, i18n.language) ?? t('details.dateNotAvailable')}
                     </motion.div>
                   </motion.div>
 
@@ -3356,21 +3387,23 @@ const MovieDetails = (): JSX.Element => {
                   {t('details.movieNotYetAvailable')}
                 </motion.p>
               </motion.div>
-            ) : !isReleased && !showPlayerAnyway ? (
+            ) : hasReleaseWarning ? (
               <motion.div
-                className="h-[500px] flex flex-col items-center justify-center bg-black/70 rounded-lg p-6"
+                className="min-h-[350px] flex flex-col items-center justify-center bg-black/70 rounded-lg p-6"
                 initial={{ opacity: 0 }}
                 animate={{ opacity: 1 }}
                 transition={{ duration: 0.5 }}
               >
                 <Film className="w-16 h-16 text-yellow-500 mb-4" />
                 <motion.h3
+                  ref={releaseWarningRef}
+                  tabIndex={-1}
                   className="text-2xl font-bold text-white mb-2"
                   initial={{ y: 10, opacity: 0 }}
                   animate={{ y: 0, opacity: 1 }}
                   transition={{ delay: 0.2 }}
                 >
-                  {t('details.movieNotYetReleased')}
+                  {t('details.movieRelease.warningTitle')}
                 </motion.h3>
                 <motion.p
                   className="text-gray-300 text-center max-w-md mb-6"
@@ -3378,8 +3411,11 @@ const MovieDetails = (): JSX.Element => {
                   animate={{ y: 0, opacity: 1 }}
                   transition={{ delay: 0.3 }}
                 >
-                  {t('details.movieNotYetReleasedDesc')}
+                  {getMovieReleaseLabel(movieReleases.homeVideo, 'homeVideo', t, i18n.language, releaseNow)}
                 </motion.p>
+                <p className="text-gray-300 text-center max-w-md mb-6">
+                  {t('details.movieRelease.warningDescription')}
+                </p>
                 <motion.button
                   className="px-6 py-3 bg-red-600 text-white rounded-lg font-medium hover:bg-red-700 transition-colors"
                   whileHover={{ scale: 1.05 }}
@@ -3387,7 +3423,7 @@ const MovieDetails = (): JSX.Element => {
                   initial={{ y: 10, opacity: 0 }}
                   animate={{ y: 0, opacity: 1 }}
                   transition={{ delay: 0.4 }}
-                  onClick={() => setShowPlayerAnyway(true)}
+                  onClick={() => { if (id) navigate(`/watch/movie/${encodeId(id)}`); }}
                 >
                   {t('details.continueAnyway')}
                 </motion.button>

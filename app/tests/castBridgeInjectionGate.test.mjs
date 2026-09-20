@@ -18,6 +18,9 @@ const castLoadSingleFlightOutput = ts.transpileModule(castLoadSingleFlightSource
     target: ts.ScriptTarget.ES2020,
   },
 }).outputText;
+const diagnosticSource = await readFile(new URL('../src/services/diagnosticReport.ts', import.meta.url), 'utf8');
+const diagnosticOutput = ts.transpileModule(diagnosticSource, { compilerOptions: { module: ts.ModuleKind.ESNext } }).outputText;
+const diagnosticReport = await import(`data:text/javascript;base64,${Buffer.from(diagnosticOutput).toString('base64')}`);
 
 function loadCastLoadSingleFlight() {
   const module = { exports: {} };
@@ -36,7 +39,7 @@ function deferred() {
   return { promise, resolve };
 }
 
-function loadBridge(overrides = {}, nativeModules = {}) {
+function loadBridge(overrides = {}, nativeModules = {}, copyDiagnostics = async () => {}) {
   let statusListener = null;
   const cast = {
     getCastCapabilities: async () => ({
@@ -83,6 +86,8 @@ function loadBridge(overrides = {}, nativeModules = {}) {
       return { NativeModules: nativeModules, Platform: { OS: 'android' } };
     }
     if (id === './cast') return cast;
+    if (id === './diagnosticReport') return diagnosticReport;
+    if (id === './diagnostics') return { copyDiagnostics };
     if (id === './castLoadSingleFlight') return loadCastLoadSingleFlight();
     if (id === './mediaProxyHeaders') {
       return {
@@ -142,6 +147,40 @@ async function register(bridge, webViewRef, capability, context = trustedContext
     context,
   );
 }
+
+test('only the authenticated Movix document can copy Cast diagnostics', async () => {
+  let copies = 0;
+  const { bridge } = loadBridge({}, {}, async includeNetwork => {
+    assert.equal(includeNetwork, false);
+    copies += 1;
+  });
+  const injected = [];
+  const ref = { current: { injectJavaScript: script => injected.push(script) } };
+  await register(bridge, ref, capabilityA);
+  const message = capability => JSON.stringify({ type: 'CASTSHIM_COPY_DIAGNOSTICS', id: 'copy', capability });
+  await bridge.handleBridgeMessage(message(capabilityA), ref, untrustedContext);
+  await bridge.handleBridgeMessage(message(capabilityB), ref, trustedContext);
+  assert.equal(copies, 0);
+  await bridge.handleBridgeMessage(message(capabilityA), ref, trustedContext);
+  assert.equal(copies, 1);
+  assert.match(injected.at(-1), /"ok":true/);
+});
+
+test('a failed native load retains its actionable code instead of the generic native message', async () => {
+  const { bridge } = loadBridge({
+    loadCastMedia: async () => { throw { code: 'MOVIX_RELAY_NETWORK_LOST', message: 'Cast indisponible.' }; },
+  });
+  const injected = [];
+  const ref = { current: { injectJavaScript: script => injected.push(script) } };
+  await register(bridge, ref, capabilityA);
+  await bridge.handleBridgeMessage(JSON.stringify({
+    type: 'CASTSHIM_LOAD_MEDIA', id: 'load', capability: capabilityA,
+    source: { url: 'https://cdn.example/video.m3u8', headers: {}, protocolVersion: 1 },
+    metadata: { title: 'Film', currentTime: 0 },
+  }), ref, trustedContext);
+  assert.match(injected.at(-1), /MOVIX_RELAY_NETWORK_LOST/);
+  assert.ok(!injected.at(-1).includes('Cast indisponible.'));
+});
 
 test('status injection requires the active trusted document capability', async () => {
   const { bridge, emitStatus } = loadBridge();
@@ -332,4 +371,84 @@ test('preserves bounded inline WebVTT tracks for the native LAN relay', async ()
 
   assert.equal(loaded[0].tracks[0].inlineVtt, inlineVtt);
   assert.equal('url' in loaded[0].tracks[0], false);
+});
+
+function mediaLoad(id, url = 'https://cdn.example/master.m3u8') {
+  return JSON.stringify({
+    type: 'CASTSHIM_LOAD_MEDIA', id, capability: capabilityA,
+    source: { url, headers: {}, protocolVersion: 1 },
+    metadata: { title: url, currentTime: 0 },
+  });
+}
+
+test('stop followed immediately by the same media sends a fresh native load', async () => {
+  let loads = 0;
+  const { bridge } = loadBridge({ loadCastMedia: async () => { loads++; } });
+  const ref = { current: { injectJavaScript() {} } };
+  await register(bridge, ref, capabilityA);
+  await bridge.handleBridgeMessage(mediaLoad('first'), ref, trustedContext);
+  await bridge.handleBridgeMessage(JSON.stringify({ type: 'CASTSHIM_STOP', id: 'stop', capability: capabilityA }), ref, trustedContext);
+  await bridge.handleBridgeMessage(mediaLoad('retry'), ref, trustedContext);
+  assert.equal(loads, 2);
+});
+
+for (const invalidation of ['stop', 'navigation', 'newer load']) {
+  test(`late source preparation cannot start casting after ${invalidation}`, { timeout: 2_000 }, async () => {
+    const prepared = deferred();
+    const started = deferred();
+    const loads = [];
+    const { bridge } = loadBridge({ loadCastMedia: async source => { loads.push(source.url); } }, {
+      MediaProxy: { resolveForCast: async () => { started.resolve(); return prepared.promise; } },
+    });
+    const ref = { current: { injectJavaScript() {} } };
+    await register(bridge, ref, capabilityA);
+    const first = bridge.handleBridgeMessage(mediaLoad('old', 'http://127.0.0.1:36375/p/process-token/session-token/resource-token'), ref, trustedContext);
+    await started.promise;
+    if (invalidation === 'stop') {
+      await bridge.handleBridgeMessage(JSON.stringify({ type: 'CASTSHIM_STOP', id: 'stop', capability: capabilityA }), ref, trustedContext);
+    } else if (invalidation === 'navigation') {
+      bridge.clearBridgeCapabilities(ref);
+      await register(bridge, ref, capabilityB);
+    } else {
+      await bridge.handleBridgeMessage(mediaLoad('new', 'https://cdn.example/new.m3u8'), ref, trustedContext);
+    }
+    prepared.resolve({ url: 'https://cdn.example/old.m3u8', headers: {}, protocolVersion: 1 });
+    await first;
+    assert.deepEqual(loads, invalidation === 'newer load' ? ['https://cdn.example/new.m3u8'] : []);
+  });
+}
+
+test('a terminal receiver status invalidates the successful load cache', async () => {
+  let loads = 0;
+  const { bridge, emitStatus } = loadBridge({ loadCastMedia: async () => { loads++; } });
+  const ref = { current: { injectJavaScript() {} } };
+  await register(bridge, ref, capabilityA);
+  bridge.startCastShimEventForwarding(ref);
+  await bridge.handleBridgeMessage(mediaLoad('first'), ref, trustedContext);
+  emitStatus({ connected: false, state: 'error', errorCode: 'MOVIX_RELAY_NETWORK_LOST', positionSec: 0, durationSec: null, canSeek: false });
+  await bridge.handleBridgeMessage(mediaLoad('retry'), ref, trustedContext);
+  assert.equal(loads, 2);
+});
+
+test('receiver-side cancellation permits an immediate retry while still connected', async () => {
+  let loads = 0;
+  const { bridge, emitStatus } = loadBridge({ loadCastMedia: async () => { loads++; } });
+  const ref = { current: { injectJavaScript() {} } };
+  await register(bridge, ref, capabilityA);
+  bridge.startCastShimEventForwarding(ref);
+  await bridge.handleBridgeMessage(mediaLoad('first'), ref, trustedContext);
+  emitStatus({ connected: true, state: 'idle', idleReason: 'CANCELLED', positionSec: 0, durationSec: null, canSeek: false });
+  await bridge.handleBridgeMessage(mediaLoad('retry'), ref, trustedContext);
+  assert.equal(loads, 2);
+});
+
+test('remote command failure keeps the native SDK cause in copied diagnostics', async () => {
+  diagnosticReport.clearCastDiagnostics();
+  const { bridge } = loadBridge({
+    playCast: async () => { throw { code: 'MOVIX_CAST_PLAY_FAILED', userInfo: { nativeErrorCode: 'GCK_STATUS_2100' } }; },
+  });
+  const ref = { current: { injectJavaScript() {} } };
+  await register(bridge, ref, capabilityA);
+  await bridge.handleBridgeMessage(JSON.stringify({ type: 'CASTSHIM_PLAY', id: 'play', capability: capabilityA }), ref, trustedContext);
+  assert.match(diagnosticReport.getCastDiagnostics().join('\n'), /MOVIX_CAST_PLAY_FAILED native=GCK_STATUS_2100/);
 });

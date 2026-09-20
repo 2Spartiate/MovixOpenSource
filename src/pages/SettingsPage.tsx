@@ -65,7 +65,7 @@ import {
   setAdultAdsEnabled,
   subscribeToAdultAdsChanges,
 } from '../utils/adAdultMode';
-import { isLowLatencyEnabled, setLowLatencyEnabled, type LowLatencyScope } from '../utils/lowLatencyPref';
+import { PerformanceSettings } from '@/components/Settings/PerformanceSettings';
 import { BgColorPickerPanel } from '../components/Settings/BgColorPickerPanel';
 import { useLightMode } from '../context/LightModeContext';
 import { SettingsSearchBar } from '../components/Settings/SettingsSearchBar';
@@ -86,6 +86,8 @@ import {
   type SessionDeviceType,
 } from '../utils/sessionDevice';
 import { getOverlayPortalRoot } from '@/utils/overlayPortal';
+import { useMovieReleaseWarnings } from '@/hooks/useMovieReleaseWarnings';
+import { setMovieReleaseWarningsEnabled } from '@/utils/movieReleasePreferences';
 
 const API_URL = import.meta.env.VITE_MAIN_API;
 
@@ -380,7 +382,8 @@ const SettingsPage: React.FC = () => {
   const navigate = useNavigate();
   const contentRef = useRef<HTMLDivElement>(null);
   const { t, i18n } = useTranslation();
-  const { lightModeSetting, setLightModeSetting, isLightMode, prefs: animPrefs, effectivePrefs: animEffectivePrefs, setPref: setAnimPref } = useLightMode();
+  const movieReleaseWarningsEnabled = useMovieReleaseWarnings();
+  const { effectivePrefs } = useLightMode();
   const {
     preferences: subtitlePreferences,
     patchPreferences,
@@ -602,12 +605,6 @@ const SettingsPage: React.FC = () => {
   });
   const [commentsSectionHidden, setCommentsSectionHidden] = useState(() => {
     return localStorage.getItem('settings_hide_comments_section') === 'true';
-  });
-  const [heroHidden, setHeroHidden] = useState(() => {
-    return localStorage.getItem('settings_hide_hero') === 'true';
-  });
-  const [streamingPlatformsHidden, setStreamingPlatformsHidden] = useState(() => {
-    return localStorage.getItem('settings_hide_streaming_platforms') === 'true';
   });
   const [showHistoryConfirm, setShowHistoryConfirm] = useState(false);
   const [showDataCollectionConfirm, setShowDataCollectionConfirm] = useState(false);
@@ -1120,31 +1117,6 @@ const SettingsPage: React.FC = () => {
     window.dispatchEvent(new CustomEvent('comments_section_visibility_changed'));
   };
 
-  const handleHeroToggle = () => {
-    const newValue = !heroHidden;
-    setHeroHidden(newValue);
-    localStorage.setItem('settings_hide_hero', String(newValue));
-    window.dispatchEvent(new CustomEvent('hero_visibility_changed'));
-  };
-
-  const handleStreamingPlatformsToggle = () => {
-    const newValue = !streamingPlatformsHidden;
-    setStreamingPlatformsHidden(newValue);
-    localStorage.setItem('settings_hide_streaming_platforms', String(newValue));
-    window.dispatchEvent(new CustomEvent('streaming_platforms_visibility_changed'));
-  };
-
-  // Streaming basse latence (LL-HLS) — opt-in par lecteur. S'applique à la
-  // prochaine lecture (lu au montage du lecteur). Voir utils/lowLatencyPref.ts.
-  const [lowLatencyMovies, setLowLatencyMovies] = useState<boolean>(() => isLowLatencyEnabled('movies'));
-  const [lowLatencyLiveTv, setLowLatencyLiveTv] = useState<boolean>(() => isLowLatencyEnabled('livetv'));
-  const handleLowLatencyToggle = (scope: LowLatencyScope) => {
-    const next = !(scope === 'movies' ? lowLatencyMovies : lowLatencyLiveTv);
-    setLowLatencyEnabled(scope, next);
-    if (scope === 'movies') setLowLatencyMovies(next);
-    else setLowLatencyLiveTv(next);
-  };
-
   const handleRecommendationsToggle = () => {
     const newValue = !recommendationsDisabled;
     setRecommendationsDisabled(newValue);
@@ -1599,7 +1571,7 @@ const SettingsPage: React.FC = () => {
     // donc on utilise le smooth scroll natif du browser — léger, compositor
     // thread, GPU-accéléré nativement, pas de RAF synchro main-thread.
     const smoothEnabled = localStorage.getItem('settings_smooth_scroll') !== 'false';
-    const reducedMotion = window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+    const reducedMotion = !effectivePrefs.transitions;
     const willSmoothScroll = smoothEnabled && !reducedMotion;
 
     // Bloque l'IntersectionObserver pendant le scroll programmatique pour
@@ -1624,7 +1596,7 @@ const SettingsPage: React.FC = () => {
       programmaticScrollLockRef.current = false;
       scrollLockTimerRef.current = null;
     }, unlockDelay);
-  }, []);
+  }, [effectivePrefs.transitions]);
 
   useEffect(() => {
     const sectionId = location.hash.replace('#', '');
@@ -1635,7 +1607,7 @@ const SettingsPage: React.FC = () => {
 
   const navigateToSearchTarget = (sectionId: string, target: HTMLElement) => {
     const highlightClasses = ['rounded-lg', 'ring-2', 'ring-red-500/70', 'ring-offset-4', 'ring-offset-[#0a0a0f]'];
-    const reducedMotion = window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+    const reducedMotion = !effectivePrefs.transitions;
     setActiveSection(sectionId);
     programmaticScrollLockRef.current = true;
     target.scrollIntoView({ behavior: reducedMotion ? 'auto' : 'smooth', block: 'center' });
@@ -1871,6 +1843,32 @@ const SettingsPage: React.FC = () => {
                   </div>
                   {renderToggle(disableAutoScroll, handleAutoScrollToggle)}
                 </motion.div>
+
+                <div
+                  data-settings-search-title
+                  data-settings-search-keywords="films,movies,sortie,release,cinéma,numérique,digital,avertissement,warning"
+                  className="flex items-center justify-between p-4 bg-gray-800/30 rounded-xl border border-gray-700/40"
+                >
+                  <div className="flex-1 mr-4">
+                    <h4 id="movie-release-warnings-title" className="font-medium text-white text-sm mb-1">
+                      {t('settings.movieReleaseWarnings')}
+                    </h4>
+                    <p id="movie-release-warnings-description" className="text-xs text-gray-400 leading-relaxed">
+                      {t('settings.movieReleaseWarningsDesc')}
+                    </p>
+                  </div>
+                  <button
+                    type="button"
+                    role="switch"
+                    aria-checked={movieReleaseWarningsEnabled}
+                    aria-labelledby="movie-release-warnings-title"
+                    aria-describedby="movie-release-warnings-description"
+                    onClick={() => setMovieReleaseWarningsEnabled(!movieReleaseWarningsEnabled)}
+                    className={`relative ml-4 w-14 h-8 rounded-full shrink-0 transition-colors motion-reduce:transition-none focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-white ${movieReleaseWarningsEnabled ? 'bg-red-600' : 'bg-gray-600'}`}
+                  >
+                    <span aria-hidden="true" className={`absolute top-1 left-1 w-6 h-6 bg-white rounded-full transition-transform motion-reduce:transition-none ${movieReleaseWarningsEnabled ? 'translate-x-6' : 'translate-x-0'}`} />
+                  </button>
+                </div>
 
                 {/* Smooth scroll — sélecteur unifié 4 options
                     (Désactivé / Standard / Fluide / Ultra fluide). Le toggle
@@ -2342,215 +2340,7 @@ const SettingsPage: React.FC = () => {
             {/* ════════════════════════════════════════════════════════ */}
             {/* SECTION: Performance                                    */}
             {/* ════════════════════════════════════════════════════════ */}
-            <section id="performance" className="scroll-mt-24">
-              <div className="flex items-center gap-3 mb-6">
-                <div className="p-2 rounded-xl bg-gradient-to-br from-emerald-600/20 to-teal-600/20 border border-emerald-500/20">
-                  <Gauge className="w-5 h-5 text-emerald-400" />
-                </div>
-                <div>
-                  <h2 className="text-xl font-semibold text-white">{t('settings.sections.performance')}</h2>
-                  <p className="text-sm text-gray-500">{t('settings.performanceDesc')}</p>
-                </div>
-              </div>
-
-              {/* Toggle "Masquer le bandeau d'accueil" — déplacé d'Apparence
-                  vers Performance car couper le hero supprime images lourdes,
-                  rotation auto et fetchs TMDB en plus de l'animation. */}
-              <motion.div
-                initial={{ opacity: 0, y: 10 }}
-                animate={{ opacity: 1, y: 0 }}
-                transition={{ delay: 0.05 }}
-                className="flex items-center justify-between p-4 bg-gray-800/30 rounded-xl border border-gray-700/40 hover:border-gray-600/50 transition-colors group mb-3"
-              >
-                <div className="flex-1 mr-4">
-                  <div className="flex items-center gap-2 mb-0.5">
-                    <Sparkles className="w-3.5 h-3.5 text-purple-400" />
-                    <h4 className="font-medium text-white text-sm">{t('settings.hideHero')}</h4>
-                  </div>
-                  <p className="text-xs text-gray-500 leading-relaxed">
-                    {t('settings.hideHeroDesc')}
-                  </p>
-                </div>
-                {renderToggle(heroHidden, handleHeroToggle)}
-              </motion.div>
-
-              <motion.div
-                initial={{ opacity: 0, y: 10 }}
-                animate={{ opacity: 1, y: 0 }}
-                transition={{ delay: 0.075 }}
-                className="flex items-center justify-between p-4 bg-gray-800/30 rounded-xl border border-gray-700/40 hover:border-gray-600/50 transition-colors group mb-3"
-              >
-                <div className="flex-1 mr-4">
-                  <div className="flex items-center gap-2 mb-0.5">
-                    <Monitor className="w-3.5 h-3.5 text-cyan-400" />
-                    <h4 className="font-medium text-white text-sm">{t('settings.hideStreamingPlatforms')}</h4>
-                  </div>
-                  <p className="text-xs text-gray-500 leading-relaxed">
-                    {t('settings.hideStreamingPlatformsDesc')}
-                  </p>
-                </div>
-                {renderToggle(streamingPlatformsHidden, handleStreamingPlatformsToggle)}
-              </motion.div>
-
-              {/* Streaming basse latence (LL-HLS) — opt-in, un toggle par lecteur. */}
-              <motion.div
-                initial={{ opacity: 0, y: 10 }}
-                animate={{ opacity: 1, y: 0 }}
-                transition={{ delay: 0.075 }}
-                className="p-4 bg-gray-800/30 rounded-xl border border-gray-700/40 mb-3"
-              >
-                <div className="flex items-center gap-2 mb-0.5">
-                  <Zap className="w-3.5 h-3.5 text-emerald-400" />
-                  <h4 className="font-medium text-white text-sm">{t('settings.lowLatency')}</h4>
-                </div>
-                <p className="text-xs text-gray-500 leading-relaxed">
-                  {t('settings.lowLatencyDesc')}
-                </p>
-
-                <div className="mt-3 flex items-start gap-2 rounded-lg border border-amber-500/20 bg-amber-500/10 p-2.5">
-                  <AlertTriangle className="w-3.5 h-3.5 text-amber-400 flex-shrink-0 mt-0.5" />
-                  <p className="text-[11px] text-amber-100/80 leading-relaxed">
-                    {t('settings.lowLatencyWarning')}
-                  </p>
-                </div>
-
-                <div className="mt-3 space-y-2">
-                  <div className="flex items-center justify-between p-3 bg-gray-800/30 rounded-lg border border-gray-700/40">
-                    <span className="font-medium text-white text-xs">{t('settings.lowLatencyMovies')}</span>
-                    {renderToggle(lowLatencyMovies, () => handleLowLatencyToggle('movies'), 'green')}
-                  </div>
-                  <div className="flex items-center justify-between p-3 bg-gray-800/30 rounded-lg border border-gray-700/40">
-                    <span className="font-medium text-white text-xs">{t('settings.lowLatencyLiveTv')}</span>
-                    {renderToggle(lowLatencyLiveTv, () => handleLowLatencyToggle('livetv'), 'green')}
-                  </div>
-                </div>
-              </motion.div>
-
-              <motion.div
-                initial={{ opacity: 0, y: 10 }}
-                animate={{ opacity: 1, y: 0 }}
-                transition={{ delay: 0.1 }}
-                className="p-4 bg-gray-800/30 rounded-xl border border-gray-700/40 hover:border-gray-600/50 transition-colors"
-              >
-                <div className="flex flex-col gap-3">
-                  <div>
-                    <div className="flex items-center gap-2 mb-0.5">
-                      <h4 className="font-medium text-white text-sm">{t('settings.lightMode')}</h4>
-                      {lightModeSetting === 'auto' && (
-                        <span className="text-[10px] uppercase tracking-wider font-semibold px-1.5 py-0.5 rounded bg-emerald-500/15 text-emerald-300 border border-emerald-500/20">
-                          {isLightMode ? t('settings.lightModeAutoOn') : t('settings.lightModeAutoOff')}
-                        </span>
-                      )}
-                    </div>
-                    <p className="text-xs text-gray-500 leading-relaxed">
-                      {t('settings.lightModeDesc')}
-                    </p>
-                  </div>
-                  <div className="flex gap-2 flex-wrap">
-                    {([
-                      { id: 'auto', labelKey: 'settings.lightModeAuto', descKey: 'settings.lightModeAutoDesc', fallbackLabel: 'Auto',      fallbackDesc: 'Détecte automatiquement' },
-                      { id: 'on',   labelKey: 'settings.lightModeOn',   descKey: 'settings.lightModeOnDesc',   fallbackLabel: 'Activé',    fallbackDesc: 'Toujours actif' },
-                      { id: 'off',  labelKey: 'settings.lightModeOff',  descKey: 'settings.lightModeOffDesc',  fallbackLabel: 'Désactivé', fallbackDesc: 'Tous les effets' },
-                    ] as const).map((opt) => {
-                      const active = lightModeSetting === opt.id;
-                      return (
-                        <button
-                          key={opt.id}
-                          type="button"
-                          onClick={() => setLightModeSetting(opt.id)}
-                          className={`flex-1 min-w-[100px] p-3 rounded-xl text-left transition-colors border focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-emerald-500/60 ${
-                            active
-                              ? 'bg-emerald-600/10 border-emerald-500/30 text-white'
-                              : 'bg-gray-700/20 border-gray-700/40 text-gray-400 hover:bg-gray-700/40 hover:text-white'
-                          }`}
-                        >
-                          <div className="text-xs font-semibold">{t(opt.labelKey, opt.fallbackLabel)}</div>
-                          <div className="text-[10px] text-gray-500 mt-0.5">{t(opt.descKey, opt.fallbackDesc)}</div>
-                        </button>
-                      );
-                    })}
-                  </div>
-                  <p className="text-[11px] text-gray-600 leading-relaxed">
-                    {t('settings.lightModeAutoHint')}
-                  </p>
-                </div>
-              </motion.div>
-
-              {/* Réglages granulaires d'animations.
-                  Chaque toggle pose son propre attribut `data-no-*` sur <html>
-                  via LightModeContext. Quand Mode léger est actif, toutes les
-                  catégories sont forcées "désactivées" (effectivePrefs), mais
-                  l'état persistant `prefs` est conservé → quand l'utilisateur
-                  coupe Mode léger, il retrouve ses choix granulaires. */}
-              <motion.div
-                initial={{ opacity: 0, y: 10 }}
-                animate={{ opacity: 1, y: 0 }}
-                transition={{ delay: 0.15 }}
-                className="mt-3 p-4 bg-gray-800/20 rounded-xl border border-gray-700/30"
-              >
-                <div className="mb-3">
-                  <h4 className="text-sm font-medium text-white mb-0.5">
-                    {t('settings.animPrefsTitle')}
-                  </h4>
-                  <p className="text-[11px] text-gray-500 leading-relaxed">
-                    {isLightMode
-                      ? t('settings.animPrefsHintLightModeOn')
-                      : t('settings.animPrefsHint')}
-                  </p>
-                </div>
-
-                <div className="space-y-2">
-                  {([
-                    { key: 'bgAnimations',      titleKey: 'settings.animBgTitle',       descKey: 'settings.animBgDesc' },
-                    { key: 'loadingAnimations', titleKey: 'settings.animLoadingTitle',  descKey: 'settings.animLoadingDesc' },
-                    { key: 'carouselAutoplay',  titleKey: 'settings.animCarouselTitle', descKey: 'settings.animCarouselDesc' },
-                    { key: 'blurEffects',       titleKey: 'settings.animBlurTitle',     descKey: 'settings.animBlurDesc' },
-                    { key: 'transitions',       titleKey: 'settings.animTransTitle',    descKey: 'settings.animTransDesc' },
-                  ] as const).map((row) => {
-                    const isOn = animEffectivePrefs[row.key];
-                    const userOn = animPrefs[row.key];
-                    const forcedByLightMode = isLightMode && !animEffectivePrefs[row.key];
-                    return (
-                      <div
-                        key={row.key}
-                        className={`flex items-center justify-between p-3 bg-gray-800/30 rounded-lg border border-gray-700/40 transition-colors ${
-                          forcedByLightMode ? 'opacity-60' : 'hover:border-gray-600/50'
-                        }`}
-                      >
-                        <div className="flex-1 mr-3 min-w-0">
-                          <div className="flex items-center gap-2 mb-0.5 flex-wrap">
-                            <span className="font-medium text-white text-xs">{t(row.titleKey)}</span>
-                            {forcedByLightMode && (
-                              <span className="text-[9px] uppercase tracking-wider font-semibold px-1.5 py-0.5 rounded bg-emerald-500/15 text-emerald-300/80 border border-emerald-500/20">
-                                {t('settings.animForcedByLightMode')}
-                              </span>
-                            )}
-                          </div>
-                          <p className="text-[11px] text-gray-500 leading-relaxed">{t(row.descKey)}</p>
-                        </div>
-                        <button
-                          type="button"
-                          role="switch"
-                          aria-checked={isOn}
-                          disabled={forcedByLightMode}
-                          onClick={() => setAnimPref(row.key, !userOn)}
-                          className={`relative inline-flex h-5 w-9 flex-shrink-0 items-center rounded-full transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-emerald-500/60 ${
-                            isOn ? 'bg-emerald-500' : 'bg-gray-600'
-                          } ${forcedByLightMode ? 'cursor-not-allowed' : 'cursor-pointer'}`}
-                          aria-label={t(row.titleKey)}
-                        >
-                          <span
-                            className={`inline-block h-3.5 w-3.5 transform rounded-full bg-white shadow transition-transform ${
-                              isOn ? 'translate-x-[18px]' : 'translate-x-[3px]'
-                            }`}
-                          />
-                        </button>
-                      </div>
-                    );
-                  })}
-                </div>
-              </motion.div>
-            </section>
+            <PerformanceSettings />
 
             {/* ════════════════════════════════════════════════════════ */}
             {/* SECTION: Langue                                         */}

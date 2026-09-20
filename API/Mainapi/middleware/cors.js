@@ -4,7 +4,7 @@
  */
 
 const cors = require("cors");
-const { getOAuthAllowedCorsOrigins } = require('../utils/oauthClients');
+const { isOAuthCorsOriginAllowed } = require('../utils/oauthClients');
 
 const STATIC_ALLOWED_DOMAINS = [
     'localhost:3000',
@@ -25,7 +25,8 @@ const STATIC_ALLOWED_DOMAINS = [
     'movix.chat',
     'movix.date',
     'movix.show',
-    'movix.fun'
+    'movix.fun',
+    'movix.men'
 ];
 
 function isAllowedStaticOrigin(origin) {
@@ -42,7 +43,7 @@ function isAllowedStaticOrigin(origin) {
 }
 
 function isAllowedOAuthOrigin(origin) {
-  return getOAuthAllowedCorsOrigins().includes(origin);
+  return isOAuthCorsOriginAllowed(origin);
 }
 
 const corsMiddleware = cors({
@@ -75,6 +76,7 @@ const corsMiddleware = cors({
     "x-profile-id",
     "x-access-key",
     "x-movix-client-id",
+    "x-turnstile-token",
   ],
   credentials: true,
   optionsSuccessStatus: 204,

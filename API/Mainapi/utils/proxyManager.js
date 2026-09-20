@@ -14,7 +14,9 @@ const { HttpProxyAgent } = require("http-proxy-agent");
 const { HttpsProxyAgent } = require("https-proxy-agent");
 const tough = require("tough-cookie");
 const initCycleTLS = require("cycletls");
+const diagnostics = require('./diagnostics');
 const { LruMap } = require("./lruMap");
+const { createProxyAgentPool } = require('./proxyAgentPool');
 const { redis } = require("../config/redis");
 const {
   shouldRotateAnimeSamaResponse,
@@ -72,6 +74,29 @@ const darkinoProxyAgentCache = new LruMap({
   onEvict: destroyHttpAgentLike,
 });
 const proxyRotationState = new Map();
+const coflixHttpAgentPool = createProxyAgentPool({
+  createAgent: (proxyUrl, keepAlive) => new HttpsProxyAgent(proxyUrl, {
+    keepAlive, maxSockets: 128, maxFreeSockets: 2, timeout: 15000,
+  }),
+});
+const fstreamAgentPool = createProxyAgentPool({
+  maxEntries: 64,
+  createAgent(proxyUrl, keepAlive) {
+    const options = { keepAlive, maxSockets: 16, maxTotalSockets: 16, maxFreeSockets: 2, timeout: 15000 };
+    const socks = proxyUrl.startsWith('socks');
+    const httpAgent = socks ? new SocksProxyAgent(proxyUrl, options) : new HttpProxyAgent(proxyUrl, options);
+    const httpsAgent = socks ? httpAgent : new HttpsProxyAgent(proxyUrl, options);
+    return {
+      httpAgent, httpsAgent,
+      destroy() { httpAgent.destroy(); if (httpsAgent !== httpAgent) httpsAgent.destroy(); },
+    };
+  },
+});
+const coflixAgentSweep = setInterval(() => {
+  coflixHttpAgentPool.sweep();
+  fstreamAgentPool.sweep();
+}, 15000);
+coflixAgentSweep.unref();
 
 // Initialize global agent keep-alive with socket limits
 http.globalAgent.keepAlive = true;
@@ -80,6 +105,12 @@ http.globalAgent.maxFreeSockets = 32;
 https.globalAgent.keepAlive = true;
 https.globalAgent.maxSockets = 128;
 https.globalAgent.maxFreeSockets = 32;
+// Plafond facultatif par agent global (toutes origines), sans modifier le budget existant par défaut.
+const totalSocketLimit = Number(process.env.HTTP_MAX_TOTAL_SOCKETS);
+if (Number.isSafeInteger(totalSocketLimit) && totalSocketLimit > 0) {
+  http.globalAgent.maxTotalSockets = totalSocketLimit;
+  https.globalAgent.maxTotalSockets = totalSocketLimit;
+}
 
 // === PROXY CONFIGURATION FLAGS ===
 const ENABLE_DARKINO_PROXY = true; // Passe \u00e0 false pour d\u00e9sactiver le proxy pour Darkino
@@ -672,6 +703,25 @@ async function makeCoflixRequest(targetUrl, options = {}) {
   const { proxies, useSocks } = pickProxyscrapeCandidates();
   let lastError = null;
 
+  const releaseLease = (lease, response, discard = false) => {
+    if (!lease) return;
+    const stream = response?.data;
+    if (stream && typeof stream.once === 'function') {
+      const release = () => {
+        stream.removeListener('end', release);
+        stream.removeListener('close', release);
+        stream.removeListener('error', release);
+        lease.release(discard);
+      };
+      stream.once('end', release);
+      stream.once('close', release);
+      stream.once('error', release);
+      if (stream.destroyed || stream.readableEnded) release();
+    } else {
+      lease.release(discard);
+    }
+  };
+
   // Aucun proxy ProxyScrape dispo -> tentative directe.
   if (!proxies || proxies.length === 0) {
     return axios({
@@ -690,10 +740,10 @@ async function makeCoflixRequest(targetUrl, options = {}) {
   for (let i = 0; i < proxies.length; i++) {
     const proxy = proxies[i];
     const auth = proxy.auth ? `${proxy.auth}@` : "";
-    // ponytail: agent non cache (<=2/req, keepAlive off -> pas de fuite socket).
+    const lease = useSocks ? null : coflixHttpAgentPool.acquire(`http://${auth}${proxy.host}:${proxy.port}`);
     const agent = useSocks
       ? getProxyAgent(proxy)
-      : new HttpsProxyAgent(`http://${auth}${proxy.host}:${proxy.port}`);
+      : lease.agent;
 
     try {
       const response = await axios({
@@ -709,8 +759,12 @@ async function makeCoflixRequest(targetUrl, options = {}) {
         ...otherOptions,
       });
 
+      // Les appels HTML sont entièrement consommés par Axios. Un éventuel flux garde son bail.
+      releaseLease(lease, response);
       return response;
     } catch (error) {
+      // Les erreurs réseau retirent l'agent sans couper les autres demandes qui l'utilisent.
+      releaseLease(lease, error.response, !error.response);
       lastError = error;
       const statusCode = error.response?.status;
       const errorCode = error.code || "unknown";
@@ -722,6 +776,7 @@ async function makeCoflixRequest(targetUrl, options = {}) {
       // -> on rote. Le flag coupe le spam de log par titre si tout est limite.
       if (statusCode === 429) {
         error.coflixSiteRateLimited = true;
+        if (i + 1 < proxies.length) error.response?.data?.destroy?.();
         continue;
       }
 
@@ -735,6 +790,7 @@ async function makeCoflixRequest(targetUrl, options = {}) {
         errorCode === "EHOSTUNREACH" ||
         errorCode === "ENETUNREACH"
       ) {
+        if (i + 1 < proxies.length) error.response?.data?.destroy?.();
         continue;
       }
 
@@ -768,7 +824,7 @@ async function getCycleTLS() {
   }
   cycleTLSInitializing = true;
   try {
-    cycleTLSInstance = await initCycleTLS(cycleTlsInitOptions());
+    cycleTLSInstance = diagnostics.wrapCycleTLS(await initCycleTLS(cycleTlsInitOptions()));
     cycleTLSInitializing = false;
     for (const waiter of cycleTLSWaiters) waiter(cycleTLSInstance);
     cycleTLSWaiters.length = 0;
@@ -784,6 +840,9 @@ async function getCycleTLS() {
 
 // Graceful shutdown: kill CycleTLS Go subprocess
 async function shutdownCycleTLS() {
+  clearInterval(coflixAgentSweep);
+  coflixHttpAgentPool.clear();
+  fstreamAgentPool.clear();
   if (cycleTLSInstance) {
     try {
       await cycleTLSInstance.exit();
@@ -977,6 +1036,7 @@ async function makeCinestreamRequest(targetUrl, options = {}) {
   const cycleHeaders = {
     Accept: "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
     "Accept-Language": "fr-FR,fr;q=0.9,en;q=0.8",
+    "Accept-Encoding": "gzip, deflate, br",
     Referer: "https://cinestream.info/",
     ...headers,
   };
@@ -1628,20 +1688,22 @@ async function getKisskhProxyCandidates(options = {}) {
     poolSnapshot.length,
     1,
   );
-  const candidates = [];
-  const seen = new Set();
-  for (let offset = 0; offset < scanLimit; offset += 1) {
-    const proxy = poolSnapshot[(startIndex + offset) % poolSnapshot.length];
-    const identity = buildProxyRateLimitKey(
-      KISSKH_METADATA_PROXY_OPTIONS.poolName,
-      proxy,
-      KISSKH_METADATA_PROXY_OPTIONS.digestIdentity,
-    );
-    if (!identity || seen.has(identity)) continue;
-    seen.add(identity);
-    candidates.push(proxy);
-  }
-  return candidates;
+  // Ne preparer que les proxys effectivement demandes par la selection.
+  // Le snapshot reste stable si le pool est actualise pendant les appels Redis.
+  return (function* candidates() {
+    const seen = new Set();
+    for (let offset = 0; offset < scanLimit; offset += 1) {
+      const proxy = poolSnapshot[(startIndex + offset) % poolSnapshot.length];
+      const identity = buildProxyRateLimitKey(
+        KISSKH_METADATA_PROXY_OPTIONS.poolName,
+        proxy,
+        KISSKH_METADATA_PROXY_OPTIONS.digestIdentity,
+      );
+      if (!identity || seen.has(identity)) continue;
+      seen.add(identity);
+      yield proxy;
+    }
+  })();
 }
 
 function isKisskhProxyConfigured() {
@@ -2164,6 +2226,7 @@ function applyStoredProxyPools(storedPools) {
   );
   syncDerivedHttpProxyPools(httpEntries);
   proxyAgentCache.clear();
+  coflixHttpAgentPool.clear();
   darkinoProxyAgentCache.clear();
   cpasmalAgentCache.clear();
   return true;
@@ -2348,6 +2411,7 @@ async function refreshProxyScrapeProxies(options = {}) {
       syncDerivedHttpProxyPools(httpResult.proxies);
 
       proxyAgentCache.clear();
+      coflixHttpAgentPool.clear();
       darkinoProxyAgentCache.clear();
       cpasmalAgentCache.clear();
 
@@ -2767,6 +2831,24 @@ function pickRandomProxy() {
   return PROXIES[idx];
 }
 
+// Bail FStream : l'éviction attend la fin des appels utilisant encore cet agent.
+function acquireFStreamProxy(entry) {
+  const proxy = entry.proxy;
+  const type = normalizeProxyType(proxy.type, entry.type === 'socks5' ? 'socks5' : 'http');
+  const protocol = type === 'socks5' && entry.type === 'socks5' ? 'socks5h' : type;
+  const auth = proxy.auth ? `${proxy.auth}@` : '';
+  const lease = fstreamAgentPool.acquire(`${protocol}://${auth}${proxy.host}:${proxy.port}`);
+  return { ...lease.agent, release: lease.release };
+}
+
+async function withFStreamProxy(entry, request) {
+  const lease = acquireFStreamProxy(entry);
+  let failed = false;
+  try { return await request(lease); }
+  catch (error) { failed = true; throw error; }
+  finally { lease.release(failed); }
+}
+
 // Fonction utilitaire pour cr\u00e9er un agent proxy SOCKS5 (avec cache)
 function getProxyAgent(proxy) {
   if (!proxy) return null;
@@ -2870,6 +2952,8 @@ module.exports = {
   makeAnimeSamaRequest,
   makeVavooBrowserRequest,
   makeCinestreamRequest,
+  acquireFStreamProxy,
+  withFStreamProxy,
   make1j1fRequest,
   makeCpasmalRequest,
 

@@ -10,10 +10,25 @@ const axios = require("axios");
 const path = require("path");
 const fsp = require("fs").promises;
 const crypto = require("crypto");
+const { createSingleFlight } = require("./utils/singleFlight");
+const { createLiveTvDiskCache, createLiveTvRefresh } = require("./utils/liveTvCache");
+const { createStreamedSource, STREAMED_CATALOGS } = require("./utils/streamedCatalog");
+const { registerStreamedNativeRoutes } = require("./utils/streamedNativeRoutes");
+const { pickDedicatedSocks5Proxy } = require("./utils/proxyManager");
+const liveTvFlight = createSingleFlight();
+const refreshLiveTv = createLiveTvRefresh({ now: () => Date.now() });
+const streamedSource = createStreamedSource({
+  axios,
+  now: () => Date.now(),
+  readCache: (key, maxAgeMs) => getFromCacheMs(generateCacheKey(`streamed_${key}`), maxAgeMs),
+  writeCache: (key, value) => saveToCache(generateCacheKey(`streamed_${key}`), value),
+});
 const { verifyAccessKey, requireVip } = require("./checkVip");
 const {
   appendSignature,
   buildSignedProxyUrl,
+  encodeSignedToken,
+  decodeSignedToken,
   isPublicHttpUrl,
   signingConfigured,
 } = require("./utils/mediaSigning");
@@ -27,6 +42,12 @@ const {
   findVavooMetadata,
   isHttpsArtworkUrl,
 } = require("./utils/vavooMetadata");
+const {
+  createNorthliveCatalog,
+  publishNorthliveCatalog,
+  scrapeNorthlivePages,
+} = require("./utils/northliveCatalog");
+const { isNorthliveRefreshOwner } = require("./utils/workerSlots");
 const router = express.Router();
 
 // ===========================================================================
@@ -38,8 +59,8 @@ const router = express.Router();
 //
 // Il n'y a délibérément PAS d'endpoint « signe-moi cette URL » : ce serait un
 // oracle de signature, un porteur de clé VIP pourrait faire signer la
-// destination de son choix. À la place, le serveur joint d'office une
-// `proxyUrl` signée à chaque flux qu'il annonce, et le client se contente de
+// destination de son choix. À la place, après vérification VIP, le serveur joint
+// une `proxyUrl` signée aux flux qu'il annonce, et le client se contente de
 // choisir entre `url` (direct) et `proxyUrl` (proxifié).
 //
 // Le middleware ci-dessous enveloppe `res.json` une fois pour toutes : il
@@ -50,6 +71,10 @@ const LIVETV_PROXY_BASE = (
   process.env.PROXIESEMBED_PUBLIC_URL ||
   (process.env.IPTV_STREAM_PROXY || "http://localhost:25569/proxy").replace(/\/proxy\/?$/, "")
 ).replace(/\/+$/, "");
+registerStreamedNativeRoutes(router, {
+  source: streamedSource, verifyAccessKey, proxyBase: LIVETV_PROXY_BASE,
+  pickProxy: () => pickDedicatedSocks5Proxy({ poolName: 'STREAMED_SOCKS5' }),
+});
 
 /** Headers que proxiesembed devra rejouer vers l'amont pour ce flux. */
 function proxyHeadersForStream(stream) {
@@ -68,15 +93,31 @@ function proxyHeadersForStream(stream) {
   return headers;
 }
 
-function attachSignedProxyUrls(payload) {
-  if (!payload || !Array.isArray(payload.streams) || !signingConfigured()) {
+function attachSignedProxyUrls(payload, isVip = false) {
+  if (!payload || !Array.isArray(payload.streams)) {
     return payload;
   }
+
+  // Ne jamais délivrer une signature à un non-VIP, même si un ancien cache
+  // ou une réponse amont contient déjà une proxyUrl. Ne pas modifier le cache.
+  if (!isVip) {
+    return {
+      ...payload,
+      streams: payload.streams.map((stream) => {
+        if (!stream || typeof stream !== "object" || !("proxyUrl" in stream)) return stream;
+        const directStream = { ...stream };
+        delete directStream.proxyUrl;
+        return directStream;
+      }),
+    };
+  }
+
+  if (!signingConfigured()) return payload;
 
   return {
     ...payload,
     streams: payload.streams.map((stream) => {
-      if (!stream || typeof stream !== "object" || stream.proxyUrl) return stream;
+      if (!stream || typeof stream !== "object" || stream.proxyUrl || stream._isEmbed) return stream;
 
       const target = typeof stream.url === "string" ? stream.url : "";
       // Déjà proxifié en amont, ou cible inexploitable : on ne double pas la couche.
@@ -98,9 +139,22 @@ function attachSignedProxyUrls(payload) {
 
 router.use((req, res, next) => {
   const sendJson = res.json.bind(res);
-  res.json = (payload) => sendJson(attachSignedProxyUrls(payload));
+  res.json = (payload) => {
+    if (Array.isArray(payload?.streams)) {
+      // Le cache disque reste partagé ; la réponse enrichie dépend de la clé VIP.
+      res.set("Cache-Control", "private, no-store");
+      res.vary("X-Access-Key");
+    }
+    return sendJson(attachSignedProxyUrls(payload, req.vipStatus?.vip === true));
+  };
   next();
 });
+
+const FCTV_PLAYLIST_TOKEN_ROUTE = "/api/livetv/fctv/playlist";
+
+function fctvPlaylistTarget(matchId, streamId, siteType, sportType) {
+  return JSON.stringify([matchId, streamId, siteType, sportType].map(String));
+}
 
 // === CONFIGURATION ===
 const TVDIRECT_BASE_URL = "https://tvdirect.ddns.net";
@@ -332,8 +386,7 @@ const FCTV_BS_CODE_MAP = {
 };
 
 // In-memory cache for bs keys (from /api/common/bs)
-let fctvBsKeysCache = null;
-let fctvBsKeysCacheTime = 0;
+const fctvBsKeysCache = new Map();
 const FCTV_BS_KEYS_TTL = 5 * 60 * 1000; // 5 minutes
 
 /**
@@ -341,9 +394,17 @@ const FCTV_BS_KEYS_TTL = 5 * 60 * 1000; // 5 minutes
  * These keys are used to build the sfver path prefix required by the upstream API.
  */
 async function fetchFctvBsKeys(sportType = 0) {
+  const key = String(sportType);
+  return refreshLiveTv(`fctv-bs:${key}`, () => loadFctvBsKeys(sportType),
+    () => fctvBsKeysCache.get(key)?.value || {});
+}
+
+async function loadFctvBsKeys(sportType) {
+  const key = String(sportType);
+  const cached = fctvBsKeysCache.get(key);
   // Return cached keys if fresh
-  if (fctvBsKeysCache && Date.now() - fctvBsKeysCacheTime < FCTV_BS_KEYS_TTL) {
-    return fctvBsKeysCache;
+  if (cached && Date.now() - cached.time < FCTV_BS_KEYS_TTL) {
+    return cached.value;
   }
 
   try {
@@ -375,12 +436,12 @@ async function fetchFctvBsKeys(sportType = 0) {
     }
 
     console.log(`[FCTV-BS] Fetched ${Object.keys(keys).length} bs keys`);
-    fctvBsKeysCache = keys;
-    fctvBsKeysCacheTime = Date.now();
+    fctvBsKeysCache.set(key, { value: keys, time: Date.now() });
+    while (fctvBsKeysCache.size > 64) fctvBsKeysCache.delete(fctvBsKeysCache.keys().next().value);
     return keys;
   } catch (error) {
     console.warn(`[FCTV-BS] Error fetching bs keys: ${error.message}`);
-    return fctvBsKeysCache || {};
+    throw error;
   }
 }
 
@@ -656,6 +717,10 @@ async function getVavooPlayPrefix() {
 
 // Fetch one group's full channel list (paginated via nextCursor), cache 1h.
 async function fetchVavooGroup(group) {
+  return refreshLiveTv(`vavoo-group:${group}`, () => loadVavooGroup(group));
+}
+
+async function loadVavooGroup(group) {
   const cacheKey = generateCacheKey(`vavoo_group_${group}_v4`);
   const disk = await getFromCache(cacheKey, 1); // 1h
   if (disk && Array.isArray(disk) && disk.length) return disk;
@@ -682,7 +747,7 @@ async function fetchVavooGroup(group) {
       console.warn(
         `[VAVOO] group ${group} page ${page} failed; status=${failureStatus}`,
       );
-      break;
+      throw e;
     }
 
     const items = Array.isArray(data?.items) ? data.items : [];
@@ -722,13 +787,12 @@ async function fetchVavooGroup(group) {
   }
 
   if (channels.length === 0) {
-    // Upstream hiccup — keep serving the last good cache rather than blanking out.
-    const stale = await getFromCache(cacheKey, 24 * 365);
-    if (stale && Array.isArray(stale) && stale.length) return stale;
-    return [];
+    throw new Error(`Catalogue Vavoo vide pour ${group}`);
   }
 
-  await saveToCache(cacheKey, channels);
+  if (!await saveToCache(cacheKey, channels)) {
+    throw new Error(`Publication du groupe Vavoo impossible : ${group}`);
+  }
   return channels;
 }
 
@@ -816,6 +880,7 @@ const LIVE_PAGE_USER_AGENT =
 
 const CACHE_DIR = path.join(__dirname, "cache", "tvdirect");
 const CACHE_EXPIRATION_HOURS = 24; // Cache expire après 24h
+const liveTvDiskCache = createLiveTvDiskCache({ fs: fsp, directory: CACHE_DIR, now: () => Date.now() });
 
 // Headers Stremio pour les requêtes (principalement TV Direct)
 const STREMIO_HEADERS = {
@@ -1005,26 +1070,7 @@ function generateCacheKey(params) {
  * Récupère des données du cache avec vérification d'expiration
  */
 async function getFromCache(key, expirationHours = CACHE_EXPIRATION_HOURS) {
-  try {
-    const cacheFilePath = path.join(CACHE_DIR, `${key}.json`);
-    const stats = await fsp.stat(cacheFilePath);
-    const now = Date.now();
-    const fileTime = stats.mtime.getTime();
-    const expirationTime = expirationHours * 60 * 60 * 1000;
-
-    if (now - fileTime > expirationTime) {
-      return null; // Cache expiré
-    }
-
-    const cacheData = JSON.parse(await fsp.readFile(cacheFilePath, "utf8"));
-    return cacheData;
-  } catch (error) {
-    if (error.code === "ENOENT") {
-      return null;
-    }
-    console.error(`[LIVETV CACHE] Erreur lecture cache ${key}:`, error.message);
-    return null;
-  }
+  return getFromCacheMs(key, expirationHours * 60 * 60 * 1000);
 }
 
 /**
@@ -1032,17 +1078,7 @@ async function getFromCache(key, expirationHours = CACHE_EXPIRATION_HOURS) {
  */
 async function getFromCacheMs(key, expirationMs = 30000) {
   try {
-    const cacheFilePath = path.join(CACHE_DIR, `${key}.json`);
-    const stats = await fsp.stat(cacheFilePath);
-    const now = Date.now();
-    const fileTime = stats.mtime.getTime();
-
-    if (now - fileTime > expirationMs) {
-      return null; // Cache expiré
-    }
-
-    const cacheData = JSON.parse(await fsp.readFile(cacheFilePath, "utf8"));
-    return cacheData;
+    return await liveTvDiskCache.read(key, expirationMs);
   } catch (error) {
     if (error.code === "ENOENT") {
       return null;
@@ -1057,8 +1093,7 @@ async function getFromCacheMs(key, expirationMs = 30000) {
  */
 async function saveToCache(key, data) {
   try {
-    const cacheFilePath = path.join(CACHE_DIR, `${key}.json`);
-    await fsp.writeFile(cacheFilePath, JSON.stringify(data, null, 2), "utf8");
+    await liveTvDiskCache.write(key, data);
     return true;
   } catch (error) {
     console.error(
@@ -1308,6 +1343,11 @@ let fctvApiBaseCache = null;
 let fctvApiBaseCacheTime = 0;
 const FCTV_API_BASE_TTL = 30 * 60 * 1000; // 30 min
 async function getFctvApiBase() {
+  return refreshLiveTv("fctv-api-base", loadFctvApiBase,
+    () => fctvApiBaseCache || FCTV_API_BASE_URL);
+}
+
+async function loadFctvApiBase() {
   if (
     fctvApiBaseCache &&
     Date.now() - fctvApiBaseCacheTime < FCTV_API_BASE_TTL
@@ -1348,10 +1388,7 @@ async function getFctvApiBase() {
     return fctvApiBaseCache;
   } catch (error) {
     console.warn(`[FCTV] API base auto-fetch failed: ${error.message}`);
-    // Cache the fallback so we don't hammer hubu/front for the next TTL window.
-    fctvApiBaseCache = fctvApiBaseCache || FCTV_API_BASE_URL;
-    fctvApiBaseCacheTime = Date.now();
-    return fctvApiBaseCache;
+    throw error;
   }
 }
 
@@ -1362,6 +1399,11 @@ let fctvPlayerBaseCache = null;
 let fctvPlayerBaseCacheTime = 0;
 const FCTV_PLAYER_BASE_TTL = 30 * 60 * 1000; // 30 min
 async function getFctvPlayerBaseUrl() {
+  return refreshLiveTv("fctv-player-base", loadFctvPlayerBaseUrl,
+    () => fctvPlayerBaseCache || FCTV_PLAYER_BASE_URL);
+}
+
+async function loadFctvPlayerBaseUrl() {
   if (fctvPlayerBaseCache && Date.now() - fctvPlayerBaseCacheTime < FCTV_PLAYER_BASE_TTL) {
     return fctvPlayerBaseCache;
   }
@@ -1393,7 +1435,7 @@ async function getFctvPlayerBaseUrl() {
   } catch (error) {
     console.warn(`[FCTV] Player origin auto-fetch failed: ${error.message}`);
   }
-  return fctvPlayerBaseCache || FCTV_PLAYER_BASE_URL;
+  throw new Error("FCTV player origin indisponible");
 }
 
 /**
@@ -1572,7 +1614,7 @@ async function scrapeFctvMatches(categoryKey) {
     return matches;
   } catch (error) {
     console.error(`[FCTV-MATCHES] Error fetching ${categoryKey}:`, error.message);
-    return [];
+    throw error;
   }
 }
 
@@ -1619,6 +1661,11 @@ let fctvAvailableSportsCache = null;
 let fctvAvailableSportsCacheTime = 0;
 
 async function getFctvAvailableSportTypes() {
+  return refreshLiveTv("fctv-sports", loadFctvAvailableSportTypes,
+    () => fctvAvailableSportsCache).catch(() => fctvAvailableSportsCache);
+}
+
+async function loadFctvAvailableSportTypes() {
   if (
     fctvAvailableSportsCache &&
     Date.now() - fctvAvailableSportsCacheTime < FCTV_AVAILABLE_SPORTS_TTL
@@ -1637,7 +1684,7 @@ async function getFctvAvailableSportTypes() {
     if (types.size === 0) {
       // Réponse vide ou illisible : on préfère annoncer tous les sports
       // plutôt qu'amputer le menu.
-      return fctvAvailableSportsCache;
+      throw new Error("FCTV sports indisponibles");
     }
 
     console.log(`[FCTV-COUNT] ${types.size} sports pourvus`);
@@ -1646,11 +1693,16 @@ async function getFctvAvailableSportTypes() {
     return types;
   } catch (error) {
     console.warn(`[FCTV-COUNT] échec, menu complet annoncé: ${error.message}`);
-    return fctvAvailableSportsCache;
+    throw error;
   }
 }
 
 async function fetchFctvMatchDetail(matchId, sportType = 1) {
+  return liveTvFlight(`fctv-match:${matchId}:${sportType}`,
+    () => loadFctvMatchDetail(matchId, sportType));
+}
+
+async function loadFctvMatchDetail(matchId, sportType) {
   const response = await fetchFctvApi("/api/match/detail", {
     language: FCTV_LANGUAGE_FR,
     matchId,
@@ -1706,17 +1758,31 @@ function makeFctvToken(rbSession) {
 
 // Resolve the upstream tokenised playlist for a single server (fresh rb-session
 // + token). Cached briefly so HLS live-edge re-fetches don't hammer the API.
-const fctvUpstreamCache = new Map(); // `${matchId}_${streamId}_${siteType}` -> { data, time }
+const fctvUpstreamCache = new Map(); // match/stream/site/sport -> { data, time }
 const FCTV_UPSTREAM_TTL = 20 * 1000;
-async function resolveFctvUpstreamPlaylist(streamId, siteType, matchId, sportType, forceFresh = false) {
-  const key = `${matchId}_${streamId}_${siteType}`;
-  if (forceFresh) {
-    fctvUpstreamCache.delete(key);
-  } else {
-    const cached = fctvUpstreamCache.get(key);
-    if (cached && Date.now() - cached.time < FCTV_UPSTREAM_TTL) return cached.data;
+async function resolveFctvUpstreamPlaylist(streamId, siteType, matchId, sportType, forceFresh = false, rejectedResolution = null) {
+  const key = JSON.stringify([String(matchId), String(streamId), String(siteType || FCTV_DEFAULT_SITE_TYPE), String(sportType)]);
+  const cached = fctvUpstreamCache.get(key);
+  // Un jeton rejeté ne redevient pas exploitable pendant une panne de résolution.
+  if (forceFresh && rejectedResolution && cached?.data === rejectedResolution) cached.rejected = true;
+  // Les hits ne créent aucune tâche partagée : ils ne peuvent absorber une intention forceFresh.
+  if (cached && !cached.rejected && Date.now() - cached.time < FCTV_UPSTREAM_TTL &&
+      (!forceFresh || (rejectedResolution && cached.data !== rejectedResolution))) {
+    return cached.data;
   }
+  const resolved = await refreshLiveTv(`fctv-upstream:${key}`, () => loadFctvUpstreamPlaylist(
+    key, streamId, siteType, matchId, sportType), () => {
+    const previous = fctvUpstreamCache.get(key);
+    return previous && !previous.rejected ? previous.data : null;
+  });
+  const latest = fctvUpstreamCache.get(key);
+  if (latest?.data === resolved && latest.rejected) {
+    throw new Error("Jeton FCTV rejeté, renouvellement temporairement indisponible");
+  }
+  return resolved;
+}
 
+async function loadFctvUpstreamPlaylist(key, streamId, siteType, matchId, sportType) {
   // Unsigned call with continent/country/digit => returns the `rb-session`
   // header and a masked URL that decodes to the proxy m3u8 path. No
   // `usls`/`language` and no sfver prefix here.
@@ -1739,7 +1805,7 @@ async function resolveFctvUpstreamPlaylist(streamId, siteType, matchId, sportTyp
   const detail = parseFctvStreamFields(streamBody);
   const proxyUrl = decodeFctvStreamUrl(detail.rawUrl);
   const rbSession = response.headers["rb-session"];
-  if (!proxyUrl || !rbSession) return null;
+  if (!proxyUrl || !rbSession) throw new Error("Résolution FCTV sans URL ou jeton exploitable");
 
   const token = makeFctvToken(rbSession);
   const u = new URL(proxyUrl);
@@ -1749,6 +1815,7 @@ async function resolveFctvUpstreamPlaylist(streamId, siteType, matchId, sportTyp
     playlistUrl: `${u.origin}/token-${token}${u.pathname}${u.search}`,
   };
   fctvUpstreamCache.set(key, { data, time: Date.now() });
+  while (fctvUpstreamCache.size > 512) fctvUpstreamCache.delete(fctvUpstreamCache.keys().next().value);
   return data;
 }
 
@@ -1868,78 +1935,52 @@ function buildStreamProxyHeaders(
 
 // === NORTHLIVE CHANNELS (FREE source, iframe embed) ===
 // In-memory mirror of the disk cache to keep manifest/catalog requests cheap.
-let northliveMemCache = { channels: [], time: 0 };
-
 /**
  * Fetch every northlive page (France + DOM-TOM only), dedup by slug, classify by
- * content, and cache the result to disk (1h TTL). Called lazily on demand and by
- * the hourly warmer. Never overwrites a good cache with an empty result.
+ * content. A page failure makes the whole candidate invalid: publishing a
+ * partial catalogue would remove channels from readers.
  */
-async function fetchAllNorthlive(force = false) {
-  const cacheKey = generateCacheKey("northlive_all_v1");
-
-  if (!force) {
-    if (northliveMemCache.channels.length && Date.now() - northliveMemCache.time < NORTHLIVE_REFRESH_MS) {
-      return northliveMemCache.channels;
-    }
-    const disk = await getFromCache(cacheKey, 1); // 1h
-    if (disk && Array.isArray(disk) && disk.length) {
-      northliveMemCache = { channels: disk, time: Date.now() };
-      return disk;
-    }
-  }
-
-  const seen = new Set();
-  const channels = [];
-  let totalPages = 25; // refined from the first response; hard cap below as a guard
-
-  for (let page = 1; page <= totalPages && page <= 40; page++) {
-    try {
-      const response = await axios.get(NORTHLIVE_BASE, {
+async function scrapeNorthliveCatalog() {
+  return scrapeNorthlivePages({
+    fetchPage: (page) => axios.get(NORTHLIVE_BASE, {
         params: {
           api_key: NORTHLIVE_API_KEY,
           ...(page > 1 ? { page } : {}),
         },
         headers: { "User-Agent": LIVE_PAGE_USER_AGENT },
         timeout: 15000,
-      });
+    }),
+    mapChannel: (ch) => {
+      if (!ch?.slug || ch.active === false || !isNorthliveFrance(ch.country)) return null;
+      return {
+        id: `northlive_${ch.slug}`,
+        slug: ch.slug,
+        name: ch.name || ch.slug,
+        cat: classifyNorthlive(ch.name, ch.category),
+      };
+    },
+  });
+}
 
-      const data = Array.isArray(response.data?.data) ? response.data.data : [];
-      const pag = response.data?.pagination;
-      if (pag?.total && pag?.per_page) {
-        totalPages = Math.ceil(pag.total / pag.per_page);
-      }
-      if (data.length === 0) break;
+const northliveCacheKey = generateCacheKey("northlive_all_v1");
+const northliveCatalog = createNorthliveCatalog({
+  isOwner: isNorthliveRefreshOwner(process.env),
+  readFresh: () => getFromCache(northliveCacheKey, 1),
+  readStale: () => getFromCache(northliveCacheKey, 24 * 365),
+  publish: async (channels) => {
+    const saved = await publishNorthliveCatalog(
+      path.join(CACHE_DIR, `${northliveCacheKey}.json`),
+      channels,
+    );
+    if (saved) console.log(`[NORTHLIVE] Cached ${channels.length} FR channels`);
+    return saved;
+  },
+  scrape: scrapeNorthliveCatalog,
+  logger: console,
+});
 
-      for (const ch of data) {
-        if (!ch?.slug || seen.has(ch.slug)) continue;
-        if (ch.active === false) continue;
-        if (!isNorthliveFrance(ch.country)) continue;
-        seen.add(ch.slug);
-        channels.push({
-          id: `northlive_${ch.slug}`,
-          slug: ch.slug,
-          name: ch.name || ch.slug,
-          cat: classifyNorthlive(ch.name, ch.category),
-        });
-      }
-    } catch (error) {
-      console.warn(`[NORTHLIVE] page ${page} error: ${error.message}`);
-      break;
-    }
-  }
-
-  if (channels.length === 0) {
-    // Upstream hiccup — keep serving the last good cache rather than blanking out.
-    const stale = await getFromCache(cacheKey, 24 * 365);
-    if (stale && Array.isArray(stale) && stale.length) return stale;
-    return [];
-  }
-
-  await saveToCache(cacheKey, channels);
-  northliveMemCache = { channels, time: Date.now() };
-  console.log(`[NORTHLIVE] Cached ${channels.length} FR channels`);
-  return channels;
+async function fetchAllNorthlive(force = false) {
+  return northliveCatalog.getChannels({ force });
 }
 
 /**
@@ -1962,8 +2003,8 @@ async function getNorthliveChannelsByCategory(catalogId) {
  */
 router.get("/manifest", async (req, res) => {
   try {
-    // v18 = un catalogue FCTV par sport.
-    const cacheKey = generateCacheKey("manifest_combined_v18");
+    // v19 = ajout des catalogues Streamed par sport.
+    const cacheKey = generateCacheKey("manifest_combined_v19");
 
     // 5 min seulement : la liste des sports FCTV annoncés suit les rencontres
     // en cours, un cache de 24 h la figerait sur un créneau révolu.
@@ -1985,7 +2026,7 @@ router.get("/manifest", async (req, res) => {
       id: "org.stremio.merged",
       version: "1.0.0",
       name: "Merged Live TV",
-      description: "Merged TV sources (TV Direct, Matches, Northlive, Vavoo)",
+      description: "Merged TV sources (TV Direct, Matches, Streamed, Northlive, Vavoo)",
       catalogs: [],
       resources: ["catalog", "meta", "stream"],
       types: ["tv"],
@@ -2022,6 +2063,10 @@ router.get("/manifest", async (req, res) => {
     // Prepend matches catalogs to the beginning
     manifest.catalogs = [...matchesCatalogs, ...manifest.catalogs];
     manifest.idPrefixes.push("match_");
+
+    // Lecteurs intégrés Streamed : l'annonce ne dépend pas de l'API amont.
+    manifest.catalogs.push(...STREAMED_CATALOGS);
+    manifest.idPrefixes.push("streamed_");
 
     // NorthLive (FREE — no extension / no VIP, iframe embed). Its catalogs are
     // always advertised; loading the manifest must not depend on the upstream.
@@ -2077,93 +2122,112 @@ router.get("/catalog/:type/:catalogId", async (req, res) => {
     const cacheKey = generateCacheKey(
       `catalog_${type}_${catalogId}_${catalogCacheVersion}`,
     );
-    const isMatchesCatalog = catalogId.startsWith("matches_");
+    const isMatchesCatalog = catalogId.startsWith("matches_") || catalogId.startsWith("streamed_");
     const isDynamicCatalog =
       isMatchesCatalog ||
       catalogId.startsWith("northlive_") ||
       catalogId.startsWith("vavoo_");
 
-    // Vérifier le cache (1 minute pour les catalogues dynamiques, 24h sinon)
-    const cached = isDynamicCatalog
-      ? await getFromCacheMs(cacheKey, 60000)
-      : await getFromCache(cacheKey);
+    // Une seule régénération par catalogue ; fraîcheur recontrôlée à son entrée.
+    const maxAgeMs = isDynamicCatalog ? 60000 : CACHE_EXPIRATION_HOURS * 3600000;
+    const cached = await getFromCacheMs(cacheKey, maxAgeMs);
     if (cached) {
       return res.json(cached);
     }
 
-    let catalog = null;
+    const result = await refreshLiveTv(`catalog:${cacheKey}`, async () => {
+      const fresh = await getFromCacheMs(cacheKey, maxAgeMs);
+      if (fresh) return fresh;
+      let catalog = null;
 
-    // Déterminer la source en fonction de l'ID du catalogue
-    if (catalogId.startsWith("tvmio_")) {
-      // Source TVMio (Local M3U)
-      console.log(`[LIVETV] Fetching TVMio (M3U) catalog: ${catalogId}`);
-      const tvmioConfig = TVMIO_CATEGORIES[catalogId];
+      // Déterminer la source en fonction de l'ID du catalogue
+      if (catalogId.startsWith("tvmio_")) {
+        // Source TVMio (Local M3U)
+        console.log(`[LIVETV] Fetching TVMio (M3U) catalog: ${catalogId}`);
+        const tvmioConfig = TVMIO_CATEGORIES[catalogId];
 
-      if (tvmioConfig) {
-        const allChannels = await parseM3u();
-        const remoteMetas = await fetchTvmioCatalogMetas(catalogId);
-        const tvmioImagesMap = buildTvmioImagesMap(remoteMetas);
-        const targetGroup = tvmioConfig.genre; // e.g. "FR | General"
+        if (tvmioConfig) {
+          const allChannels = await parseM3u();
+          const remoteMetas = await fetchTvmioCatalogMetas(catalogId);
+          const tvmioImagesMap = buildTvmioImagesMap(remoteMetas);
+          const targetGroup = tvmioConfig.genre; // e.g. "FR | General"
 
-        // Filter by group
-        let filtered = allChannels.filter((ch) => ch.group === targetGroup);
+          // Filter by group
+          let filtered = allChannels.filter((ch) => ch.group === targetGroup);
 
-        // Deduplicate by ID (pick first one for the catalog entry)
-        const unique = [];
-        const seen = new Set();
-        for (const ch of filtered) {
-          if (!seen.has(ch.id)) {
-            seen.add(ch.id);
-            const remoteImages = getTvmioRemoteImages(ch, tvmioImagesMap);
-            unique.push({
-              id: `tvmio-${ch.id}`, // Prefix for routing
-              type: "tv",
-              name: ch.title,
-              poster: remoteImages.poster,
-              logo: remoteImages.logo,
-              background: remoteImages.background,
-              description: ch.group,
-            });
+          // Deduplicate by ID (pick first one for the catalog entry)
+          const unique = [];
+          const seen = new Set();
+          for (const ch of filtered) {
+            if (!seen.has(ch.id)) {
+              seen.add(ch.id);
+              const remoteImages = getTvmioRemoteImages(ch, tvmioImagesMap);
+              unique.push({
+                id: `tvmio-${ch.id}`, // Prefix for routing
+                type: "tv",
+                name: ch.title,
+                poster: remoteImages.poster,
+                logo: remoteImages.logo,
+                background: remoteImages.background,
+                description: ch.group,
+              });
+            }
           }
+
+          catalog = { metas: unique };
+        } else {
+          catalog = { metas: [] };
         }
-
-        catalog = { metas: unique };
+        console.log(
+          `[TVMIO] Result: ${catalog.metas ? catalog.metas.length : 0} channels`,
+        );
+      } else if (catalogId.startsWith("northlive_")) {
+        // Northlive (FREE, iframe embed) — from the 1h-cached France channel list.
+        const channels = await getNorthliveChannelsByCategory(catalogId);
+        catalog = { metas: channels };
+      } else if (catalogId.startsWith("vavoo_")) {
+        // Vavoo (FREE, direct HLS) — country group from the 1h cache.
+        const channels = await getVavooChannels(catalogId);
+        catalog = { metas: channels };
+      } else if (catalogId.startsWith("streamed_")) {
+        catalog = { metas: await streamedSource.getCatalog(catalogId) };
+      } else if (catalogId.startsWith("matches_")) {
+        // Source Matches (FCTV33)
+        console.log(`[LIVETV] Fetching Matches catalog: ${catalogId}`);
+        const matches = await scrapeFctvMatches(catalogId);
+        console.log(`[LIVETV] Matches result: ${matches.length} matches`);
+        catalog = {
+          metas: matches,
+        };
       } else {
-        catalog = { metas: [] };
+        // Source TV Direct (Défaut)
+        const url = `${TVDIRECT_BASE_URL}/catalog/${type}/${catalogId}.json`;
+        const response = await axios.get(url, {
+          headers: STREMIO_HEADERS,
+          timeout: 10000,
+        });
+        catalog = response.data;
       }
-      console.log(
-        `[TVMIO] Result: ${catalog.metas ? catalog.metas.length : 0} channels`,
-      );
-    } else if (catalogId.startsWith("northlive_")) {
-      // Northlive (FREE, iframe embed) — from the 1h-cached France channel list.
-      const channels = await getNorthliveChannelsByCategory(catalogId);
-      catalog = { metas: channels };
-    } else if (catalogId.startsWith("vavoo_")) {
-      // Vavoo (FREE, direct HLS) — country group from the 1h cache.
-      const channels = await getVavooChannels(catalogId);
-      catalog = { metas: channels };
-    } else if (catalogId.startsWith("matches_")) {
-      // Source Matches (FCTV33)
-      console.log(`[LIVETV] Fetching Matches catalog: ${catalogId}`);
-      const matches = await scrapeFctvMatches(catalogId);
-      console.log(`[LIVETV] Matches result: ${matches.length} matches`);
-      catalog = {
-        metas: matches,
-      };
-    } else {
-      // Source TV Direct (Défaut)
-      const url = `${TVDIRECT_BASE_URL}/catalog/${type}/${catalogId}.json`;
-      const response = await axios.get(url, {
-        headers: STREMIO_HEADERS,
-        timeout: 10000,
-      });
-      catalog = response.data;
-    }
 
-    // Sauvegarder en cache
-    await saveToCache(cacheKey, catalog);
+      // Sauvegarder en cache
+      if (!await saveToCache(cacheKey, catalog)) {
+        throw new Error(`Publication du catalogue impossible : ${catalogId}`);
+      }
 
-    res.json(catalog);
+      return catalog;
+    }, async () => {
+      const stale = await getFromCache(cacheKey, catalogId.startsWith("streamed_") ? 5 / 60 : 24 * 365);
+      if (stale && Array.isArray(stale.metas)) return stale;
+      if (catalogId.startsWith("vavoo_")) {
+        const group = VAVOO_SLUG_TO_GROUP[catalogId.slice("vavoo_".length)];
+        const channels = group && await getFromCache(generateCacheKey(`vavoo_group_${group}_v4`), 24 * 365);
+        if (channels?.length) return { metas: channels };
+      }
+      // Même contrat à froid pour ces sources, mais sans publier le vide d'une panne.
+      if (isMatchesCatalog || catalogId.startsWith("vavoo_")) return { metas: [] };
+      return null;
+    });
+    res.json(result);
   } catch (error) {
     console.error(`[LIVETV] Erreur catalog ${catalogId}:`, error.message);
     res.status(500).json({ error: "Impossible de charger le catalogue" });
@@ -2196,6 +2260,7 @@ router.get("/stream/:type/:channelId", async (req, res) => {
     if (accessKey) {
       isVip = await verifyAccessKey(accessKey);
     }
+    req.vipStatus = isVip;
 
     // Block VIP-only sources immediately if not VIP.
     // Matches (match_/matches_) are free: the IP-locked native stream is resolved
@@ -2229,9 +2294,9 @@ router.get("/stream/:type/:channelId", async (req, res) => {
     // que l'extension en montre six ». Les matchs ont déjà leur propre cache
     // interne de 30 s, on saute donc le cache externe pour eux.
     const skipOuterCache =
-      channelId.startsWith("vavoo_") || channelId.startsWith("match_");
+      channelId.startsWith("vavoo_") || channelId.startsWith("match_") || channelId.startsWith("streamed_");
     const cacheKey = generateCacheKey(
-      `stream_${type}_${channelId}_${mode}_${sourceIndex ?? "all"}_v6_${isVip.vip ? "vip" : "free"}`,
+      `stream_${type}_${channelId}_${mode}_${sourceIndex ?? "all"}_v7_${isVip.vip ? "vip" : "free"}`,
     );
     const streamCacheVariant = isVip.vip ? "vip" : "free";
 
@@ -2293,6 +2358,8 @@ router.get("/stream/:type/:channelId", async (req, res) => {
         console.log(`[TVMIO] No streams found for ${channelId} in M3U`);
         streamData = { streams: [] };
       }
+    } else if (channelId.startsWith("streamed_")) {
+      streamData = { streams: await streamedSource.getStreams(channelId) };
     } else if (channelId.startsWith("northlive_")) {
       // === SOURCE NORTHLIVE (FREE, iframe embed) ===
       // Deterministic player_url from the slug — no VIP, no proxy, no resolution.
@@ -2318,26 +2385,31 @@ router.get("/stream/:type/:channelId", async (req, res) => {
       const cachedVavoo = await getFromCacheMs(vavooCacheKey, 60_000);
       if (cachedVavoo) return res.json(cachedVavoo);
 
-      const m3u8 = await resolveVavooStream(channelId);
-      if (!m3u8) {
-        return res.status(404).json({ error: "Flux Vavoo introuvable" });
-      }
-
-      streamData = {
-        streams: [
-          {
-            title: "Vavoo",
-            url: m3u8,
-            _directPlay: true,
-            behaviorHints: { notWebReady: false },
-          },
-        ],
-      };
-      await saveToCache(vavooCacheKey, streamData);
+      streamData = await refreshLiveTv(`vavoo-stream:${channelId}`, async () => {
+        const fresh = await getFromCacheMs(vavooCacheKey, 60_000);
+        if (fresh) return fresh;
+        const m3u8 = await resolveVavooStream(channelId);
+        if (!m3u8) return null;
+        const resolved = {
+          streams: [
+            {
+              title: "Vavoo",
+              url: m3u8,
+              _directPlay: true,
+              behaviorHints: { notWebReady: false },
+            },
+          ],
+        };
+        if (!await saveToCache(vavooCacheKey, resolved)) {
+          throw new Error(`Publication du flux Vavoo impossible : ${channelId}`);
+        }
+        return resolved;
+      }, () => getFromCache(vavooCacheKey, 24));
+      if (!streamData) return res.status(404).json({ error: "Flux Vavoo introuvable" });
     } else if (channelId.startsWith("match_")) {
       // === SOURCE MATCHES (FCTV33) ===
       const matchCacheKey = generateCacheKey(
-        `fctv_match_stream_${channelId}_ua1_${streamCacheVariant}`,
+        `fctv_match_stream_${channelId}_ua2_${streamCacheVariant}`,
       );
 
       // Check for fresh cache (30 seconds)
@@ -2374,10 +2446,16 @@ router.get("/stream/:type/:channelId", async (req, res) => {
           // VIP: the server proxies the (IP-consistent) segments via the smart
           // playlist endpoint + PROXY_SERVER_URL.
           if (fctvNativeMode === "proxy") {
+            // Le lecteur HLS natif ne transmet pas x-access-key : l'autorisation
+            // voyage dans un jeton signé limité à ce match et à ce serveur.
+            const token = encodeSignedToken(
+              FCTV_PLAYLIST_TOKEN_ROUTE,
+              fctvPlaylistTarget(p.matchId, p.streamId, p.siteType, p.sportType),
+            );
             const url =
               `${publicApiBase}/api/livetv/fctv/playlist?matchId=${encodeURIComponent(p.matchId)}` +
               `&streamId=${encodeURIComponent(p.streamId)}&siteType=${encodeURIComponent(p.siteType)}` +
-              `&sportType=${encodeURIComponent(p.sportType)}&mode=proxy`;
+              `&sportType=${encodeURIComponent(p.sportType)}&mode=proxy&token=${encodeURIComponent(token)}`;
             return {
               title: stream.title,
               url,
@@ -2412,11 +2490,9 @@ router.get("/stream/:type/:channelId", async (req, res) => {
             stream.userAgent || STREAM_PROXY_USER_AGENT,
           ),
         );
-        // FCTV native m3u8 + TS segments are Referer-gated to the player origin,
-        // so they MUST be proxied (the proxy injects that Referer) for every
-        // user — not just VIP. Other streams keep the VIP-only proxy behaviour.
-        const mustProxy = stream.needsProxy === true;
-        const proxyUrl = PROXY_SERVER_URL && (mustProxy || isVip.vip)
+        // Le besoin de Referer ne donne pas accès au proxy : hors VIP,
+        // l'extension/userscript applique les en-têtes au flux direct.
+        const proxyUrl = PROXY_SERVER_URL && isVip.vip
           ? buildProxyServerUrl(stream.url, { headers })
           : stream.url;
 
@@ -2515,8 +2591,21 @@ router.get("/fctv/playlist", async (req, res) => {
   // proxy = segments via PROXY_SERVER_URL (VIP). raw = bare CDN urls; the
   // browser extension / userscript injects the player Referer (free users).
   const mode = req.query.mode === "raw" ? "raw" : "proxy";
+  res.set("Cache-Control", "private, no-store");
   if (!matchId || !streamId) {
     return res.status(400).send("missing matchId/streamId");
+  }
+  if ([matchId, streamId, siteType, sportType].some((value) =>
+    typeof value !== "string" && typeof value !== "number"
+  )) {
+    return res.status(400).send("invalid playlist parameters");
+  }
+
+  if (mode === "proxy") {
+    const target = fctvPlaylistTarget(matchId, streamId, siteType, sportType);
+    if (decodeSignedToken(FCTV_PLAYLIST_TOKEN_ROUTE, req.query.token) !== target) {
+      return res.status(403).send("Accès réservé aux membres VIP");
+    }
   }
 
   try {
@@ -2542,7 +2631,7 @@ router.get("/fctv/playlist", async (req, res) => {
     let resolved = await resolveFctvUpstreamPlaylist(streamId, siteType, matchId, sportType);
     let pr = resolved ? await fetchPlaylist(resolved) : null;
     if (!ok(pr)) {
-      resolved = await resolveFctvUpstreamPlaylist(streamId, siteType, matchId, sportType, true);
+      resolved = await resolveFctvUpstreamPlaylist(streamId, siteType, matchId, sportType, true, resolved);
       pr = resolved ? await fetchPlaylist(resolved) : null;
     }
     if (!resolved || !ok(pr)) {
@@ -2582,7 +2671,6 @@ router.get("/fctv/playlist", async (req, res) => {
 
     res.set("Content-Type", "application/vnd.apple.mpegurl");
     res.set("Access-Control-Allow-Origin", "*");
-    res.set("Cache-Control", "no-store");
     return res.send(rewritten);
   } catch (error) {
     console.error(`[FCTV-PLAYLIST] error match ${matchId} stream ${streamId}:`, error.message);
@@ -2612,32 +2700,6 @@ router.get("/resolve/:playId", async (req, res) => {
   } catch (error) {
     console.error(`[LIVETV] Erreur resolve ${playId}:`, error.message);
     res.status(500).json({ error: "Erreur lors de la résolution" });
-  }
-});
-
-/**
- * DELETE /api/livetv/cache
- * Nettoie le cache Live TV (admin only)
- */
-router.delete("/cache", async (req, res) => {
-  try {
-    const files = await fsp.readdir(CACHE_DIR);
-    let deletedCount = 0;
-
-    for (const file of files) {
-      if (file.endsWith(".json")) {
-        await fsp.unlink(path.join(CACHE_DIR, file));
-        deletedCount++;
-      }
-    }
-
-    res.json({
-      success: true,
-      message: `Cache Live TV nettoyé: ${deletedCount} fichiers supprimés`,
-    });
-  } catch (error) {
-    console.error("[LIVETV] Erreur nettoyage cache:", error.message);
-    res.status(500).json({ error: "Erreur lors du nettoyage du cache" });
   }
 });
 
@@ -2786,16 +2848,17 @@ router.get("/iptv/stream-url/:streamId", requireVip, async (req, res) => {
   }
 });
 
-// Warm the northlive channel cache at boot and refresh it hourly (user request:
-// "récupère toutes les pages toutes les heures et mets en cache"). Failures are
-// swallowed — the lazy fetch in the manifest/catalog routes is the fallback.
-fetchAllNorthlive(true).catch((e) =>
-  console.warn(`[NORTHLIVE] initial warm failed: ${e.message}`),
-);
-setInterval(() => {
+// Only slot zero receives NORTHLIVE_REFRESH_OWNER=1 from server.js. Readers
+// are deliberately cache-only, even with an empty cache at startup.
+if (northliveCatalog.isOwner) {
   fetchAllNorthlive(true).catch((e) =>
-    console.warn(`[NORTHLIVE] hourly refresh failed: ${e.message}`),
+    console.warn(`[NORTHLIVE] initial warm failed: ${e.message}`),
   );
-}, NORTHLIVE_REFRESH_MS).unref();
+  setInterval(() => {
+    fetchAllNorthlive(true).catch((e) =>
+      console.warn(`[NORTHLIVE] hourly refresh failed: ${e.message}`),
+    );
+  }, NORTHLIVE_REFRESH_MS).unref();
+}
 
 module.exports = router;

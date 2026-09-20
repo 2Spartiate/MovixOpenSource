@@ -94,6 +94,14 @@ test('emits browser-parseable JavaScript without literal NUL bytes', async () =>
   assert.equal(buildCastShim().includes('\u0000'), false);
 });
 
+test('copies diagnostics through the authenticated native bridge without exposing logs to the page', async () => {
+  const { buildCastShim } = await loadCastShimBuilder();
+  const harness = createShimHarness(buildCastShim);
+  await harness.window.MovixAndroidCast.copyDiagnostics();
+  assert.equal(harness.posted.at(-1).type, 'CASTSHIM_COPY_DIAGNOSTICS');
+  assert.match(harness.posted.at(-1).capability, /^[a-f0-9]{32}$/);
+});
+
 test('loadMedia rejects without loading and reports a bounded preparation diagnostic', async () => {
   const { buildCastShim } = await loadCastShimBuilder();
   const harness = createShimHarness(buildCastShim);
@@ -271,6 +279,7 @@ test('controller methods post typed commands and reject native failures', async 
         positionSec: 12,
         durationSec: 100,
         canSeek: true,
+        nativeErrorCode: 'GCK_STATUS_2100',
       };
     }
     return {};
@@ -284,6 +293,7 @@ test('controller methods post typed commands and reject native failures', async 
   await cast.stop();
 
   assert.equal(status.state, 'playing');
+  assert.equal(status.nativeErrorCode, 'GCK_STATUS_2100');
   assert.deepEqual(
     harness.posted.map(({ type, seconds, refresh }) => ({ type, seconds, refresh })),
     [

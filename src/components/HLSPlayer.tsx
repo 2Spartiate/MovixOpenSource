@@ -235,6 +235,16 @@ function normalizeSubtitleLanguageCode(code?: string, label?: string): string {
     || 'unknown';
 }
 
+const PAUSE_GRAYSCALE_KEY = 'playerPauseGrayscaleEnabled';
+
+function getPauseGrayscaleEnabled(): boolean {
+  try {
+    return localStorage.getItem(PAUSE_GRAYSCALE_KEY) !== 'false';
+  } catch {
+    return true;
+  }
+}
+
 // Milestone 4 — mapping des `source.type` (top-level row) vers `TopLevelSourceId`.
 // Doit rester en phase avec `SOURCE_MAIN_TO_TOP_LEVEL` dans HLSPlayerSettingsPanel.tsx.
 const SOURCE_MAIN_TO_TOP_LEVEL: Record<string, TopLevelSourceId> = {
@@ -745,6 +755,7 @@ const makeCinepSubtitlePLoader = (HlsCtor: typeof HlsType): any => {
 // True when an hls.js error is about loading/parsing a subtitle track/file.
 // Used to keep a broken subtitle from killing video playback.
 const isSubtitleLoadError = (data: any): boolean => {
+  if (data?.frag?.type === 'subtitle') return true;
   const details = typeof data?.details === 'string' ? data.details.toLowerCase() : '';
   if (details.includes('subtitle')) return true;
   const url = data?.url || data?.frag?.url || data?.context?.url || '';
@@ -1064,14 +1075,6 @@ interface WatchProgress {
 }
 
 
-// Add new interface for zoom functionality
-interface ZoomState {
-  scale: number;
-  translateX: number;
-  translateY: number;
-  isZoomed: boolean;
-}
-
 // Ajouter de nouvelles interfaces pour les types de sources
 interface SourceOption {
   type: string;
@@ -1379,6 +1382,30 @@ const HLSPlayer = forwardRef<HLSPlayerRef, HLSPlayerProps>(({
     return () => { cancelled = true; };
   }, [Hls]);
   const [isPlaying, setIsPlaying] = useState(false);
+  const [pauseGrayscaleEnabled, setPauseGrayscaleEnabled] = useState(getPauseGrayscaleEnabled);
+
+  const handlePauseGrayscaleChange = (enabled: boolean) => {
+    setPauseGrayscaleEnabled(enabled);
+    try {
+      localStorage.setItem(PAUSE_GRAYSCALE_KEY, String(enabled));
+    } catch {
+      // Si le stockage est indisponible, le choix reste actif pour ce lecteur.
+    }
+  };
+
+  useEffect(() => {
+    const refresh = () => setPauseGrayscaleEnabled(getPauseGrayscaleEnabled());
+    const onStorage = (event: StorageEvent) => {
+      if (event.key === PAUSE_GRAYSCALE_KEY || event.key === null) refresh();
+    };
+    window.addEventListener('storage', onStorage);
+    window.addEventListener('sync_storage_updated', refresh);
+    return () => {
+      window.removeEventListener('storage', onStorage);
+      window.removeEventListener('sync_storage_updated', refresh);
+    };
+  }, []);
+
   const [hasFatalPlaybackError, setHasFatalPlaybackError] = useState(false);
   const awakeLeaseRef = useRef<ReturnType<
     typeof createLocalPlaybackAwakeLease
@@ -3746,6 +3773,9 @@ const HLSPlayer = forwardRef<HLSPlayerRef, HLSPlayerProps>(({
       }
       console.log(`📡 [HLSPlayer] Initializing HLS with URL: ${normalizedSrc.substring(0, 100)}...`);
       const hls = new Hls(hlsConfig);
+      // Compteurs propres à cette source et à chaque piste : un fragment audio
+      // reçu ne répare pas un segment vidéo inaccessible (et inversement).
+      const noResponseFailures = new Map<string, number>();
 
       hlsRef.current = hls;
       // Le proxy sera automatiquement appliqué par xhrSetup si nécessaire
@@ -3766,9 +3796,8 @@ const HLSPlayer = forwardRef<HLSPlayerRef, HLSPlayerProps>(({
       };
 
       hls.on(Hls.Events.MANIFEST_PARSED, (_event, data) => {
-        // Le manifest a été parsé, le flux est valide - annuler le timeout de changement de source
-        clearSourceTimeout();
-        console.log('✅ Manifest parsed - source timeout cleared, stream is valid');
+        // Le manifeste décrit les qualités, mais ne garantit pas un média
+        // lisible. Garder le délai de secours jusqu'à canplay ou playing.
 
         // Nettoyer les compteurs de retry car le manifest a été parsé avec succès
         if ((window as any).fragParsingGlobalRetry) {
@@ -3889,8 +3918,11 @@ const HLSPlayer = forwardRef<HLSPlayerRef, HLSPlayerProps>(({
 
       // Ajouter un gestionnaire pour détecter les problèmes de lecture
       hls.on(Hls.Events.FRAG_LOADED, (_event, data) => {
-        // Un fragment a été chargé, le flux fonctionne - annuler le timeout de changement de source
-        clearSourceTimeout();
+        // Un fragment téléchargé peut encore échouer au décodage : seuls les
+        // événements du média annulent le délai de démarrage.
+        if (data.frag && data.frag.type !== 'subtitle') {
+          noResponseFailures.delete(data.frag.type === 'audio' ? 'audio' : 'main');
+        }
 
         const isServersicuro = src.includes('serversicuro.cc');
         if (isServersicuro && data.frag) {
@@ -3977,6 +4009,39 @@ const HLSPlayer = forwardRef<HLSPlayerRef, HLSPlayerProps>(({
           data.frag?.type === 'audio'
           || data.details === Hls.ErrorDetails.AUDIO_TRACK_LOAD_ERROR
           || data.details === Hls.ErrorDetails.AUDIO_TRACK_LOAD_TIMEOUT;
+
+        // Le navigateur expose souvent un échec DNS comme « HTTP Error 0 »,
+        // sans transmettre ERR_NAME_NOT_RESOLVED à HLS.js. Borner ces échecs
+        // sans attendre fatal, y compris pour les initSegment déguisés en .woff.
+        const isMediaLoadError = data.type === Hls.ErrorTypes.NETWORK_ERROR && [
+          Hls.ErrorDetails.FRAG_LOAD_ERROR,
+          Hls.ErrorDetails.FRAG_LOAD_TIMEOUT,
+          Hls.ErrorDetails.LEVEL_LOAD_ERROR,
+          Hls.ErrorDetails.LEVEL_LOAD_TIMEOUT,
+          Hls.ErrorDetails.AUDIO_TRACK_LOAD_ERROR,
+          Hls.ErrorDetails.AUDIO_TRACK_LOAD_TIMEOUT,
+          Hls.ErrorDetails.KEY_LOAD_ERROR,
+          Hls.ErrorDetails.KEY_LOAD_TIMEOUT,
+        ].includes(data.details);
+        if (isMediaLoadError) {
+          const track = isAudioLoadError ? 'audio' : 'main';
+          const status = data.response?.code ?? data.networkDetails?.status;
+          if (status == null || status === 0) {
+            const failures = (noResponseFailures.get(track) ?? 0) + 1;
+            noResponseFailures.set(track, failures);
+            if (data.fatal || failures >= 3) {
+              console.warn('🌐 Repeated media load failure without a response - switching source');
+              if (requestHlsFallback() !== 'stale') {
+                clearSourceTimeout();
+                hls.stopLoad();
+              }
+              return;
+            }
+          } else {
+            noResponseFailures.delete(track);
+          }
+        }
+
         if (isAudioLoadError) {
           console.warn('🔊 Audio track load error:', data.details);
           const audioDecision = decideHlsAudioFailure(Boolean(data.fatal));
@@ -4269,9 +4334,9 @@ const HLSPlayer = forwardRef<HLSPlayerRef, HLSPlayerProps>(({
           }
 
           if (data.details === Hls.ErrorDetails.FRAG_LOAD_ERROR) {
-            console.log('🔄 Fragment load error - attempting recovery...');
-            hls.startLoad();
-            return;
+            // HLS.js possède déjà une politique de retry avec délai et limite.
+            // startLoad() ici court-circuiterait cette récupération à chaque erreur.
+            if (!data.fatal) return;
           }
         }
 
@@ -5387,17 +5452,21 @@ const HLSPlayer = forwardRef<HLSPlayerRef, HLSPlayerProps>(({
   }, [handleMouseMove]);
 
 
-  const togglePlay = () => {
+  const togglePlay = async () => {
     const video = videoRef.current;
     if (!video) return;
 
     if (video.paused) {
       postCastPlaybackSuppressedRef.current = false;
-      video.play()
-        .then(() => {
+      try {
+        // Certains WebView renvoient void : await accepte aussi cette forme.
+        await video.play();
+        if (videoRef.current === video) {
           setIsPlaying(true);
-        })
-        .catch(e => console.error('Erreur de lecture:', e));
+        }
+      } catch (error) {
+        console.error('Erreur de lecture:', error);
+      }
     } else {
       video.pause();
       setIsPlaying(false);
@@ -6811,9 +6880,12 @@ const HLSPlayer = forwardRef<HLSPlayerRef, HLSPlayerProps>(({
     setCastDragTime(0);
     seekCastTo(newTime);
 
-    // Re-sync CSS variables with final state
+    // Re-sync CSS variables with final state. React remet `e.currentTarget` à
+    // null dès la fin du handler : on garde l'élément tout de suite, et on
+    // vérifie qu'il est toujours monté quand le timer tombe.
+    const element = e.currentTarget as HTMLElement;
     setTimeout(() => {
-      const element = e.currentTarget as HTMLElement;
+      if (!element || !element.isConnected) return;
       const finalPercentage = currentDuration > 0
         ? (castCurrentTime / currentDuration) * 100
         : 0;
@@ -8226,7 +8298,7 @@ const HLSPlayer = forwardRef<HLSPlayerRef, HLSPlayerProps>(({
     tvShowId ? 'tv' : undefined,
     tvShowId ? Number(tvShowId) : undefined,
   );
-  const { logoUrl: nextMovieLogoUrl } = useTmdbImages(
+  const { logoUrl: nextMovieLogoUrl, posterUrl: nextMoviePosterUrl } = useTmdbImages(
     nextMovie ? 'movie' : undefined,
     nextMovie?.id,
   );
@@ -8451,13 +8523,13 @@ const HLSPlayer = forwardRef<HLSPlayerRef, HLSPlayerProps>(({
           }
           return;
         case '.': // Image suivante (en pause)
-          if (video.paused) {
+          if (video.paused && Number.isFinite(video.duration) && video.duration > 0) {
             e.preventDefault();
             video.currentTime = Math.min(video.duration, video.currentTime + (1 / 30));
           }
           return;
         case ',': // Image précédente (en pause)
-          if (video.paused) {
+          if (video.paused && Number.isFinite(video.duration) && video.duration > 0) {
             e.preventDefault();
             video.currentTime = Math.max(0, video.currentTime - (1 / 30));
           }
@@ -8472,7 +8544,7 @@ const HLSPlayer = forwardRef<HLSPlayerRef, HLSPlayerProps>(({
         case '4': case '5': case '6':
         case '7': case '8': case '9':
           e.preventDefault();
-          if (video.duration) {
+          if (Number.isFinite(video.duration) && video.duration > 0) {
             const percent = parseInt(key) / 10;
             video.currentTime = video.duration * percent;
           }
@@ -8511,11 +8583,11 @@ const HLSPlayer = forwardRef<HLSPlayerRef, HLSPlayerProps>(({
           break;
         case 'Home':
           e.preventDefault();
-          if (video.duration) video.currentTime = 0;
+          if (Number.isFinite(video.duration) && video.duration > 0) video.currentTime = 0;
           break;
         case 'End':
           e.preventDefault();
-          if (video.duration) video.currentTime = video.duration;
+          if (Number.isFinite(video.duration) && video.duration > 0) video.currentTime = video.duration;
           break;
         case 'Escape':
           if (showStreamInfo) {
@@ -8629,9 +8701,12 @@ const HLSPlayer = forwardRef<HLSPlayerRef, HLSPlayerProps>(({
     setHasIgnored(true);
   }, []);
 
+  // Poster localisé (langue d'interface > EN > sans langue) prioritaire,
+  // sinon le poster_path par défaut de la reco (souvent VO).
   const nextMovieImageUrl = useMemo(() => (
-    nextMovie?.poster_path ? `https://image.tmdb.org/t/p/w300${nextMovie.poster_path}` : null
-  ), [nextMovie?.poster_path]);
+    nextMoviePosterUrl
+      ?? (nextMovie?.poster_path ? `https://image.tmdb.org/t/p/w300${nextMovie.poster_path}` : null)
+  ), [nextMoviePosterUrl, nextMovie?.poster_path]);
 
   useEffect(() => {
     // Détection des appareils tactiles
@@ -9056,15 +9131,18 @@ const HLSPlayer = forwardRef<HLSPlayerRef, HLSPlayerProps>(({
   // Monitor for network errors only (timeout is handled in the main useEffect)
   useEffect(() => {
     if (src && src.trim() !== '') {
+      let disposed = false;
       // Monitor for network errors
       const handleError = async (event: Event) => {
         const target = event.target as HTMLVideoElement;
-        if (target.error) {
-          console.log(`Video error detected: ${target.error.code} - ${target.error.message}`);
+        const mediaError = target.error;
+        const isStale = () => disposed || videoRef.current !== target || target.error !== mediaError;
+        if (mediaError && !isStale()) {
+          console.log(`Video error detected: ${mediaError.code} - ${mediaError.message}`);
 
           if (activeKisskhSourceRef.current) {
             const handledByKisskh = await requestKisskhMediaFallback();
-            if (handledByKisskh) return;
+            if (handledByKisskh || isStale()) return;
           }
           
           // Vérification explicite de l'erreur 403 via un fetch.
@@ -9073,10 +9151,11 @@ const HLSPlayer = forwardRef<HLSPlayerRef, HLSPlayerProps>(({
           // CORS, et échoue toujours — pas parce que le serveur refuse, mais
           // parce que le navigateur ne veut pas nous montrer sa réponse. On
           // conclurait à une panne réseau et on changerait de source pour rien.
-          if (target.error.code === 4 && !disableCrossOrigin) {
+          if (mediaError.code === 4 && !disableCrossOrigin) {
             try {
               console.log('🕵️ verifying whether the media error is a 403');
               const response = await fetch(src, { method: 'HEAD' });
+              if (isStale()) return;
               if (response.status === 403 || response.status === 4033) {
                  console.warn('🚫 403/4033 Forbidden error confirmed via fetch - trying next HLS player...');
                  setIsLoading(false);
@@ -9088,14 +9167,18 @@ const HLSPlayer = forwardRef<HLSPlayerRef, HLSPlayerProps>(({
             }
           }
 
-          if (target.error.code === 4 || target.error.message.includes('ERR_NAME_NOT_RESOLVED')) {
+          // Un load()/changement de source peut effacer video.error pendant
+          // le HEAD : ne pas relancer un repli pour l'ancienne source.
+          if (isStale()) return;
+          if (mediaError.code === 4 || mediaError.message.includes('ERR_NAME_NOT_RESOLVED')) {
             console.log('Network error detected, attempting source switch');
-            if (isDnsLikeError(null, target.error)) {
+            if (isDnsLikeError(null, mediaError)) {
               let host: string | undefined;
               try { host = new URL(src).hostname; } catch { /* ignore */ }
               requestHlsFallback(() => {
+                if (isStale()) return;
                 const switched = dispatchDnsEmbedFallback(src, omegaSources, coflixSources);
-                notifyDnsBlocked({ host, details: `videoErrorCode${target.error.code}`, switched });
+                notifyDnsBlocked({ host, details: `videoErrorCode${mediaError.code}`, switched });
                 if (!switched) {
                   void handleHlsErrorRef.current?.();
                 }
@@ -9113,12 +9196,13 @@ const HLSPlayer = forwardRef<HLSPlayerRef, HLSPlayerProps>(({
       }
 
       return () => {
+        disposed = true;
         if (videoElement) {
           videoElement.removeEventListener('error', handleError);
         }
       };
     }
-  }, [src, requestHlsFallback, requestKisskhMediaFallback, omegaSources, coflixSources]);
+  }, [src, disableCrossOrigin, requestHlsFallback, requestKisskhMediaFallback, omegaSources, coflixSources]);
 
   // Add event handler to restore position after source change
   useEffect(() => {
@@ -10723,20 +10807,6 @@ const HLSPlayer = forwardRef<HLSPlayerRef, HLSPlayerProps>(({
 
 
 
-  // Add zoom state
-  const [zoomState, setZoomState] = useState<ZoomState>({
-    scale: 1,
-    translateX: 0,
-    translateY: 0,
-    isZoomed: false
-  });
-
-  // Refs for smooth zoom (YouTube-like) - avoid React re-renders during gesture
-  const zoomRef = useRef({ scale: 1, translateX: 0, translateY: 0 });
-  const isPinchingRef = useRef(false);
-  const lastPinchDistanceRef = useRef<number | null>(null);
-  const pinchCenterRef = useRef({ x: 0, y: 0 });
-
   const subtitlePlacement = calculateSubtitlePlacement(subtitlePreferences, {
     width: subtitleViewport.width,
     height: subtitleViewport.height,
@@ -10761,74 +10831,17 @@ const HLSPlayer = forwardRef<HLSPlayerRef, HLSPlayerProps>(({
       : 'transparent',
   };
 
-  // Apply transform directly to DOM for smooth animation (YouTube-like)
-  const applyZoomTransform = useCallback((scale: number, translateX: number, translateY: number) => {
-    if (videoWrapperRef.current) {
-      videoWrapperRef.current.style.transform = `scale(${scale}) translate(${translateX}px, ${translateY}px)`;
-    }
-  }, []);
-
-  // Clamp translation within bounds
-  const clampTranslation = useCallback((scale: number, translateX: number, translateY: number) => {
-    if (!containerRef.current || scale <= 1) {
-      return { x: 0, y: 0 };
-    }
-    
-    const rect = containerRef.current.getBoundingClientRect();
-    const maxTranslateX = (rect.width * (scale - 1)) / (2 * scale);
-    const maxTranslateY = (rect.height * (scale - 1)) / (2 * scale);
-    
-    return {
-      x: Math.max(-maxTranslateX, Math.min(maxTranslateX, translateX)),
-      y: Math.max(-maxTranslateY, Math.min(maxTranslateY, translateY))
-    };
-  }, []);
-
-  const resetZoom = useCallback(() => {
-    zoomRef.current = { scale: 1, translateX: 0, translateY: 0 };
-    
-    // Animate the reset smoothly
-    if (videoWrapperRef.current) {
-      videoWrapperRef.current.style.transition = 'transform 0.25s ease-out';
-      applyZoomTransform(1, 0, 0);
-      setTimeout(() => {
-        if (videoWrapperRef.current) {
-          videoWrapperRef.current.style.transition = 'none';
-        }
-      }, 250);
-    }
-    
-    setZoomState({
-      scale: 1,
-      translateX: 0,
-      translateY: 0,
-      isZoomed: false
-    });
-  }, [applyZoomTransform]);
-
-  const handleZoomTouchStart = (e: React.TouchEvent) => {
-    if (e.touches.length === 2) {
-      // Two finger touch - start pinch zoom gesture
-      isPinchingRef.current = true;
-      const touch1 = e.touches[0];
-      const touch2 = e.touches[1];
-      
-      const dx = touch1.clientX - touch2.clientX;
-      const dy = touch1.clientY - touch2.clientY;
-      lastPinchDistanceRef.current = Math.sqrt(dx * dx + dy * dy);
-      
-      pinchCenterRef.current = {
-        x: (touch1.clientX + touch2.clientX) / 2,
-        y: (touch1.clientY + touch2.clientY) / 2
-      };
+  const handleVideoTouchStart = (e: React.TouchEvent) => {
+    touchActiveRef.current = true;
+    if (e.touches.length > 1) {
+      // Ignorer les gestes à plusieurs doigts pour ne pas déclencher un tap.
+      touchMovedRef.current = true;
     } else if (e.touches.length === 1) {
       // Single touch start: store start position and reset movement state
       const t = e.touches[0];
       touchStartXRef.current = t.clientX;
       touchStartYRef.current = t.clientY;
       touchMovedRef.current = false;
-      touchActiveRef.current = true;
-
       if (isMobile) {
         if (controlsTimeoutRef.current) {
           clearTimeout(controlsTimeoutRef.current);
@@ -10838,101 +10851,15 @@ const HLSPlayer = forwardRef<HLSPlayerRef, HLSPlayerProps>(({
     }
   };
 
-  const handleZoomTouchMove = (e: React.TouchEvent) => {
-    if (e.touches.length === 2 && isPinchingRef.current && lastPinchDistanceRef.current !== null) {
-      e.preventDefault();
-      
-      const touch1 = e.touches[0];
-      const touch2 = e.touches[1];
-      
-      // Calculate current distance
-      const dx = touch1.clientX - touch2.clientX;
-      const dy = touch1.clientY - touch2.clientY;
-      const currentDistance = Math.sqrt(dx * dx + dy * dy);
-      
-      // Calculate scale change ratio (smoother than absolute calculation)
-      const scaleChange = currentDistance / lastPinchDistanceRef.current;
-      let newScale = zoomRef.current.scale * scaleChange;
-      
-      // Clamp scale between 1 and 4
-      newScale = Math.max(1, Math.min(4, newScale));
-      
-      // Calculate new center
-      const newCenterX = (touch1.clientX + touch2.clientX) / 2;
-      const newCenterY = (touch1.clientY + touch2.clientY) / 2;
-      
-      // Calculate pan based on center movement
-      const panX = (newCenterX - pinchCenterRef.current.x) / newScale;
-      const panY = (newCenterY - pinchCenterRef.current.y) / newScale;
-      
-      let newTranslateX = zoomRef.current.translateX + panX;
-      let newTranslateY = zoomRef.current.translateY + panY;
-      
-      // Clamp translation
-      const clamped = clampTranslation(newScale, newTranslateX, newTranslateY);
-      newTranslateX = clamped.x;
-      newTranslateY = clamped.y;
-      
-      // Reset to center if scale is essentially 1
-      if (newScale < 1.02) {
-        newScale = 1;
-        newTranslateX = 0;
-        newTranslateY = 0;
-      }
-      
-      // Update ref (no React re-render)
-      zoomRef.current = {
-        scale: newScale,
-        translateX: newTranslateX,
-        translateY: newTranslateY
-      };
-      
-      // Apply transform directly to DOM for smooth animation
-      applyZoomTransform(newScale, newTranslateX, newTranslateY);
-      
-      // Update pinch tracking for next frame
-      lastPinchDistanceRef.current = currentDistance;
-      pinchCenterRef.current = { x: newCenterX, y: newCenterY };
-      
-    } else if (e.touches.length === 1) {
-      // Single finger pan when zoomed
-      if (zoomRef.current.scale > 1) {
-        const t = e.touches[0];
-        if (touchStartXRef.current !== null && touchStartYRef.current !== null) {
-          const dx = t.clientX - touchStartXRef.current;
-          const dy = t.clientY - touchStartYRef.current;
-          
-          if (Math.abs(dx) > 5 || Math.abs(dy) > 5) {
-            touchMovedRef.current = true;
-            
-            // Pan the zoomed view
-            let newTranslateX = zoomRef.current.translateX + dx / zoomRef.current.scale;
-            let newTranslateY = zoomRef.current.translateY + dy / zoomRef.current.scale;
-            
-            // Clamp translation
-            const clamped = clampTranslation(zoomRef.current.scale, newTranslateX, newTranslateY);
-            newTranslateX = clamped.x;
-            newTranslateY = clamped.y;
-            
-            zoomRef.current.translateX = newTranslateX;
-            zoomRef.current.translateY = newTranslateY;
-            
-            applyZoomTransform(zoomRef.current.scale, newTranslateX, newTranslateY);
-            
-            // Update start position for next move
-            touchStartXRef.current = t.clientX;
-            touchStartYRef.current = t.clientY;
-          }
-        }
-      } else {
-        // Detect movement to avoid interpreting drags as taps
-        const t = e.touches[0];
-        if (touchStartXRef.current !== null && touchStartYRef.current !== null) {
-          const dx = Math.abs(t.clientX - touchStartXRef.current);
-          const dy = Math.abs(t.clientY - touchStartYRef.current);
-          if (dx > 10 || dy > 10) {
-            touchMovedRef.current = true;
-          }
+  const handleVideoTouchMove = (e: React.TouchEvent) => {
+    if (e.touches.length === 1) {
+      // Detect movement to avoid interpreting drags as taps
+      const t = e.touches[0];
+      if (touchStartXRef.current !== null && touchStartYRef.current !== null) {
+        const dx = Math.abs(t.clientX - touchStartXRef.current);
+        const dy = Math.abs(t.clientY - touchStartYRef.current);
+        if (dx > 10 || dy > 10) {
+          touchMovedRef.current = true;
         }
       }
     }
@@ -10972,8 +10899,9 @@ const HLSPlayer = forwardRef<HLSPlayerRef, HLSPlayerProps>(({
     }, 100);
   }, [showControls, isPlaying, showCastMenu, showForwardAnimation, showRewindAnimation, showLeftTapAnimation, showRightTapAnimation]);
 
-  const handleZoomTouchEnd = (e: React.TouchEvent) => {
-    touchActiveRef.current = false;
+  const handleVideoTouchEnd = (e: React.TouchEvent) => {
+    touchActiveRef.current = e.touches.length > 0;
+    if (touchActiveRef.current) return;
 
     if (isPlayerControlInteractionTarget(e.target)) {
       touchActiveRef.current = false;
@@ -10984,43 +10912,6 @@ const HLSPlayer = forwardRef<HLSPlayerRef, HLSPlayerProps>(({
 
     // Prevent synthetic click from interfering - ALWAYS do this regardless of movement
     preventSyntheticClick();
-
-    // End pinch gesture and sync React state
-    if (e.touches.length < 2 && isPinchingRef.current) {
-      isPinchingRef.current = false;
-      lastPinchDistanceRef.current = null;
-
-      // Snap to 1 if very close, with smooth animation
-      if (zoomRef.current.scale < 1.05) {
-        zoomRef.current = { scale: 1, translateX: 0, translateY: 0 };
-        
-        // Animate back to 1
-        if (videoWrapperRef.current) {
-          videoWrapperRef.current.style.transition = 'transform 0.2s ease-out';
-          applyZoomTransform(1, 0, 0);
-          setTimeout(() => {
-            if (videoWrapperRef.current) {
-              videoWrapperRef.current.style.transition = 'none';
-            }
-          }, 200);
-        }
-        
-        setZoomState({
-          scale: 1,
-          translateX: 0,
-          translateY: 0,
-          isZoomed: false
-        });
-      } else {
-        // Sync React state with current zoom values
-        setZoomState({
-          scale: zoomRef.current.scale,
-          translateX: zoomRef.current.translateX,
-          translateY: zoomRef.current.translateY,
-          isZoomed: zoomRef.current.scale > 1
-        });
-      }
-    }
 
     // Ignore if a drag occurred (scrub or scroll)
     if (touchMovedRef.current) {
@@ -11167,7 +11058,7 @@ const HLSPlayer = forwardRef<HLSPlayerRef, HLSPlayerProps>(({
     }
   };
 
-  // Add double click (desktop only) to reset zoom or toggle fullscreen
+  // Double clic sur ordinateur pour avancer ou reculer.
   const handleDoubleTap = (e: React.MouseEvent<HTMLDivElement>) => {
     const target = e.target as HTMLElement;
     // Si clic sur bouton, icône, barre de contrôle, menu paramètres, barre de progression, poster, on ignore
@@ -11182,9 +11073,11 @@ const HLSPlayer = forwardRef<HLSPlayerRef, HLSPlayerProps>(({
 
     // On mobile, don't use double click; it's handled by touch logic
     if (isTouchDevice) return;
-    const touch = e as unknown as React.TouchEvent;
-    const containerWidth = containerRef.current?.clientWidth || 0;
-    const isLeft = ((touch.touches[0] as any)?.clientX || 0) < containerWidth / 2;
+    // MouseEvent : pas de `touches` (lire touches[0] ici plantait chaque
+    // double-clic desktop). La position vient de clientX, relative au conteneur.
+    const rect = containerRef.current?.getBoundingClientRect();
+    const containerWidth = rect?.width || 0;
+    const isLeft = e.clientX - (rect?.left ?? 0) < containerWidth / 2;
     if (isLeft) {
       skipTime(-10);
     } else {
@@ -11227,10 +11120,10 @@ const HLSPlayer = forwardRef<HLSPlayerRef, HLSPlayerProps>(({
       onClickCapture={handlePlayerControlInteractionCapture}
       onChangeCapture={handlePlayerControlInteractionCapture}
       onClick={handleVideoClick}
-      onTouchStart={handleZoomTouchStart}
-      onTouchMove={handleZoomTouchMove}
+      onTouchStart={handleVideoTouchStart}
+      onTouchMove={handleVideoTouchMove}
       onTouchEndCapture={handlePlayerControlInteractionCapture}
-      onTouchEnd={handleZoomTouchEnd}
+      onTouchEnd={handleVideoTouchEnd}
       onDoubleClick={handleDoubleTap}
     >
       <CastRelayDisclosure
@@ -11288,22 +11181,39 @@ const HLSPlayer = forwardRef<HLSPlayerRef, HLSPlayerProps>(({
             </div>
           </div>
 
-          {castStatus.errorCode === 'MOVIX_RELAY_RELOAD_REQUIRED' && (
+          {castStatus.errorCode && (
             <div
               role="alert"
-              className="absolute left-4 right-4 top-20 z-30 mx-auto max-w-xl rounded-xl border border-amber-300/40 bg-black/90 p-4 text-center shadow-2xl"
+              className="relative z-30 mx-4 mt-2 max-w-xl flex-none self-center rounded-xl border border-amber-300/40 bg-black/90 p-4 text-center shadow-2xl"
             >
               <p className="text-sm font-semibold text-white sm:text-base">
-                {t('watch.castRelayReloadRequired')}
+                {t(getCastRelayErrorTranslationKey(castStatus.errorCode))}
               </p>
-              <button
+              {castStatus.errorCode === 'MOVIX_RELAY_RELOAD_REQUIRED' && <button
                 type="button"
                 onClick={() => window.location.reload()}
                 className="mt-3 rounded-lg bg-amber-400 px-4 py-2 text-sm font-bold text-black transition-colors hover:bg-amber-300"
               >
                 {t('watch.reloadToRetry')}
-              </button>
+              </button>}
             </div>
+          )}
+
+          {typeof window.MovixAndroidCast?.copyDiagnostics === 'function' && (
+            <button
+              type="button"
+              onClick={async () => {
+                try {
+                  await window.MovixAndroidCast?.copyDiagnostics?.();
+                  toast.success(t('common.copied'));
+                } catch {
+                  toast.error(t('watch.castCopyLogsFailed'));
+                }
+              }}
+              className="relative z-30 mx-auto mt-2 min-h-11 flex-none rounded-lg border border-white/30 bg-black/80 px-4 py-2 text-sm font-semibold text-white hover:bg-black focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-white"
+            >
+              {t('watch.castCopyLogs')}
+            </button>
           )}
 
           {/* Dim overlay over the backdrop (no blur) */}
@@ -11500,21 +11410,17 @@ const HLSPlayer = forwardRef<HLSPlayerRef, HLSPlayerProps>(({
           </div>
         </div>
       )}
-      {/* Video Player Element with zoom transform */}
+      {/* Video Player Element */}
       {!isCasting && (
         <div
           ref={videoWrapperRef}
           className="w-full h-full relative"
-          style={{
-            transformOrigin: 'center center',
-            willChange: 'transform'
-          }}
         >
           <video
             ref={videoRef}
-            className={`w-full h-full ${getVideoObjectFitClass()} ${className} ${!isPlaying ? 'grayscale' : ''} ${isPipActive ? '' : 'subtitles-disabled'} transition-all duration-500 ${isFullscreenAnimating ? 'z-[9999] scale-[1.04] grayscale bg-black' : ''} ${shouldHideCursor ? 'cursor-none' : ''}`}
+            className={`w-full h-full ${getVideoObjectFitClass()} ${className} ${!isPlaying && pauseGrayscaleEnabled ? 'grayscale' : ''} ${isPipActive ? '' : 'subtitles-disabled'} transition-all duration-500 ${isFullscreenAnimating ? 'z-[9999] scale-[1.04] grayscale bg-black' : ''} ${shouldHideCursor ? 'cursor-none' : ''}`}
             style={{
-              filter: !isPlaying ? undefined : (videoOledMode !== 'off' ? getVideoOledFilter() : undefined),
+              filter: !isPlaying && pauseGrayscaleEnabled ? undefined : (videoOledMode !== 'off' ? getVideoOledFilter() : undefined),
               transition: 'filter 0.5s ease'
             }}
             playsInline
@@ -11663,27 +11569,6 @@ const HLSPlayer = forwardRef<HLSPlayerRef, HLSPlayerProps>(({
             </div>
           </div>
         </div>
-      )}
-
-      {/* Zoom indicator - top center with reset button */}
-      {zoomState.isZoomed && (
-        <motion.div
-          initial={{ opacity: 0, scale: 0.8, y: -20 }}
-          animate={{ opacity: 1, scale: 1, y: 0 }}
-          exit={{ opacity: 0, scale: 0.8, y: -20 }}
-          className="absolute top-4 left-1/2 transform -translate-x-1/2 bg-black/90 backdrop-blur-sm text-white px-4 py-3 rounded-xl z-50 shadow-2xl border border-white/20 flex items-center gap-3"
-        >
-          <span className="text-lg font-bold">{t('watch.zoomValue', { value: Math.round(zoomState.scale * 100) })}</span>
-          <button
-            onClick={resetZoom}
-            className="bg-red-600 hover:bg-red-500 text-white text-xs font-medium px-3 py-1.5 rounded-lg transition-colors flex items-center gap-1"
-          >
-            <svg className="w-3 h-3" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" />
-            </svg>
-            {t('common.reset')}
-          </button>
-        </motion.div>
       )}
 
       {/* Touch Left Tap Animation - Crunchyroll style overlay */}
@@ -13079,6 +12964,8 @@ const HLSPlayer = forwardRef<HLSPlayerRef, HLSPlayerProps>(({
             resetSubtitleAppearance,
             playbackSpeed,
             handlePlaybackSpeedChange,
+            pauseGrayscaleEnabled,
+            handlePauseGrayscaleChange,
             saveProgressEnabled,
             setSaveProgressEnabled,
             autoNextEpisodeEnabled,
@@ -13119,8 +13006,6 @@ const HLSPlayer = forwardRef<HLSPlayerRef, HLSPlayerProps>(({
             videoRef,
             videoAspectRatio,
             setVideoAspectRatio,
-            zoomState,
-            resetZoom,
             priorityCategory,
           }}
         />
