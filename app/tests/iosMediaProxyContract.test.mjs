@@ -78,6 +78,8 @@ async function loadBridge({ platform = 'ios', openResult = validIOSLocalURL(2812
         // Journal de diagnostic : inerte ici, il ne doit rien changer au pont.
         return { recordJournalEntry: noop };
       }
+      if (specifier === './diagnosticReport') return { recordCastDiagnostic: noop, diagnosticErrorCode: (_error, fallback) => fallback, diagnosticErrorDetails: (_error, fallback) => fallback };
+      if (specifier === './diagnostics') return { copyDiagnostics: asyncNoop };
       throw new Error(`Unexpected bridge dependency: ${specifier}`);
     },
     AbortController,

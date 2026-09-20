@@ -1,20 +1,45 @@
 /**
  * Download routes module.
  * Extracted from server.js -- handles film/series download link retrieval,
- * m3u8 extraction, Darkibox premium, cache deletion, and anime cache.
+ * m3u8 extraction, and Darkibox premium.
  *
  * Mounted at /api  (paths below are relative to that prefix).
  */
 
 const express = require('express');
 const router = express.Router();
-const path = require('path');
-const fsp = require('fs').promises;
 const axios = require('axios');
-const { generateCacheKey, ANIME_SAMA_CACHE_DIR, getCacheRefreshInfo } = require('../utils/cacheManager');
+const { generateCacheKey } = require('../utils/cacheManager');
+const { createSingleFlight } = require('../utils/singleFlight');
+const { mapWithConcurrency, axiosGetWithDeadline } = require('../utils/downloadM3u8');
 
 // TTL for empty download results ({"sources":[]}) to avoid repeated ~20s m3u8 re-extractions
 const EMPTY_RESULT_CACHE_TTL_MS = 2 * 60 * 60 * 1000;
+const M3U8_CACHE_EXPIRY_MS = 8 * 60 * 60 * 1000;
+const DOWNLOAD_EXTRACTION_CONCURRENCY = 4;
+const DOWNLOAD_REFRESH_FAILURE_COOLDOWN_MS = 2 * 60 * 1000;
+const DOWNLOAD_REFRESH_STATE_LIMIT = 500;
+const runDownloadRefresh = createSingleFlight();
+const downloadRefreshCooldowns = new Map();
+
+function rememberDownloadCooldown(cacheKey) {
+  const now = Date.now();
+  for (const [key, until] of downloadRefreshCooldowns) {
+    if (until <= now) downloadRefreshCooldowns.delete(key);
+  }
+  if (downloadRefreshCooldowns.has(cacheKey)) downloadRefreshCooldowns.delete(cacheKey);
+  downloadRefreshCooldowns.set(cacheKey, now + DOWNLOAD_REFRESH_FAILURE_COOLDOWN_MS);
+  while (downloadRefreshCooldowns.size > DOWNLOAD_REFRESH_STATE_LIMIT) downloadRefreshCooldowns.delete(downloadRefreshCooldowns.keys().next().value);
+}
+
+function hasDownloadCooldown(cacheKey) {
+  const until = downloadRefreshCooldowns.get(cacheKey) || 0;
+  if (until <= Date.now()) {
+    downloadRefreshCooldowns.delete(cacheKey);
+    return false;
+  }
+  return true;
+}
 
 // ---------------------------------------------------------------------------
 // Dependencies injected via configure()
@@ -137,13 +162,8 @@ const validateM3u8Url = async (m3u8Url, _useProxy = false, logContext = {}) => {
 };
 
 const extractM3u8Url = async (darkiboxUrl, logContext = {}) => {
-  let timeoutId;
   try {
-    const axiosPromise = axios.get(darkiboxUrl);
-    const timeoutPromise = new Promise((_, reject) =>
-      { timeoutId = setTimeout(() => reject(new Error('Request timed out (manual)')), 4500); }
-    );
-    const response = await Promise.race([axiosPromise, timeoutPromise]);
+    const response = await axiosGetWithDeadline(axios, darkiboxUrl);
     const htmlContent = response.data;
     const playerConfigMatch = htmlContent.match(/sources:\s*\[\s*{\s*src:\s*"([^"]+)"/);
     if (playerConfigMatch && playerConfigMatch[1]) {
@@ -160,10 +180,61 @@ const extractM3u8Url = async (darkiboxUrl, logContext = {}) => {
     return null;
   } catch (_error) {
     return null;
-  } finally {
-    if (timeoutId) clearTimeout(timeoutId);
   }
 };
+
+function shouldRefreshM3u8Cache(cachedData, now = Date.now()) {
+  if (!cachedData || cachedData.sources === undefined) return false;
+  if (cachedData.emptyResultTimestamp && now - cachedData.emptyResultTimestamp < EMPTY_RESULT_CACHE_TTL_MS) return false;
+  const hasValidSources = Array.isArray(cachedData.sourcesWithM3u8) && cachedData.sourcesWithM3u8.some(source => source.m3u8);
+  return !cachedData.m3u8Timestamp || now - cachedData.m3u8Timestamp > M3U8_CACHE_EXPIRY_MS || !hasValidSources;
+}
+
+async function refreshM3u8Cache(cacheKey, requestContext = {}) {
+  if (hasDownloadCooldown(cacheKey)) {
+    return getFromCacheNoExpiration(DARKINOS_CACHE_DIR, cacheKey);
+  }
+
+  return runDownloadRefresh(cacheKey, async () => {
+    const cachedData = await getFromCacheNoExpiration(DARKINOS_CACHE_DIR, cacheKey);
+    // Recheck freshness after joining the common task: another operation may have published it.
+    if (!shouldRefreshM3u8Cache(cachedData)) return cachedData;
+    if (hasDownloadCooldown(cacheKey)) return cachedData;
+
+    const sources = Array.isArray(cachedData.sources) ? cachedData.sources : [];
+    const previousValidSources = Array.isArray(cachedData.sourcesWithM3u8)
+      ? cachedData.sourcesWithM3u8.filter(source => source.m3u8)
+      : [];
+    const sourcesWithM3u8 = await mapWithConcurrency(sources, DOWNLOAD_EXTRACTION_CONCURRENCY, async (source, sourceIndex) => {
+      const m3u8Result = await extractM3u8Url(source.src, { ...requestContext, phase: 'cache_reextract', sourceIndex });
+      if (m3u8Result) return { ...source, m3u8: m3u8Result.url, quality: m3u8Result.quality || source.quality };
+      return { ...source, m3u8: null };
+    });
+    const validSources = sourcesWithM3u8.filter(source => source.m3u8);
+
+    // Une panne de ré-extraction ne doit ni effacer les liens exploitables ni provoquer une salve par requête.
+    if (validSources.length === 0 && previousValidSources.length > 0) {
+      rememberDownloadCooldown(cacheKey);
+      return cachedData;
+    }
+
+    const newCacheData = { ...cachedData, sourcesWithM3u8, m3u8Timestamp: Date.now() };
+    if (validSources.length === 0) newCacheData.emptyResultTimestamp = Date.now();
+    else delete newCacheData.emptyResultTimestamp;
+    try {
+      const saved = await saveToCache(DARKINOS_CACHE_DIR, cacheKey, newCacheData);
+      if (saved === false) {
+        rememberDownloadCooldown(cacheKey);
+        return cachedData;
+      }
+    } catch {
+      rememberDownloadCooldown(cacheKey);
+      return cachedData;
+    }
+    downloadRefreshCooldowns.delete(cacheKey);
+    return newCacheData;
+  });
+}
 
 const deduplicateSourcesWithPreference = (sources = []) => {
   const normalizeLang = (value) => (typeof value === 'string' ? value.trim().toLowerCase() : '');
@@ -213,8 +284,7 @@ router.get('/films/download/:id', async (req, res) => {
   try {
     const { id } = req.params;
     const cacheKey = generateCacheKey(`films_download_${id}`);
-    const cachedData = await getFromCacheNoExpiration(DARKINOS_CACHE_DIR, cacheKey);
-    const M3U8_CACHE_EXPIRY = 8 * 60 * 60 * 1000; // 8 hours in milliseconds
+    let cachedData = await getFromCacheNoExpiration(DARKINOS_CACHE_DIR, cacheKey);
 
     if (cachedData && cachedData.sources !== undefined) {
       const now = Date.now();
@@ -222,65 +292,8 @@ router.get('/films/download/:id', async (req, res) => {
       if (cachedData.emptyResultTimestamp && (now - cachedData.emptyResultTimestamp < EMPTY_RESULT_CACHE_TTL_MS)) {
         return res.status(200).json({ sources: [] });
       }
-      const needM3u8Refresh = !cachedData.m3u8Timestamp || (now - cachedData.m3u8Timestamp > M3U8_CACHE_EXPIRY);
-      let sourcesWithM3u8;
-      if (!needM3u8Refresh && cachedData.sourcesWithM3u8) {
-        sourcesWithM3u8 = cachedData.sourcesWithM3u8;
-        const validSources = sourcesWithM3u8.filter(source => source.m3u8);
-        if (validSources.length === 0) {
-          // Aucun m3u8 valide dans le cache, on force la re-extraction
-          sourcesWithM3u8 = await Promise.all(
-            cachedData.sources.map(async (source, idx) => {
-              const m3u8Result = await extractM3u8Url(source.src);
-              if (m3u8Result) {
-                return {
-                  ...source,
-                  m3u8: m3u8Result.url,
-                  quality: m3u8Result.quality || source.quality
-                };
-              }
-              return { ...source, m3u8: null };
-            })
-          );
-          const newCacheData = {
-            ...cachedData,
-            sourcesWithM3u8: sourcesWithM3u8,
-            m3u8Timestamp: Date.now()
-          };
-          if (sourcesWithM3u8.filter(s => s.m3u8).length === 0) {
-            newCacheData.emptyResultTimestamp = Date.now();
-          } else {
-            delete newCacheData.emptyResultTimestamp;
-          }
-          await saveToCache(DARKINOS_CACHE_DIR, cacheKey, newCacheData);
-        }
-      } else {
-        sourcesWithM3u8 = await Promise.all(
-          cachedData.sources.map(async (source, idx) => {
-            const m3u8Result = await extractM3u8Url(source.src);
-            if (m3u8Result) {
-              return {
-                ...source,
-                m3u8: m3u8Result.url,
-                quality: m3u8Result.quality || source.quality
-              };
-            }
-            return { ...source, m3u8: null };
-          })
-        );
-        const newCacheData = {
-          ...cachedData,
-          sourcesWithM3u8: sourcesWithM3u8,
-          m3u8Timestamp: Date.now()
-        };
-        if (sourcesWithM3u8.filter(s => s.m3u8).length === 0) {
-          newCacheData.emptyResultTimestamp = Date.now();
-        } else {
-          delete newCacheData.emptyResultTimestamp;
-        }
-        await saveToCache(DARKINOS_CACHE_DIR, cacheKey, newCacheData);
-      }
-      const dedupedSources = deduplicateSourcesWithPreference(sourcesWithM3u8);
+      if (shouldRefreshM3u8Cache(cachedData, now)) cachedData = await refreshM3u8Cache(cacheKey, { route: 'films_download', id, cacheKey });
+      const dedupedSources = deduplicateSourcesWithPreference(cachedData.sourcesWithM3u8 || []);
       // Filtrer les sources avec m3u8: null avant de retourner
       const filteredSources = dedupedSources.filter(source => source.m3u8);
       // Retourner les sources dedupliquees et filtrees
@@ -393,8 +406,7 @@ router.get('/series/download/:titleId/season/:seasonId/episode/:episodeId', asyn
     cacheKey
   };
   try {
-    const cachedData = await getFromCacheNoExpiration(DARKINOS_CACHE_DIR, cacheKey);
-    const M3U8_CACHE_EXPIRY = 8 * 60 * 60 * 1000;
+    let cachedData = await getFromCacheNoExpiration(DARKINOS_CACHE_DIR, cacheKey);
 
     if (cachedData && cachedData.sources !== undefined) {
       const now = Date.now();
@@ -402,59 +414,10 @@ router.get('/series/download/:titleId/season/:seasonId/episode/:episodeId', asyn
       if (cachedData.emptyResultTimestamp && (now - cachedData.emptyResultTimestamp < EMPTY_RESULT_CACHE_TTL_MS)) {
         return res.status(200).json({ sources: [] });
       }
-      const needM3u8Refresh = !cachedData.m3u8Timestamp ||
-        (now - cachedData.m3u8Timestamp > M3U8_CACHE_EXPIRY);
-
-      let sourcesWithM3u8;
-      let validSources = [];
-
-      if (!needM3u8Refresh && cachedData.sourcesWithM3u8) {
-        sourcesWithM3u8 = cachedData.sourcesWithM3u8;
-        validSources = sourcesWithM3u8.filter(source => source.m3u8);
-      }
-
-      if (needM3u8Refresh || validSources.length === 0) {
-        sourcesWithM3u8 = await Promise.all(
-          cachedData.sources.map(async (source, sourceIndex) => {
-            const m3u8Result = await extractM3u8Url(source.src, {
-              ...requestContext,
-              phase: 'cache_reextract',
-              sourceIndex
-            });
-            if (m3u8Result) {
-              return {
-                ...source,
-                m3u8: m3u8Result.url,
-                quality: m3u8Result.quality || source.quality
-              };
-            }
-            return { ...source, m3u8: null };
-          })
-        );
-
-        const newCacheData = {
-          ...cachedData,
-          sourcesWithM3u8: sourcesWithM3u8,
-          m3u8Timestamp: Date.now()
-        };
-        validSources = sourcesWithM3u8.filter(source => source.m3u8);
-        if (validSources.length === 0) {
-          newCacheData.emptyResultTimestamp = Date.now();
-        } else {
-          delete newCacheData.emptyResultTimestamp;
-        }
-        await saveToCache(DARKINOS_CACHE_DIR, cacheKey, newCacheData);
-      }
-
+      if (shouldRefreshM3u8Cache(cachedData, now)) cachedData = await refreshM3u8Cache(cacheKey, requestContext);
+      const validSources = (cachedData.sourcesWithM3u8 || []).filter(source => source.m3u8);
       const dedupedSources = deduplicateSourcesWithPreference(validSources);
       const filteredSources = dedupedSources.filter(source => source.m3u8);
-      const cachedSourceCount = Array.isArray(cachedData.sources) ? cachedData.sources.length : 0;
-      const cachedSourcesWithM3u8Count = Array.isArray(cachedData.sourcesWithM3u8) ? cachedData.sourcesWithM3u8.length : 0;
-      const cacheRefreshInfo = await getCacheRefreshInfo(DARKINOS_CACHE_DIR, cacheKey);
-      const shouldRefreshCacheNow = cacheRefreshInfo.shouldRefreshNow;
-      const refreshSummary = shouldRefreshCacheNow
-        ? 'refresh possible immediatement'
-        : `refresh possible dans ${cacheRefreshInfo.refreshInMinutes} min (${cacheRefreshInfo.refreshAvailableAt})`;
       // If result is empty, we've just saved emptyResultTimestamp above -- return empty and let TTL block retries
       const shouldForceLiveRefetch = false;
       if (!shouldForceLiveRefetch) {
@@ -606,44 +569,6 @@ router.get('/titles/:id/download', async (_req, res) => {
     error: 'gone',
     message: 'Hydracker /titles/{id}/download désactivé. Utilise /api/darkiworld/download/:type/:id.'
   });
-});
-
-// ---------------------------------------------------------------------------
-// DELETE /films/download/:id/cache  -- delete film download cache
-// ---------------------------------------------------------------------------
-router.delete('/films/download/:id/cache', async (req, res) => {
-  try {
-    const { id } = req.params;
-    const cacheKey = generateCacheKey(`films_download_${id}`);
-    const cacheFile = path.join(DARKINOS_CACHE_DIR, `${cacheKey}.json`);
-    await fsp.unlink(cacheFile);
-    return res.status(200).json({ success: true, message: `Cache film ${id} supprime.` });
-  } catch (err) {
-    if (err.code === 'ENOENT') {
-      return res.status(404).json({ success: false, error: 'Cache introuvable.' });
-    }
-    console.error('Erreur suppression cache film :', err);
-    return res.status(500).json({ success: false, error: 'Erreur serveur.' });
-  }
-});
-
-// ---------------------------------------------------------------------------
-// DELETE /series/download/:titleId/season/:seasonId/episode/:episodeId/cache
-// ---------------------------------------------------------------------------
-router.delete('/series/download/:titleId/season/:seasonId/episode/:episodeId/cache', async (req, res) => {
-  try {
-    const { titleId, seasonId, episodeId } = req.params;
-    const cacheKey = generateCacheKey(`series_download_${titleId}_${seasonId}_${episodeId}`);
-    const cacheFile = path.join(DARKINOS_CACHE_DIR, `${cacheKey}.json`);
-    await fsp.unlink(cacheFile);
-    return res.status(200).json({ success: true, message: `Cache episode ${titleId}/${seasonId}/${episodeId} supprime.` });
-  } catch (err) {
-    if (err.code === 'ENOENT') {
-      return res.status(404).json({ success: false, error: 'Cache introuvable.' });
-    }
-    console.error('Erreur suppression cache episode :', err);
-    return res.status(500).json({ success: false, error: 'Erreur serveur.' });
-  }
 });
 
 // ---------------------------------------------------------------------------

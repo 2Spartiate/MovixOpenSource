@@ -372,15 +372,17 @@ const Home: React.FC = () => {
       setStreamingPlatformsHidden(localStorage.getItem('settings_hide_streaming_platforms') === 'true');
     };
     const handleStorageChange = (event: StorageEvent) => {
-      if (event.key === 'settings_hide_streaming_platforms') {
+      if (event.key === 'settings_hide_streaming_platforms' || event.key === null) {
         syncStreamingPlatformsVisibility();
       }
     };
 
     window.addEventListener('streaming_platforms_visibility_changed', syncStreamingPlatformsVisibility);
+    window.addEventListener('sync_storage_updated', syncStreamingPlatformsVisibility);
     window.addEventListener('storage', handleStorageChange);
     return () => {
       window.removeEventListener('streaming_platforms_visibility_changed', syncStreamingPlatformsVisibility);
+      window.removeEventListener('sync_storage_updated', syncStreamingPlatformsVisibility);
       window.removeEventListener('storage', handleStorageChange);
     };
   }, []);

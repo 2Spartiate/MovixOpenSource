@@ -2,7 +2,8 @@ import React, { useState, useMemo, useEffect, useRef } from 'react';
 import { useNavigate, useLocation } from 'react-router-dom';
 import { Search as SearchIcon, Loader, Filter, Star, Calendar, User, Film, Award, X, LayoutGrid, List, ExternalLink, Globe, Tag, Sparkles, Tv, ArrowUpDown, ChevronDown, ChevronUp } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
-import { useSearch, SortByOption } from '../context/SearchContext';
+import { useSearch, SortByOption, MIN_VOTE_COUNT_WHEN_RATING_MATTERS } from '../context/SearchContext';
+import { hasUsefulContent, isReleased } from '../utils/searchResultFilters';
 import { motion, AnimatePresence } from 'framer-motion';
 import { SquareBackground } from '../components/ui/square-background';
 import ShinyText from '../components/ui/shiny-text';
@@ -23,21 +24,9 @@ type ViewType = 'grid' | 'list';
 
 const POSTER_FALLBACK = 'data:image/svg+xml;utf8,<svg xmlns="http://www.w3.org/2000/svg" width="90" height="135" viewBox="0 0 90 135"><rect width="90" height="135" fill="%231a1a1a"/><text x="50%" y="50%" dominant-baseline="middle" text-anchor="middle" fill="%23ffffff66" font-family="Arial, sans-serif" font-size="10">No Image</text></svg>';
 
-// Pure helpers hoisted out of <Search/> so they aren't recreated each render.
-// `isReleased` previously called `new Date()` per item per filter pass — with
-// 60 results × 2 filter passes that's 120 Date allocations per keystroke
-// flow on top of everything else. — perf
-const isReleased = (item: SearchResult) => {
-    const dateStr = item.release_date || item.first_air_date;
-    if (!dateStr) return false;
-    const today = Date.now();
-    const releaseDate = new Date(dateStr).getTime();
-    return releaseDate <= today;
-};
-
-const hasUsefulContent = (item: SearchResult) => {
-    return Boolean(item.overview && item.overview.trim().length > 0);
-};
+// `isReleased` / `hasUsefulContent` vivent dans utils/searchResultFilters :
+// le contexte applique les mêmes critères à la requête TMDB, cette page ne
+// fait que les réappliquer instantanément à la liste affichée.
 
 // Reusable pagination component
 const PaginationBar = ({ currentPage, maxPages, onSelect }: { currentPage: number; maxPages: number; onSelect: (n: number) => void }) => {
@@ -150,6 +139,12 @@ const Search: React.FC = () => {
         loadingProviders,
         sortBy,
         setSortBy,
+        filterUnreleased,
+        setFilterUnreleased,
+        filterNoContent,
+        setFilterNoContent,
+        filterLowVotes,
+        setFilterLowVotes,
         ensureFiltersLoaded,
     } = useSearch();
 
@@ -214,12 +209,21 @@ const Search: React.FC = () => {
     // Limit maximum pages to 500 (TMDB API limitation)
     const maxPages = useMemo(() => Math.min(totalPages, 500), [totalPages]);
 
-    // New filter states
-    const [filterUnreleased, setFilterUnreleased] = useState(true);
-    const [filterNoContent, setFilterNoContent] = useState(true);
-
-    // isReleased / hasUsefulContent live at module scope below — they don't
-    // depend on component state and were previously redeclared every render.
+    // Les cases « masquer non sortis / sans synopsis / notes à peu de votes »
+    // font partie de la requête (paramètres TMDB, pool filtré pour une
+    // recherche texte) : on relance en page 1 pour que la pagination suive.
+    const filterTogglesKey = `${filterUnreleased}|${filterNoContent}|${filterLowVotes}`;
+    const filterTogglesRef = useRef(filterTogglesKey);
+    useEffect(() => {
+        if (filterTogglesRef.current === filterTogglesKey) return;
+        filterTogglesRef.current = filterTogglesKey;
+        if (totalPages === 0 && results.length === 0) return;
+        const currentParams = new URLSearchParams(location.search);
+        currentParams.set('page', '1');
+        navigate(`/search?${currentParams.toString()}`);
+        performSearch(1, true);
+        // eslint-disable-next-line react-hooks/exhaustive-deps
+    }, [filterTogglesKey]);
 
     // Memoized filtered results
     const filteredResults = useMemo(() => {
@@ -802,6 +806,16 @@ const Search: React.FC = () => {
                                                 label={t('search.hideNoContent')}
                                                 className="w-full md:w-auto"
                                             />
+                                            {/* N'a d'effet que si la note entre en jeu (filtre ou tri). */}
+                                            {(minRating > 0 || sortBy.startsWith('vote_average')) && (
+                                                <CustomCheckbox
+                                                    checked={filterLowVotes}
+                                                    onChange={setFilterLowVotes}
+                                                    icon={<Award className="w-4 h-4 text-blue-400" />}
+                                                    label={t('search.hideLowVotes', { min: MIN_VOTE_COUNT_WHEN_RATING_MATTERS })}
+                                                    className="w-full md:w-auto"
+                                                />
+                                            )}
                                         </motion.div>
 
                                         {/* Category Presets */}
@@ -1249,7 +1263,20 @@ const Search: React.FC = () => {
                         <div className="flex flex-col items-center justify-center py-20">
                             <Film className="w-16 h-16 text-white opacity-10 mb-4" />
                             <p className="text-white/40">{t('search.noResults')}</p>
-                            <p className="text-white/40 text-sm mt-2">{t('search.modifyCriteria')}</p>
+                            <p className="text-white/40 text-sm mt-2">
+                                {maxPages > 1 ? t('search.emptyPageHint') : t('search.modifyCriteria')}
+                            </p>
+                            {/* Une page peut être vide après filtrage client (sans affiche,
+                                sans synopsis, non sorti) : on garde la pagination pour ne
+                                pas forcer l'utilisateur à recommencer sa recherche. */}
+                            {maxPages > 1 && (
+                                <div className="w-full mt-6">
+                                    <p className="text-sm text-white/40 text-center mb-2">
+                                        {t('search.pageXOfY', { current: Math.max(page > 1 ? page - 1 : 1, 1), total: maxPages })}
+                                    </p>
+                                    <PaginationBar currentPage={page} maxPages={maxPages} onSelect={handlePageSelect} />
+                                </div>
+                            )}
                         </div>
                     ) : (
                         <motion.div

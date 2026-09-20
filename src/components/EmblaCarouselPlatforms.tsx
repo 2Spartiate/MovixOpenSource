@@ -1,3 +1,4 @@
+import { useLightMode } from '@/context/LightModeContext';
 import React, { useCallback, useEffect, useState } from 'react';
 import useEmblaCarousel from 'embla-carousel-react';
 import { ChevronLeft, ChevronRight } from 'lucide-react';
@@ -20,13 +21,14 @@ interface EmblaCarouselPlatformsProps {
 
 const EmblaCarouselPlatforms: React.FC<EmblaCarouselPlatformsProps> = ({ title, items }) => {
   const { t } = useTranslation();
+  const { effectivePrefs } = useLightMode();
   const [emblaRef, emblaApi] = useEmblaCarousel({
     align: 'start',
     dragFree: true,
     containScroll: 'keepSnaps',
     slidesToScroll: 1,
     skipSnaps: false,
-    duration: 25,
+    duration: effectivePrefs.transitions ? 25 : 0,
     loop: false
   });
   const [canScrollPrev, setCanScrollPrev] = useState(false);
@@ -66,11 +68,11 @@ const EmblaCarouselPlatforms: React.FC<EmblaCarouselPlatformsProps> = ({ title, 
     try {
       const current = emblaApi.selectedScrollSnap();
       const target = Math.max(0, current - getStep());
-      emblaApi.scrollTo(target);
+      emblaApi.scrollTo(target, !effectivePrefs.transitions);
     } catch (_) {
-      emblaApi.scrollPrev();
+      emblaApi.scrollPrev(!effectivePrefs.transitions);
     }
-  }, [emblaApi, getStep]);
+  }, [emblaApi, getStep, effectivePrefs.transitions]);
 
   const handleNext = useCallback((e?: React.MouseEvent) => {
     if (e) { e.preventDefault(); e.stopPropagation(); }
@@ -79,11 +81,11 @@ const EmblaCarouselPlatforms: React.FC<EmblaCarouselPlatformsProps> = ({ title, 
       const current = emblaApi.selectedScrollSnap();
       const snaps = emblaApi.scrollSnapList().length;
       const target = Math.min(snaps - 1, current + getStep());
-      emblaApi.scrollTo(target);
+      emblaApi.scrollTo(target, !effectivePrefs.transitions);
     } catch (_) {
-      emblaApi.scrollNext();
+      emblaApi.scrollNext(!effectivePrefs.transitions);
     }
-  }, [emblaApi, getStep]);
+  }, [emblaApi, getStep, effectivePrefs.transitions]);
 
   return (
     <div className="w-full relative group/carousel -mx-3 md:-mx-4">
@@ -101,6 +103,7 @@ const EmblaCarouselPlatforms: React.FC<EmblaCarouselPlatformsProps> = ({ title, 
                   <div
                     className="w-full h-full relative bg-white rounded-xl"
                     onMouseEnter={() => {
+                      if (!effectivePrefs.bgAnimations) return;
                       if (!platform.video?.endsWith('.gif')) {
                         const video = document.getElementById(`video-${platform.id}`) as HTMLVideoElement | null;
                         if (video) {
@@ -131,7 +134,7 @@ const EmblaCarouselPlatforms: React.FC<EmblaCarouselPlatformsProps> = ({ title, 
                     <img
                       src={platform.src}
                       alt={platform.alt}
-                      className="w-full h-full object-contain p-8 group-hover:opacity-0 transition-opacity duration-300"
+                      className={`w-full h-full object-contain p-8 ${effectivePrefs.bgAnimations && platform.video ? 'group-hover:opacity-0 transition-opacity duration-300' : ''}`}
                       draggable="false"
                       loading="lazy"
                       decoding="async"
@@ -141,7 +144,7 @@ const EmblaCarouselPlatforms: React.FC<EmblaCarouselPlatformsProps> = ({ title, 
                         {platform.label}
                       </p>
                     )}
-                    {platform.video && (
+                    {effectivePrefs.bgAnimations && platform.video && (
                       platform.video.endsWith('.gif') ? (
                         <img
                           id={`video-${platform.id}`}
@@ -211,5 +214,4 @@ const EmblaCarouselPlatforms: React.FC<EmblaCarouselPlatformsProps> = ({ title, 
 };
 
 export default React.memo(EmblaCarouselPlatforms);
-
 

@@ -15,6 +15,30 @@ import org.robolectric.annotation.Config
 @Config(sdk = [35])
 class MediaProxySessionStoreTest {
     @Test
+    fun capacityEvictsUnacceptedSessionsWithoutEvictingTheActiveCast() {
+        var now = 1_000L
+        val store = MediaProxySessionStore(now = { now }, idleTtlMs = 1_000L, maxSessions = 2)
+        val access = MediaProxySessionAccess.castLan(
+            java.net.InetAddress.getByName("192.168.1.2"),
+            java.net.InetAddress.getByName("192.168.1.8"),
+        )
+        fun create() = store.createCast(
+            "https://cdn.example/movie.mp4", "GET", emptyMap(), 28123,
+            access, CastMediaProfile.progressive("video/mp4")!!,
+        )
+        val accepted = create()
+        store.retainAcceptedCastSession(accepted.sessionId)
+        now += 1L
+        val abandoned = create()
+        val replacement = create()
+        assertNull(store.resolveCast(abandoned.sessionId, abandoned.resourceId))
+        assertTrue(store.resolveCast(accepted.sessionId, accepted.resourceId) != null)
+        now += 1_001L
+        assertNull(store.resolveCast(replacement.sessionId, replacement.resourceId))
+        assertTrue(store.resolveCast(accepted.sessionId, accepted.resourceId) != null)
+    }
+
+    @Test
     fun createsOpaqueUrlsAndResolvesRegisteredResources() {
         val tokens = ArrayDeque(
             listOf(

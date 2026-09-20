@@ -43,6 +43,7 @@
     "socket.io": "^4.8.3",
     "socks-proxy-agent": "^8.0.5",
     "sqlite3": "^5.1.7",
+    "streamed-pk-hls-stream-resolver": "https://codeload.github.com/sharoon7171/streamed-pk-hls-stream-resolver/tar.gz/7d918be84d47a924373a9304d7c8856a9daba4c6",
     "tiny-secp256k1": "^2.2.4",
     "tough-cookie": "^5.1.2",
     "uuid": "^11.1.0",

@@ -2,8 +2,20 @@ const test = require('node:test');
 const assert = require('node:assert/strict');
 const path = require('node:path');
 
-const POLICY_PATH = path.resolve(__dirname, '../../../../../config/kisskhFallbackPolicy.json');
 const CANONICAL_HOSTS = 'auto.cdnvideo11.shop,sub.cdnvideo11.shop';
+
+test('provider URL uses the configured HTTPS origin and rejects non-origin values', () => {
+  const { fromEnv } = require('../config');
+  assert.equal(fromEnv({}).providerBaseUrl, 'https://kisskh.do');
+  assert.equal(fromEnv({ KISSKH_BASE_URL: 'https://kisskh.tv/' }).providerBaseUrl, 'https://kisskh.tv');
+  for (const value of [
+    'http://kisskh.do', 'https://kisskh.do/path', 'https://kisskh.do?x=1',
+    'https://kisskh.do#hash', 'https://user:pass@kisskh.do', 'https://kisskh.do:8443',
+    'https://kisskh.do\n', 'https://127.0.0.1',
+  ]) {
+    assert.throws(() => fromEnv({ KISSKH_BASE_URL: value }), /KISSKH_BASE_URL/);
+  }
+});
 
 function enabledEnv(overrides = {}) {
   return {
@@ -17,7 +29,7 @@ function enabledEnv(overrides = {}) {
 
 test('canonical fallback policy has the exact strict shape', () => {
   const { loadFallbackPolicy } = require('../config');
-  const policy = loadFallbackPolicy(POLICY_PATH);
+  const policy = loadFallbackPolicy();
   assert.deepEqual(Object.keys(policy), ['version', 'subtitleHosts', 'maxSubtitleBytes']);
   assert.equal(policy.version, 1);
   assert.deepEqual(policy.subtitleHosts, ['auto.cdnvideo11.shop', 'sub.cdnvideo11.shop']);

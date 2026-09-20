@@ -257,6 +257,9 @@ export function buildCastShim(): string {
     };
     if (typeof raw.idleReason === 'string') status.idleReason = raw.idleReason;
     if (typeof raw.errorCode === 'string') status.errorCode = raw.errorCode;
+    if (typeof raw.nativeErrorCode === 'string' && /^[A-Z][A-Z0-9_-]{0,127}$/.test(raw.nativeErrorCode)) {
+      status.nativeErrorCode = raw.nativeErrorCode;
+    }
     return status;
   }
 
@@ -328,6 +331,9 @@ export function buildCastShim(): string {
     },
     stop: function() {
       return callNative('CASTSHIM_STOP');
+    },
+    copyDiagnostics: function() {
+      return callNative('CASTSHIM_COPY_DIAGNOSTICS');
     },
     subscribe: function(listener) {
       if (typeof listener !== 'function') return function() {};

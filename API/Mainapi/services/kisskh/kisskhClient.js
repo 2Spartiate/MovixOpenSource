@@ -7,11 +7,15 @@ const { SocksProxyAgent } = require('socks-proxy-agent');
 const { createBundleRegistry } = require('./bundleRegistry');
 const { KisskhError } = require('./errors');
 const { computeKkey } = require('./kkey');
+const { getProviderBaseUrl } = require('./config');
+const { createKisskhMetadataCache } = require('./kisskhMetadataCache');
 
 const MAX_JSON_BYTES = 2 * 1024 * 1024;
 const MAX_REDIRECTS = 5;
 const DEFAULT_TIMEOUT_MS = 10_000;
 const KISSKH_METADATA_MAX_ATTEMPTS = 3;
+const MAX_PENDING_METADATA = 12;
+const PROVIDER_RETRY_DELAY_MS = 60_000;
 const MAX_SEARCH_LENGTH = 200;
 
 function getHeader(headers, name) {
@@ -298,7 +302,8 @@ function assertPositiveId(value) {
 }
 
 function createKisskhClient(deps = {}) {
-  const allowedHostValues = deps.allowedHosts || ['kisskh.nl'];
+  const providerBaseUrl = getProviderBaseUrl(deps.baseUrl);
+  const allowedHostValues = deps.allowedHosts || [new URL(providerBaseUrl).hostname];
   if (!Array.isArray(allowedHostValues) || !allowedHostValues.length || allowedHostValues.length > 16) {
     throw new TypeError('allowlist KissKH invalide');
   }
@@ -307,7 +312,7 @@ function createKisskhClient(deps = {}) {
       || [...allowedHosts].some((host) => !/^(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z]{2,63}$/.test(host))) {
     throw new TypeError('allowlist KissKH invalide');
   }
-  const baseUrl = validateMetadataUrl(deps.baseUrl || 'https://kisskh.nl', allowedHosts);
+  const baseUrl = validateMetadataUrl(providerBaseUrl, allowedHosts);
   if (baseUrl.pathname !== '/' || baseUrl.search) throw new TypeError('baseUrl KissKH invalide');
   const proxyPolicy = deps.proxyPolicy;
   if (!proxyPolicy || ['reserve', 'reserveGlobal', 'recordSuccess', 'recordFailure', 'record429', 'assertCircuitClosed']
@@ -316,17 +321,44 @@ function createKisskhClient(deps = {}) {
   }
   const request = deps.request || createDefaultRequest();
   const resolveDns = deps.resolveDns || defaultResolveDns;
-  const bundleRegistry = deps.bundleRegistry || createBundleRegistry();
+  const bundleRegistry = deps.bundleRegistry || createBundleRegistry({ providerBaseUrl });
   const calculateKkey = deps.computeKkey || computeKkey;
   const timeout = deps.timeout === undefined ? DEFAULT_TIMEOUT_MS : deps.timeout;
   const maxAttempts = deps.maxAttempts === undefined ? KISSKH_METADATA_MAX_ATTEMPTS : deps.maxAttempts;
+  const now = deps.now || Date.now;
   if (typeof request !== 'function' || typeof resolveDns !== 'function'
+      || typeof now !== 'function'
       || !Number.isSafeInteger(timeout) || timeout <= 0
       || !Number.isSafeInteger(maxAttempts) || maxAttempts <= 0 || maxAttempts > KISSKH_METADATA_MAX_ATTEMPTS
       || typeof bundleRegistry?.resolveApprovedAlgorithm !== 'function' || typeof calculateKkey !== 'function') {
     throw new TypeError('client KissKH invalide');
   }
   const referer = `${baseUrl.origin}/`;
+  const metadataCache = deps.metadataCache || createKisskhMetadataCache({
+    redis: deps.redis,
+    now,
+    ttlMs: deps.metadataCacheTtlMs,
+    maxEntries: deps.metadataCacheMaxEntries,
+    maxBytes: deps.metadataCacheMaxBytes,
+    maxEntryBytes: deps.metadataCacheMaxEntryBytes,
+    redisTimeoutMs: deps.metadataCacheRedisTimeoutMs,
+    maxInFlight: deps.metadataCacheMaxInFlight,
+    maxRedisOperations: deps.metadataCacheMaxRedisOperations,
+  });
+  if (typeof metadataCache?.search !== 'function' || typeof metadataCache?.drama !== 'function') {
+    throw new TypeError('cache metadata KissKH invalide');
+  }
+  let pendingMetadata = 0;
+  let providerRetryAt = 0;
+
+  function providerUnavailable() {
+    providerRetryAt = now() + PROVIDER_RETRY_DELAY_MS;
+    return new KisskhError('provider_unavailable', 'KissKH indisponible');
+  }
+
+  function assertProviderAvailable() {
+    if (now() < providerRetryAt) throw new KisskhError('provider_unavailable', 'KissKH indisponible');
+  }
   async function validateDns(url) {
     let answers;
     try {
@@ -378,8 +410,23 @@ function createKisskhClient(deps = {}) {
   }
 
   async function execute(pathname) {
+    assertProviderAvailable();
+    if (pendingMetadata >= MAX_PENDING_METADATA) {
+      throw new KisskhError('provider_rate_limited', 'KissKH temporairement limite');
+    }
+    pendingMetadata += 1;
+    try {
+      const resolvedPath = typeof pathname === 'function' ? await pathname() : pathname;
+      return await executeAttempts(resolvedPath);
+    } finally {
+      pendingMetadata -= 1;
+    }
+  }
+
+  async function executeAttempts(pathname) {
     const allowImagePng = /^\/api\/DramaList\/Episode\/\d+\.png(?:\?|$)/.test(pathname);
     for (let attempt = 0; attempt < maxAttempts; attempt += 1) {
+      assertProviderAvailable();
       const proxy = await proxyPolicy.reserve();
       if (!proxy) throw new KisskhError('provider_unavailable', 'Proxy KissKH indisponible');
       let response;
@@ -390,20 +437,17 @@ function createKisskhClient(deps = {}) {
             && ['provider_rate_limited', 'provider_security'].includes(error.code)) throw error;
         const kind = error?.code === 'ETIMEDOUT' || /timeout/i.test(String(error?.message || '')) ? 'timeout' : 'transport';
         await proxyPolicy.recordFailure(proxy, kind);
-        if (attempt + 1 === maxAttempts) throw new KisskhError('provider_unavailable', 'KissKH indisponible');
+        if (attempt + 1 === maxAttempts) throw providerUnavailable();
         continue;
       }
       const status = Number(response?.status);
       if (status === 429) {
         await proxyPolicy.record429(proxy, response.headers || {});
-        if (attempt + 1 === maxAttempts) {
-          throw new KisskhError('provider_rate_limited', 'KissKH temporairement limite');
-        }
-        continue;
+        throw new KisskhError('provider_rate_limited', 'KissKH temporairement limite');
       }
       if (status === 408 || (status >= 500 && status < 600)) {
         await proxyPolicy.recordFailure(proxy, 'transport');
-        if (attempt + 1 === maxAttempts) throw new KisskhError('provider_unavailable', 'KissKH indisponible');
+        if (attempt + 1 === maxAttempts) throw providerUnavailable();
         continue;
       }
       if (status < 200 || status >= 300) {
@@ -438,15 +482,17 @@ function createKisskhClient(deps = {}) {
   }
 
   return Object.freeze({
-    async list(page = 1, pageSize = 100, type = 0) {
+    async list(page = 1, pageSize = 100, type = 0, order) {
       if (!Number.isSafeInteger(page) || page <= 0
           || !Number.isSafeInteger(pageSize) || pageSize <= 0 || pageSize > 100
-          || !Number.isSafeInteger(type) || type < 0 || type > 4) throw invalidInput();
+          || !Number.isSafeInteger(type) || type < 0 || type > 4
+          || (order !== undefined && (!Number.isSafeInteger(order) || order < 1 || order > 3))) throw invalidInput();
       const search = new URLSearchParams({
         type: String(type),
         page: String(page),
         pageSize: String(pageSize),
       });
+      if (order !== undefined) search.set('order', String(order));
       return execute(`/api/DramaList/List?${search}`);
     },
     async search(query, type = 0) {
@@ -454,18 +500,23 @@ function createKisskhClient(deps = {}) {
         throw invalidInput();
       }
       if (!Number.isSafeInteger(type) || type < 0 || type > 4) throw invalidInput();
-      const search = new URLSearchParams({ q: query.trim(), type: String(type) });
-      return execute(`/api/DramaList/Search?${search}`);
+      const normalizedQuery = query.trim();
+      const search = new URLSearchParams({ q: normalizedQuery, type: String(type) });
+      return metadataCache.search(baseUrl.origin, normalizedQuery, type,
+        () => execute(`/api/DramaList/Search?${search}`));
     },
     async getDrama(dramaId) {
       assertPositiveId(dramaId);
-      return execute(`/api/DramaList/Drama/${dramaId}?isq=false`);
+      return metadataCache.drama(baseUrl.origin, dramaId,
+        () => execute(`/api/DramaList/Drama/${dramaId}?isq=false`));
     },
     async getEpisode(episodeId) {
-      return execute(await episodePath('episode', episodeId));
+      assertPositiveId(episodeId);
+      return execute(() => episodePath('episode', episodeId));
     },
     async getSubtitles(episodeId) {
-      return execute(await episodePath('sub', episodeId));
+      assertPositiveId(episodeId);
+      return execute(() => episodePath('sub', episodeId));
     },
   });
 }

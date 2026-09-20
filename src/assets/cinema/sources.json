@@ -1,0 +1,107 @@
+[
+  {
+    "file": "popcorn.svg",
+    "library": "Phosphor Icons",
+    "source": "https://raw.githubusercontent.com/phosphor-icons/core/main/assets/fill/popcorn-fill.svg",
+    "viewBox": "0 0 256 256",
+    "sha256": "7cd386946df209cfe12e0b03b6ec37bd899ea87a7dd854cc2a283b2cf454fc78"
+  },
+  {
+    "file": "camera.svg",
+    "library": "Phosphor Icons",
+    "source": "https://raw.githubusercontent.com/phosphor-icons/core/main/assets/fill/video-camera-fill.svg",
+    "viewBox": "0 0 256 256",
+    "sha256": "36d4fc91d96202e3bf6116c0a16757fb6809e9576ea456dc20091c80148b7128"
+  },
+  {
+    "file": "clapperboard.svg",
+    "library": "Phosphor Icons",
+    "source": "https://raw.githubusercontent.com/phosphor-icons/core/main/assets/fill/film-slate-fill.svg",
+    "viewBox": "0 0 256 256",
+    "sha256": "11cb2c3d61ba880edab66a68da82d2ab376629534d112af71a8b3a9c4e4a5f5c"
+  },
+  {
+    "file": "reel.svg",
+    "library": "Phosphor Icons",
+    "source": "https://raw.githubusercontent.com/phosphor-icons/core/main/assets/fill/film-reel-fill.svg",
+    "viewBox": "0 0 256 256",
+    "sha256": "333acdbee13a2ede1dba48f7e2c7106ac0092fe143bd0de6f3c05920350eee35"
+  },
+  {
+    "file": "ticket.svg",
+    "library": "Phosphor Icons",
+    "source": "https://raw.githubusercontent.com/phosphor-icons/core/main/assets/fill/ticket-fill.svg",
+    "viewBox": "0 0 256 256",
+    "sha256": "f96646fb041a5940c7a37d586e73de9e11068f84fb667112437bacd3586f0ac8"
+  },
+  {
+    "file": "star.svg",
+    "library": "Phosphor Icons",
+    "source": "https://raw.githubusercontent.com/phosphor-icons/core/main/assets/fill/star-fill.svg",
+    "viewBox": "0 0 256 256",
+    "sha256": "86c3726a12c57f898c3556e201b6fb9ce2a1da43048d9abe94ee8a8ca45139ca"
+  },
+  {
+    "file": "filmstrip.svg",
+    "library": "Phosphor Icons",
+    "source": "https://raw.githubusercontent.com/phosphor-icons/core/main/assets/fill/film-strip-fill.svg",
+    "viewBox": "0 0 256 256",
+    "sha256": "c4952321f9ee4d6c07bde4f3f7813073471378d2e80cd2d108412d8177493bdf"
+  },
+  {
+    "file": "glasses.svg",
+    "library": "Phosphor Icons",
+    "source": "https://raw.githubusercontent.com/phosphor-icons/core/main/assets/fill/eyeglasses-fill.svg",
+    "viewBox": "0 0 256 256",
+    "sha256": "a75fda6728f68ab8f921bf9089ba7438a7563251dfc46779965fb76118867e8c"
+  },
+  {
+    "file": "seat.svg",
+    "library": "Phosphor Icons",
+    "source": "https://raw.githubusercontent.com/phosphor-icons/core/main/assets/fill/armchair-fill.svg",
+    "viewBox": "0 0 256 256",
+    "sha256": "6dcaf1b75db090702fd4352369c5ff400191e82011de1ffcaa484fc8099867f7"
+  },
+  {
+    "file": "screen.svg",
+    "library": "Phosphor Icons",
+    "source": "https://raw.githubusercontent.com/phosphor-icons/core/main/assets/fill/projector-screen-fill.svg",
+    "viewBox": "0 0 256 256",
+    "sha256": "032db688f1a175d5d1b026c2b9fd7df915326458d95d8f2811befebc8180864a"
+  },
+  {
+    "file": "trophy.svg",
+    "library": "Phosphor Icons",
+    "source": "https://raw.githubusercontent.com/phosphor-icons/core/main/assets/fill/trophy-fill.svg",
+    "viewBox": "0 0 256 256",
+    "sha256": "33be81121d57f1afdc4591e0f326a6142ce390f22e83a2f0133a510520f1f60f"
+  },
+  {
+    "file": "comedy.svg",
+    "library": "Phosphor Icons",
+    "source": "https://raw.githubusercontent.com/phosphor-icons/core/main/assets/fill/mask-happy-fill.svg",
+    "viewBox": "0 0 256 256",
+    "sha256": "2d6ef771691de1176ec9b01af381c87f65ac6dc526328c1f5d30fffb8d0bbdcb"
+  },
+  {
+    "file": "tragedy.svg",
+    "library": "Phosphor Icons",
+    "source": "https://raw.githubusercontent.com/phosphor-icons/core/main/assets/fill/mask-sad-fill.svg",
+    "viewBox": "0 0 256 256",
+    "sha256": "76a22c461f228b68cd2f69cda8b3bf092c3c2862b7f9b36091ae1370afc6b48c"
+  },
+  {
+    "file": "projector.svg",
+    "library": "MingCute",
+    "source": "https://raw.githubusercontent.com/Richard9394/MingCute/main/assets/svg/core/filled/devices/projector.svg",
+    "viewBox": "0 0 24 24",
+    "sha256": "ae3995bb3a4da2bf793ad71147244ecf3d482d57115890903f937f89d5ab8b45"
+  },
+  {
+    "file": "soda.svg",
+    "library": "MingCute",
+    "source": "https://raw.githubusercontent.com/Richard9394/MingCute/main/assets/svg/core/filled/food/glass_cup.svg",
+    "viewBox": "0 0 24 24",
+    "sha256": "3443df2210979247bbbe72c6bc5b20047eb7eb1770e3a79fef389c29f4e9cd16"
+  }
+]

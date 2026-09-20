@@ -13,7 +13,7 @@ import AnimatedBorderCard from '@/components/ui/animated-border-card';
 import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
 import { SquareBackground } from '@/components/ui/square-background';
-import { useTranslation } from 'react-i18next';
+import { Trans, useTranslation } from 'react-i18next';
 import { WATCHPARTY_API } from '../config/runtime';
 
 const MAIN_API = WATCHPARTY_API;
@@ -216,10 +216,20 @@ const WatchPartyList: React.FC = () => {
             <div className="p-4 rounded-lg bg-white/5 border border-white/5">
               <div className="flex items-center mb-2 text-red-400">
                 <Film className="h-5 w-5 mr-2" />
-                <h3 className="font-semibold text-white">{t('watchParty.vipPlayersOnly')}</h3>
+                <h3 className="font-semibold text-white">{t('watchParty.hlsPlayersOnly')}</h3>
               </div>
               <p className="text-sm text-white/60">
-                {t('watchParty.vipPlayersOnlyDesc')} <Link to="/vip" className="text-red-400 hover:text-red-300 hover:underline">{t('watchParty.vipPageLabel')}</Link>
+                {t('watchParty.hlsPlayersOnlyDesc')}
+              </p>
+              <p className="mt-2 text-sm text-white/60">
+                <Trans
+                  t={t}
+                  i18nKey="watchParty.hlsPlayersCompatibilityNote"
+                  components={{
+                    extensionLink: <Link to="/extension" className="text-red-400 underline underline-offset-2 hover:text-red-300" />,
+                    appLink: <Link to="/app" className="text-red-400 underline underline-offset-2 hover:text-red-300" />,
+                  }}
+                />
               </p>
             </div>
           </div>

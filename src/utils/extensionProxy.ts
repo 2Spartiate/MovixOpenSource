@@ -66,6 +66,6 @@ export const fetchFromExtension = <T = unknown>(
         setTimeout(() => {
             window.removeEventListener("message", handler);
             reject(new Error("Extension request timed out"));
-        }, 10000);
+        }, action === 'STREAMED_HANDSHAKE' ? 30000 : 10000);
     });
 };

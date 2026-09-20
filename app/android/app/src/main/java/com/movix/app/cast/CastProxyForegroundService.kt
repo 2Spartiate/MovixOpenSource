@@ -154,9 +154,6 @@ class CastProxyForegroundService : Service() {
                     "MovixCastDiag",
                     "prepare_failed code=${it.message?.take(80)} type=${it.javaClass.simpleName}",
                 )
-                if (activeSessionId == null) {
-                    stopRelay(CastRelayStopReason.LOAD_FAILED)
-                }
             }
             pending.callback(result)
         }
@@ -211,6 +208,7 @@ class CastProxyForegroundService : Service() {
     }
 
     internal fun replaceAcceptedSession(newSessionId: String) {
+        sessionStore?.retainAcceptedCastSession(newSessionId)
         val oldSession = activeSessionId
         if (oldSession != null && oldSession != newSessionId) {
             sessionStore?.replaceAfterAcceptedLoad(oldSession, OLD_SESSION_GRACE_MS)
@@ -220,9 +218,8 @@ class CastProxyForegroundService : Service() {
 
     internal fun discardPreparedSession(sessionId: String) {
         sessionStore?.invalidate(sessionId)
-        if (activeSessionId == null) {
-            stopRelay(CastRelayStopReason.LOAD_FAILED)
-        }
+        // Une préparation abandonnée peut terminer après le lancement de la
+        // suivante. Seul le chargement courant décide d'arrêter tout le relais.
     }
 
     internal fun stopRelay(reason: CastRelayStopReason) {

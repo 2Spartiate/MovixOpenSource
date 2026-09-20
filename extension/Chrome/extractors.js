@@ -2008,7 +2008,7 @@ async function setupHeadersForService(type, url, referer) {
         vidara: { 'Referer': 'https://vidara.to/', 'Origin': 'https://vidara.to' },
         seekstreaming: seekHeaders,
         cinep: { 'Referer': 'https://purstream.mx/', 'Origin': 'https://purstream.mx' },
-        kisskh: { 'Referer': 'https://kisskh.nl/', 'Origin': 'https://kisskh.nl' },
+        kisskh: { 'Referer': 'https://kisskh.do/', 'Origin': 'https://kisskh.do' },
     };
 
     const hdrs = headerMap[type];

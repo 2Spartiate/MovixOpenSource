@@ -1,10 +1,13 @@
 import React, { useEffect, useRef, useState } from 'react';
+import { useLightMode } from '@/context/LightModeContext';
 
 interface SnowflakeProps {
   enabled: boolean;
 }
 
-const Snowflakes: React.FC<SnowflakeProps> = ({ enabled }) => {
+const Snowflakes: React.FC<SnowflakeProps> = ({ enabled: requested }) => {
+  const { effectivePrefs } = useLightMode();
+  const enabled = requested && effectivePrefs.bgAnimations;
   // Mouse position lives in a ref so updating it does NOT re-run the effect.
   // The previous implementation kept it in state and listed it as an effect
   // dependency, so every mouse move tore down + re-installed the listener and

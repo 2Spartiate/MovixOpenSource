@@ -1,4 +1,5 @@
 import React, { useState, useEffect, useRef, useCallback, useMemo } from 'react';
+import { useLightMode } from '@/context/LightModeContext';
 import { createPortal } from 'react-dom';
 import { motion, AnimatePresence } from 'framer-motion';
 import axios from 'axios';
@@ -69,6 +70,7 @@ function getUserFavoritePosters(): string[] {
 
 const ScreenSaver: React.FC<ScreenSaverProps> = ({ isIdle, onWake }) => {
   const { t, i18n } = useTranslation();
+  const { effectivePrefs } = useLightMode();
   const [backdrops, setBackdrops] = useState<BackdropItem[]>([]);
   const [currentIndex, setCurrentIndex] = useState(0);
   const [favoritePosters, setFavoritePosters] = useState<string[]>([]);
@@ -104,7 +106,7 @@ const ScreenSaver: React.FC<ScreenSaverProps> = ({ isIdle, onWake }) => {
 
   // Carousel timer for backdrop mode
   useEffect(() => {
-    if (!isIdle || showMosaic || backdrops.length === 0) return;
+    if (!isIdle || showMosaic || backdrops.length < 2 || !effectivePrefs.bgAnimations || !effectivePrefs.carouselAutoplay) return;
 
     intervalRef.current = setInterval(() => {
       setCurrentIndex((prev) => (prev + 1) % backdrops.length);
@@ -113,7 +115,7 @@ const ScreenSaver: React.FC<ScreenSaverProps> = ({ isIdle, onWake }) => {
     return () => {
       if (intervalRef.current) clearInterval(intervalRef.current);
     };
-  }, [isIdle, showMosaic, backdrops.length]);
+  }, [isIdle, showMosaic, backdrops.length, effectivePrefs.bgAnimations, effectivePrefs.carouselAutoplay]);
 
   // Clock
   useEffect(() => {
@@ -128,18 +130,22 @@ const ScreenSaver: React.FC<ScreenSaverProps> = ({ isIdle, onWake }) => {
     updateClock();
     const clockInterval = setInterval(updateClock, 1000);
     return () => clearInterval(clockInterval);
-  }, [isIdle]);
+  }, [isIdle, i18n.language]);
 
   // Dismiss on any interaction — with wake-up animation
   const handleDismiss = useCallback(() => {
     if (isWaking) return;
+    if (!effectivePrefs.transitions) {
+      onWake();
+      return;
+    }
     setIsWaking(true);
     // Let the exit animation play before actually waking
     setTimeout(() => {
       onWake();
       setIsWaking(false);
     }, 600);
-  }, [onWake, isWaking]);
+  }, [onWake, isWaking, effectivePrefs.transitions]);
 
   // Auto-focus overlay for keyboard events
   useEffect(() => {
@@ -171,10 +177,10 @@ const ScreenSaver: React.FC<ScreenSaverProps> = ({ isIdle, onWake }) => {
           className="screensaver-overlay"
           initial={{ opacity: 0 }}
           animate={isWaking
-            ? { opacity: 0, scale: 1.05, filter: 'blur(10px)' }
+            ? { opacity: 0, scale: 1.05, filter: effectivePrefs.blurEffects ? 'blur(10px)' : 'none' }
             : { opacity: 1, scale: 1, filter: 'blur(0px)' }
           }
-          exit={{ opacity: 0, scale: 1.05, filter: 'blur(10px)' }}
+          exit={{ opacity: 0, scale: 1.05, filter: effectivePrefs.blurEffects ? 'blur(10px)' : 'none' }}
           transition={{ duration: isWaking ? 0.6 : 1.2, ease: 'easeOut' }}
           onClick={handleDismiss}
           onKeyDown={(e) => { e.preventDefault(); handleDismiss(); }}

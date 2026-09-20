@@ -29,6 +29,8 @@ import {
 } from './cast';
 import { applyMediaProxyHeaderRules } from './mediaProxyHeaders';
 import { recordJournalEntry } from './networkJournal';
+import { diagnosticErrorCode, diagnosticErrorDetails, recordCastDiagnostic } from './diagnosticReport';
+import { copyDiagnostics } from './diagnostics';
 import {
   type PictureInPictureEvent,
   acknowledgePictureInPictureRestoreApplied,
@@ -71,6 +73,7 @@ type CastShimRequest =
   | { type: 'CASTSHIM_PAUSE'; id: string; capability: string }
   | { type: 'CASTSHIM_SEEK_TO'; id: string; capability: string; seconds: number }
   | { type: 'CASTSHIM_STOP'; id: string; capability: string }
+  | { type: 'CASTSHIM_COPY_DIAGNOSTICS'; id: string; capability: string }
   | { type: 'CASTSHIM_GET_RELAY_DISCLOSURE_PREFERENCE'; id: string; capability: string }
   | {
       type: 'CASTSHIM_SET_RELAY_DISCLOSURE_SUPPRESSED';
@@ -156,6 +159,7 @@ type MediaProxyCapability = {
 const mediaProxyCapabilities = new WeakMap<object, MediaProxyCapability>();
 const retiredMediaProxyGenerations = new WeakMap<object, Set<string>>();
 const castLoadSingleFlights = new WeakMap<object, CastLoadSingleFlight>();
+const castLoadPreparations = new WeakMap<object, { identity: string }>();
 // Doit rester un sur-ensemble de `allowedRequestHeaders` (MediaProxyPolicy.kt).
 // Une session de proxy porte les en-têtes que le natif a jugé bons d'émettre,
 // et `resolveForCast` les rend tels quels : tout en-tête accepté là-bas mais
@@ -599,6 +603,7 @@ export function startCastShimEventForwarding(
   webViewRef: RefObject<InjectableRef | null>,
 ): () => void {
   const stop = subscribeCastStatus(status => {
+    invalidateCastLoadCacheForStatus(webViewRef, status);
     setPlaybackAwakeOwner(
       'cast',
       status.connected && CAST_AWAKE_STATES.has(status.state),
@@ -688,6 +693,15 @@ export function clearBridgeCapabilities(
   castShimCapabilities.delete(webViewRef);
   pipShimCapabilities.delete(webViewRef);
   castLoadSingleFlights.delete(webViewRef);
+  castLoadPreparations.delete(webViewRef);
+}
+
+function invalidateCastLoadCacheForStatus(webViewRef: object, status: NativeCastStatus): void {
+  if (status.state === 'error' || status.state === 'ended'
+    || (status.state === 'idle' && /^(?:CANCELLED|INTERRUPTED|FINISHED|ERROR)$/.test(status.idleReason ?? ''))
+    || (!status.connected && status.state !== 'loading')) {
+    castLoadSingleFlights.delete(webViewRef);
+  }
 }
 
 function getCastLoadSingleFlight(
@@ -707,9 +721,12 @@ export async function refreshCastShimStatus(
   const expectedCapability = castShimCapabilities.get(webViewRef);
   if (!expectedCapability) return;
   try {
+    const status = await getCastStatus(true);
+    if (castShimCapabilities.get(webViewRef) !== expectedCapability) return;
+    invalidateCastLoadCacheForStatus(webViewRef, status);
     sendShimStatusEvent(
       webViewRef,
-      await getCastStatus(true),
+      status,
       expectedCapability,
     );
   } catch {
@@ -932,6 +949,8 @@ function parseCastLoadMetadata(
 }
 
 function castErrorMessage(error: unknown, fallback: string): string {
+  const code = diagnosticErrorCode(error, '');
+  if (code) return code;
   const message = error instanceof Error ? error.message : '';
   if (
     message
@@ -948,6 +967,15 @@ async function handleCastShimMessage(
   webViewRef: RefObject<InjectableRef | null>,
 ): Promise<void> {
   switch (req.type) {
+    case 'CASTSHIM_COPY_DIAGNOSTICS': {
+      try {
+        await copyDiagnostics(false);
+        sendShimResponse(webViewRef, req.id, true, req.capability);
+      } catch {
+        sendShimResponse(webViewRef, req.id, false, req.capability, undefined, 'CAST_DIAGNOSTICS_COPY_FAILED');
+      }
+      return;
+    }
     case 'CASTSHIM_INIT': {
       // Always resolve successfully — the shim's MovixAndroidCast.isSupported()
       // reads `payload.supported` to return a boolean. Rejecting would make
@@ -980,15 +1008,28 @@ async function handleCastShimMessage(
         );
         return;
       }
+      const identity = createCastLoadIdentity(parsedSource, metadata).exact;
+      let preparation = castLoadPreparations.get(webViewRef);
+      if (!preparation || preparation.identity !== identity) {
+        preparation = { identity };
+        castLoadPreparations.set(webViewRef, preparation);
+      }
+      const assertCurrentPreparation = () => {
+        if (castLoadPreparations.get(webViewRef) !== preparation
+          || castShimCapabilities.get(webViewRef) !== req.capability) {
+          throw new Error('MOVIX_CAST_LOAD_REPLACED');
+        }
+      };
       try {
         const supported = await isCastSupported();
+        assertCurrentPreparation();
         if (!supported) {
           throw new Error('CAST_CAPABILITY_MISMATCH');
         }
         const source = await resolvePreparedCastSourceForNative(parsedSource);
-        // If there's already a connected session, CAST_SESSION_STARTED may not
-        // fire — loadCastMedia resolves immediately after calling playMedia. In
-        // that case we need to synthesize a success response here.
+        assertCurrentPreparation();
+        // Les deux plateformes attendent l'acceptation du LOAD par le récepteur,
+        // y compris lorsque la session Cast est déjà connectée.
         const { currentTime, ...nativeMetadata } = metadata;
         const singleFlight = getCastLoadSingleFlight(webViewRef);
         const load = singleFlight.run(
@@ -997,9 +1038,8 @@ async function handleCastShimMessage(
         );
         await load.promise;
         sendShimResponse(webViewRef, req.id, true, req.capability);
-        // Otherwise leave the id in the map — the session-event subscriber will
-        // resolve it when STARTED arrives (or reject on PICKER_DISMISSED / FAILED).
       } catch (error) {
+        recordCastDiagnostic('bridge/load-failed', diagnosticErrorDetails(error, 'CAST_LOAD_REJECTED'));
         sendShimResponse(
           webViewRef,
           req.id,
@@ -1013,12 +1053,16 @@ async function handleCastShimMessage(
     }
     case 'CASTSHIM_GET_STATUS': {
       try {
+        const status = await getCastStatus(req.refresh === true);
+        if (castShimCapabilities.get(webViewRef) === req.capability) {
+          invalidateCastLoadCacheForStatus(webViewRef, status);
+        }
         sendShimResponse(
           webViewRef,
           req.id,
           true,
           req.capability,
-          await getCastStatus(req.refresh === true),
+          status,
         );
       } catch (error) {
         sendShimResponse(
@@ -1049,9 +1093,14 @@ async function handleCastShimMessage(
           }
           await seekCastTo(req.seconds);
         }
-        if (req.type === 'CASTSHIM_STOP') await stopCast();
+        if (req.type === 'CASTSHIM_STOP') {
+          castLoadPreparations.delete(webViewRef);
+          castLoadSingleFlights.delete(webViewRef);
+          await stopCast();
+        }
         sendShimResponse(webViewRef, req.id, true, req.capability);
       } catch (error) {
+        recordCastDiagnostic(req.type.replace('CASTSHIM_', 'command/'), diagnosticErrorDetails(error, 'CAST_COMMAND_REJECTED'));
         sendShimResponse(
           webViewRef,
           req.id,
@@ -1151,6 +1200,7 @@ export interface BridgeRequest {
   method?: string;
   headers?: Record<string, string>;
   body?: string;
+  bodyEncoding?: 'base64';
   responseType?: string;
   timeout?: number;
   key?: string;
@@ -1289,7 +1339,7 @@ async function fetchWithRedirectHeaders(
   url: string,
   method: string,
   headers: Record<string, string>,
-  body: string | undefined,
+  body: string | ArrayBuffer | undefined,
   signal: AbortSignal,
   maxRedirects = 5,
 ): Promise<Response> {
@@ -1335,7 +1385,11 @@ async function handleGMFetch(req: BridgeRequest): Promise<BridgeResponse> {
       req.url!,
       req.method || 'GET',
       fetchHeaders,
-      req.method !== 'GET' && req.method !== 'HEAD' ? req.body : undefined,
+      req.method !== 'GET' && req.method !== 'HEAD'
+        ? req.bodyEncoding === 'base64'
+          ? Uint8Array.from(atob(req.body || ''), character => character.charCodeAt(0)).buffer
+          : req.body
+        : undefined,
       controller.signal,
     );
 
@@ -1844,6 +1898,12 @@ export async function handleBridgeMessage(
       return;
     }
     if (p.type === 'CASTSHIM_DIAGNOSTIC') {
+      if (trusted && typeof p.capability === 'string'
+        && p.capability === castShimCapabilities.get(webViewRef)
+        && typeof p.code === 'string'
+        && /^(?:PREPARATION_FAILED|TRACK_PREPARATION_FAILED|PREPARATION_UNAVAILABLE)$/.test(p.code)) {
+        recordCastDiagnostic('preparation/failed', `${p.code} stage=${p.stage === 'track' ? 'track' : 'media'}`);
+      }
       return;
     }
     if (typeof p.type === 'string' && p.type.startsWith('CASTSHIM_')) {

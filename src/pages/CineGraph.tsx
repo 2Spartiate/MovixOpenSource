@@ -7,6 +7,7 @@ import { motion, AnimatePresence } from 'framer-motion';
 import { Search, X, Star, Film, Tv2, User, GitBranch, ZoomIn, ZoomOut, Maximize2, ArrowLeft, Network, Sparkles, Eye, Loader, HelpCircle, Settings2 } from 'lucide-react';
 import type { ForceGraphMethods } from 'react-force-graph-2d';
 import { forceCollide } from 'd3-force-3d';
+import { bindSingleNodeTouchDrag } from '@/utils/graphTouch';
 
 // Heavy graph renderer (~140 KB minified) — code-split into its own chunk so
 // the page shell loads before the graph engine is fetched.
@@ -94,6 +95,11 @@ const CineGraphPage: React.FC = () => {
 
   // Graph ref
   const graphRef = useRef<ForceGraphMethods>();
+  const [graphReady, setGraphReady] = useState(false);
+  const handleGraphRef = useCallback((instance: ForceGraphMethods | null) => {
+    graphRef.current = instance ?? undefined;
+    setGraphReady(Boolean(instance));
+  }, []);
   const containerRef = useRef<HTMLDivElement>(null);
   const [dimensions, setDimensions] = useState({ width: 800, height: 600 });
 
@@ -367,7 +373,7 @@ const CineGraphPage: React.FC = () => {
   // click detector on the canvas that walks graph data to find the node under
   // the pointer.
   useEffect(() => {
-    if (!graphData.nodes.length) return;
+    if (!graphReady || !filteredData.nodes.length) return;
     const container = containerRef.current;
     if (!container) return;
     const canvas = container.querySelector('canvas') as HTMLCanvasElement | null;
@@ -380,7 +386,7 @@ const CineGraphPage: React.FC = () => {
       const graphCoords = g.screen2GraphCoords(clientX - rect.left, clientY - rect.top);
       let best: GraphNode | null = null;
       let bestDist = Infinity;
-      for (const n of graphData.nodes as any[]) {
+      for (const n of filteredData.nodes as any[]) {
         if (!Number.isFinite(n.x) || !Number.isFinite(n.y)) continue;
         const dx = n.x - graphCoords.x;
         const dy = n.y - graphCoords.y;
@@ -397,6 +403,7 @@ const CineGraphPage: React.FC = () => {
       return best;
     };
 
+    const releaseTouchGuard = bindSingleNodeTouchDrag(canvas, (x, y) => pickNode(x, y) !== null);
     let downX = 0;
     let downY = 0;
     let lastHoverId: string | null = null;
@@ -427,12 +434,13 @@ const CineGraphPage: React.FC = () => {
     canvas.addEventListener('pointermove', onMove);
     canvas.addEventListener('pointerleave', onLeave);
     return () => {
+      releaseTouchGuard();
       canvas.removeEventListener('pointerdown', onDown);
       canvas.removeEventListener('pointerup', onUp);
       canvas.removeEventListener('pointermove', onMove);
       canvas.removeEventListener('pointerleave', onLeave);
     };
-  }, [graphData, handleNodeClick, handleNodeHover]);
+  }, [filteredData, graphReady, handleNodeClick, handleNodeHover]);
 
   // ─── Double-click to explore deeper ────────────────────────────────────────
 
@@ -947,7 +955,7 @@ const CineGraphPage: React.FC = () => {
               }
             >
               <ForceGraph2D
-                ref={graphRef as any}
+                ref={handleGraphRef as any}
                 graphData={filteredData}
                 width={dimensions.width}
                 height={dimensions.height}

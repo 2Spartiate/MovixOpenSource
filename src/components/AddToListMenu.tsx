@@ -51,11 +51,14 @@ const AddToListMenu: React.FC<AddToListMenuProps> = ({
     }, 300);
   };
 
-  const handleAddToList = (listId: string) => {
+  // Les ids de liste peuvent être des nombres (créées depuis le profil) ou
+  // des chaînes (créées ici) : on compare toujours en chaîne.
+  const handleAddToList = (rawListId: string | number) => {
+    const listId = String(rawListId);
     console.log('Adding to list:', listId, { mediaId, mediaType, title, posterPath });
-    
+
     const updatedLists = lists.map(list => {
-      if (list.id === listId) {
+      if (String(list.id) === listId) {
         const itemExists = list.items.some((item: any) => 
           item.id === mediaId && item.type === mediaType
         );
@@ -179,16 +182,16 @@ const AddToListMenu: React.FC<AddToListMenuProps> = ({
             whileHover={{ scale: 1.02 }}
             whileTap={{ scale: 0.98 }}
             onClick={handleCreateCollectionList}
-            disabled={addedToList?.startsWith('collection_')}
+            disabled={addedToList !== null}
             className={`w-full flex items-center justify-center gap-2 p-3 rounded-lg transition-colors mb-4 ${
-              addedToList?.startsWith('collection_')
+              addedToList !== null
                 ? 'bg-green-600 text-white cursor-not-allowed'
                 : 'bg-purple-600 hover:bg-purple-700 text-white'
             }`}
           >
             <FolderPlus className="w-4 h-4" />
             {t('lists.createListNamed', { name: title })}
-            {movieCount && <span className="text-sm opacity-75">({movieCount} {t('lists.movies')})</span>}
+            {!!movieCount && <span className="text-sm opacity-75">({movieCount} {t('lists.movies')})</span>}
           </motion.button>
         )}
         
@@ -220,15 +223,15 @@ const AddToListMenu: React.FC<AddToListMenuProps> = ({
                 <button
                   key={list.id}
                   onClick={() => handleAddToList(list.id)}
-                  disabled={addedToList === list.id}
+                  disabled={addedToList === String(list.id)}
                   className={`w-full flex items-center justify-between p-3 rounded-lg transition-colors ${
-                    addedToList === list.id 
+                    addedToList === String(list.id)
                       ? 'bg-green-600 text-white cursor-not-allowed' 
                       : 'hover:bg-gray-700'
                   }`}
                 >
                   <span>{list.name}</span>
-                  {list.items.some((item: any) => item.id === mediaId && item.type === mediaType) || addedToList === list.id ? (
+                  {list.items.some((item: any) => item.id === mediaId && item.type === mediaType) || addedToList === String(list.id) ? (
                     <Check className="w-4 h-4 text-green-500" />
                   ) : (
                     <Plus className="w-4 h-4" />

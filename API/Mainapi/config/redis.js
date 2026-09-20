@@ -4,6 +4,7 @@
  */
 
 const Redis = require('ioredis');
+const diagnostics = require('../utils/diagnostics');
 
 // === REDIS CACHE POUR OPTIMISER LES PERFORMANCES ===
 const redis = new Redis({
@@ -14,6 +15,7 @@ const redis = new Redis({
   maxRetriesPerRequest: 3,
   lazyConnect: true
 });
+diagnostics.instrumentRedis(redis);
 
 redis.on('connect', () => console.log('[Redis] Connecté'));
 redis.on('error', (err) => console.error('[Redis] Erreur:', err.message));

@@ -44,6 +44,20 @@ const authRateLimit = rateLimit({
   validate: { xForwardedForHeader: false, ip: false }
 });
 
+const { createAuthBodyParsers } = require('../middleware/bodyParsing');
+const { jsonParseErrorHandler } = require('../middleware/security');
+const authBodyParsers = createAuthBodyParsers();
+
+async function authorizeAuthWrite(req, res, next) {
+  try {
+    const auth = await getAuthIfValid(req);
+    if (!auth || !['oauth', 'bip39'].includes(auth.userType)) {
+      return res.status(401).json({ success: false, error: 'Non autorisé' });
+    }
+    next();
+  } catch (error) { next(error); }
+}
+
 // Récupération de la liste de mots française
 const frenchWordlist = bip39.wordlists.french;
 const DEFAULT_AVATAR = 'https://as2.ftcdn.net/v2/jpg/05/89/93/27/1000_F_589932782_vQAEAZhHnq1QCGu5ikwrYaQD0Mmurm0N.webp';
@@ -463,7 +477,7 @@ router.get('/bip39/generate', (req, res) => {
 });
 
 // POST /bip39/create
-router.post('/bip39/create', authRateLimit, async (req, res) => {
+router.post('/bip39/create', authRateLimit, ...authBodyParsers, async (req, res) => {
   try {
     const { mnemonic, username, avatar, turnstileToken } = req.body;
     if (!mnemonic || !username) {
@@ -511,7 +525,7 @@ router.post('/bip39/create', authRateLimit, async (req, res) => {
 });
 
 // POST /bip39/login
-router.post('/bip39/login', authRateLimit, async (req, res) => {
+router.post('/bip39/login', authRateLimit, ...authBodyParsers, async (req, res) => {
   try {
     const { mnemonic, turnstileToken } = req.body;
     if (!mnemonic) {
@@ -553,7 +567,7 @@ router.post('/bip39/login', authRateLimit, async (req, res) => {
 });
 
 // POST /discord/verify
-router.post('/discord/verify', authRateLimit, async (req, res) => {
+router.post('/discord/verify', authRateLimit, ...authBodyParsers, async (req, res) => {
   try {
     const { access_token: accessToken } = req.body || {};
     if (!accessToken) {
@@ -577,7 +591,7 @@ router.post('/discord/verify', authRateLimit, async (req, res) => {
 });
 
 // POST /google/verify
-router.post('/google/verify', authRateLimit, async (req, res) => {
+router.post('/google/verify', authRateLimit, ...authBodyParsers, async (req, res) => {
   try {
     const { access_token: accessToken } = req.body || {};
     if (!accessToken) {
@@ -646,7 +660,7 @@ router.get('/links', async (req, res) => {
 });
 
 // POST /links/:provider
-router.post('/links/:provider', authRateLimit, async (req, res) => {
+router.post('/links/:provider', authRateLimit, authorizeAuthWrite, ...authBodyParsers, async (req, res) => {
   try {
     const auth = await getAuthIfValid(req);
     if (!auth || !['oauth', 'bip39'].includes(auth.userType)) {
@@ -752,7 +766,7 @@ router.delete('/links/:provider', async (req, res) => {
 // des caractères dangereux. Le frontend appelle ça après affichage de la
 // modale bloquante. Met aussi à jour le profil par défaut si son nom matchait
 // l'ancien username (pour garder la cohérence visuelle).
-router.post('/username', authRateLimit, async (req, res) => {
+router.post('/username', authRateLimit, authorizeAuthWrite, ...authBodyParsers, async (req, res) => {
   try {
     const auth = await getAuthIfValid(req);
     if (!auth || !['oauth', 'bip39'].includes(auth.userType)) {
@@ -820,4 +834,5 @@ router.post('/username', authRateLimit, async (req, res) => {
   }
 });
 
+router.use(jsonParseErrorHandler);
 module.exports = router;

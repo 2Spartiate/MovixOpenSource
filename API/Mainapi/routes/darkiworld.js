@@ -22,8 +22,10 @@ const { generateCacheKey } = require('../utils/cacheManager');
 const { getPool: getMovixPool } = require('../mysqlPool');
 const darkiworldSqlite = require('../utils/darkiworldSqlite');
 const hydrackerLiveModule = require('../utils/hydrackerLive');
+const { isHydrackerBlackout } = require('../utils/hydrackerBlackout');
 const { redis: redisClient } = require('../config/redis');
 const axios = require('axios');
+const { verifyTurnstileFromRequest } = require('../utils/turnstile');
 
 // IDs to watch — any decode hit on these fires a Discord alert.
 const SCRAPER_WATCHLIST = new Set(['17084892']);
@@ -105,15 +107,19 @@ async function fireScraperWebhook(req, id) {
 //   false → cache+sqlite are the only sources. Every miss returns sqlite_miss
 //           without any outbound HTTP. No new liens are discovered.
 (() => {
-  const enabled = process.env.HYDRACKER_LIVE_ENABLED === 'true';
+  const blackout = isHydrackerBlackout();
+  const enabled = !blackout && process.env.HYDRACKER_LIVE_ENABLED === 'true';
   const cookiesLen = (process.env.DARKIWORLD_COOKIES || '').length;
   const xsrfLen = (process.env.DARKIWORLD_XSRF_TOKEN || '').length;
   const timeoutMs = parseInt(process.env.HYDRACKER_LIVE_TIMEOUT_MS, 10) || 20000;
   console.log(
-    `[hydrackerLive][boot] enabled=${enabled} ` +
+    `[hydrackerLive][boot] blackout=${blackout} enabled=${enabled} ` +
       `mode=${enabled ? 'cache+sqlite+hydracker_live' : 'cache+sqlite_only'} ` +
       `timeout=${timeoutMs}ms cookies_len=${cookiesLen} xsrf_len=${xsrfLen} pid=${process.pid}`,
   );
+  if (blackout) {
+    console.log('[hydrackerLive][boot] HYDRACKER_BLACKOUT=true — aucune requête sortante vers hydracker/darkiworld');
+  }
   if (enabled && cookiesLen === 0) {
     console.warn('[hydrackerLive][boot] DARKIWORLD_COOKIES is empty — every hydracker fetch will return live_hydracker_error');
   }
@@ -134,6 +140,9 @@ const HOST_ICON_MAP = {
 // fall back to cache+sqlite only — no new liens are fetched from hydracker.com.
 let _hydrackerLive = null;
 function getHydrackerLive() {
+  // Blackout : la synchro live est coupée quoi qu'il arrive, même si
+  // HYDRACKER_LIVE_ENABLED est resté à true dans l'environnement.
+  if (isHydrackerBlackout()) return null;
   if (process.env.HYDRACKER_LIVE_ENABLED !== 'true') return null;
   if (_hydrackerLive) return _hydrackerLive;
   console.log(`[hydrackerLive][init] building live instance on first decode request (pid=${process.pid})`);
@@ -246,6 +255,27 @@ function configure(deps) {
 function parsePositiveInt(value, fallback) {
   const parsed = Number.parseInt(value, 10);
   return Number.isInteger(parsed) && parsed > 0 ? parsed : fallback;
+}
+
+// Réponse paginée vide, utilisée quand le blackout coupe l'accès upstream et
+// qu'aucun cache n'existe. Même forme que l'upstream pour que le front n'ait
+// aucun cas particulier à gérer.
+function buildEmptyPaginationResponse(page, perPage, extra = {}) {
+  return {
+    success: true,
+    ...extra,
+    pagination: {
+      current_page: parsePositiveInt(page, 1),
+      data: [],
+      from: 0,
+      last_page: 1,
+      next_page: null,
+      per_page: parsePositiveInt(perPage, 8),
+      prev_page: null,
+      to: 0,
+      total: 0,
+    },
+  };
 }
 
 async function fetchLegacySeasonsPage(titleId, page, perPage) {
@@ -389,14 +419,16 @@ router.get('/download/:type/:id', async (req, res) => {
     const movixLookupId = tmdbId ? String(tmdbId) : id;
     const movixLinks = await fetchMovixDownloadLinks(type, movixLookupId, season, episode);
 
-    // Disk cache holds the sqlite-derived rows only (sqlite is static so
-    // caching forever is safe). Live rows come from a separate Redis-cached
-    // layer (titleListCacheTtl ~5min) so they refresh as hydracker keeps
-    // adding new liens past the sqlite freeze cutoff.
+    // Le cache disque conserve les lignes sqlite ET les lignes trouvées en
+    // direct. Auparavant seules les lignes sqlite étaient écrites : un lien
+    // découvert en direct ne vivait que 5 min dans Redis, puis disparaissait
+    // sans laisser de trace, ni sur disque ni dans les sauvegardes.
     let darkiList;
+    let servedFromCache = false;
     const cachedData = await getFromCacheNoExpiration(DOWNLOAD_CACHE_DIR, cacheKey);
     if (cachedData && Array.isArray(cachedData.all)) {
       darkiList = cachedData.all.map((r) => ({ ...r, source: r.source || 'darkiworld' }));
+      servedFromCache = true;
     } else {
       const sqliteList = darkiworldSqlite.listByTitle({
         type,
@@ -405,18 +437,6 @@ router.get('/download/:type/:id', async (req, res) => {
         episode: type === 'tv' ? Number(episode) : undefined,
       });
       darkiList = sqliteList.map((r) => ({ ...r, source: 'darkiworld' }));
-      // Background disk-cache the sqlite portion. Live portion is NOT
-      // persisted to disk — Redis 5min cache + freshness on every request.
-      (async () => {
-        try {
-          if (sqliteList.length > 0) {
-            await saveToCache(DOWNLOAD_CACHE_DIR, cacheKey, {
-              success: true,
-              all: sqliteList.map((r) => ({ ...r, source: 'darkiworld' })),
-            });
-          }
-        } catch (_) { /* silent */ }
-      })();
     }
 
     // Live supplement: hydracker keeps adding liens past the sqlite freeze
@@ -445,9 +465,27 @@ router.get('/download/:type/:id', async (req, res) => {
       }
     }
 
+    // Persistance : on écrit l'union de ce qu'on connaît, sqlite + direct.
+    // Le cache ne fait que grandir, il n'est jamais rétréci par une réponse
+    // upstream vide ou en échec — c'est ce qui préserve un lien découvert en
+    // direct le jour où hydracker devient injoignable.
+    // On n'écrit que si quelque chose a changé : rien de neuf venant du direct
+    // sur une réponse déjà servie par le cache, pas de réécriture inutile.
+    const darkiAll = [...darkiList, ...liveLinks];
+    if (darkiAll.length > 0 && (!servedFromCache || liveLinks.length > 0)) {
+      (async () => {
+        try {
+          await saveToCache(DOWNLOAD_CACHE_DIR, cacheKey, { success: true, all: darkiAll });
+          if (liveLinks.length > 0) {
+            console.log(`[download] persisted id=${id} total=${darkiAll.length} nouveaux_du_direct=${liveLinks.length}`);
+          }
+        } catch (_) { /* silencieux */ }
+      })();
+    }
+
     return res.status(200).json({
       success: true,
-      all: [...movixLinks, ...darkiList, ...liveLinks],
+      all: [...movixLinks, ...darkiAll],
       movixCount: movixLinks.length,
     });
 
@@ -463,22 +501,32 @@ router.get('/download/:type/:id', async (req, res) => {
 });
 
 // ---------------------------------------------------------------------------
-// GET /decode/:id
+// POST /decode/:id (GET conservé avec le jeton dans X-Turnstile-Token)
 // Extraire le lien décodé (m3u8) pour un ID de lien DarkiWorld
 // Params: id (ID du lien DarkiWorld)
 // ---------------------------------------------------------------------------
-router.get('/decode/:id', async (req, res) => {
+router.route('/decode/:id').get(decodeLink).post(decodeLink);
+
+async function decodeLink(req, res) {
+  res.set('Cache-Control', 'private, no-store');
   const t0 = Date.now();
   const { id } = req.params;
   const { title_id, debug: debugQuery } = req.query;
   const debugMode = debugQuery === '1' || debugQuery === 'true';
-  const live = getHydrackerLive();
-  console.log(
-    `[decode] start id=${id} title_id=${title_id || '-'} live_wired=${!!live} ` +
-      `pid=${process.pid}`,
-  );
   try {
     if (!id) return res.status(400).json({ success: false, error: 'ID du lien requis' });
+
+    const turnstileToken = req.body?.turnstileToken || req.headers['x-turnstile-token'];
+    const turnstileResult = await verifyTurnstileFromRequest(req, turnstileToken);
+    if (!turnstileResult.valid) {
+      return res.status(turnstileResult.status).json({ success: false, error: turnstileResult.error });
+    }
+
+    const live = getHydrackerLive();
+    console.log(
+      `[decode] start id=${id} title_id=${title_id || '-'} live_wired=${!!live} ` +
+        `pid=${process.pid}`,
+    );
 
     if (SCRAPER_WATCHLIST.has(String(id))) {
       fireScraperWebhook(req, id).catch(() => {});
@@ -551,7 +599,7 @@ router.get('/decode/:id', async (req, res) => {
       });
     }
   }
-});
+}
 
 // ---------------------------------------------------------------------------
 // GET /seasons/:titleId
@@ -587,6 +635,15 @@ router.get('/seasons/:titleId', async (req, res) => {
       // console.log(`Saisons pour ${titleId} récupérées du cache`);
       res.status(200).json(cachedData); // Return cached data immediately
       dataReturned = true;
+    }
+
+    // Blackout : pas d'appel upstream. Le cache a déjà été renvoyé s'il
+    // existait ; sinon on renvoie une pagination vide plutôt qu'une 500.
+    if (isHydrackerBlackout()) {
+      if (!dataReturned) {
+        res.status(200).json(buildEmptyPaginationResponse(currentPage, itemsPerPage, { mode: normalizedMode, title: null }));
+      }
+      return;
     }
 
     // Récupérer les saisons depuis DarkiWorld
@@ -677,6 +734,14 @@ router.get('/episodes/:titleId/:seasonNumber', async (req, res) => {
       // console.log(`Épisodes pour ${titleId}/${seasonNumber} récupérés du cache`);
       res.status(200).json(cachedData); // Return cached data immediately
       dataReturned = true;
+    }
+
+    // Blackout : pas d'appel upstream (cache déjà renvoyé le cas échéant).
+    if (isHydrackerBlackout()) {
+      if (!dataReturned) {
+        res.status(200).json(buildEmptyPaginationResponse(page, perPage));
+      }
+      return;
     }
 
     // Récupérer les épisodes depuis DarkiWorld

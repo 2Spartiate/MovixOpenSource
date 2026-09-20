@@ -10,8 +10,15 @@
 
 'use strict';
 
+const { isHydrackerBlackout } = require('./hydrackerBlackout');
+
 async function fetchHydrackerLien(lienId, deps) {
   const { axios, cookies, xsrf, timeoutMs } = deps;
+  // Blackout : on ne sort pas sur le réseau. Code dédié pour distinguer un
+  // blocage volontaire d'une panne upstream dans les logs et les marqueurs.
+  if (isHydrackerBlackout()) {
+    return { ok: false, code: 'live_hydracker_blackout', status: 0 };
+  }
   try {
     const resp = await axios.get(
       `https://hydracker.com/api/v1/content/liens/${lienId}`,
@@ -53,6 +60,9 @@ async function fetchHydrackerLien(lienId, deps) {
 
 async function fetchHydrackerTitleLiens(titleId, deps) {
   const { axios, cookies, xsrf, timeoutMs } = deps;
+  if (isHydrackerBlackout()) {
+    return { ok: false, code: 'live_hydracker_blackout', status: 0 };
+  }
   try {
     const resp = await axios.get(
       `https://hydracker.com/api/v1/titles/${titleId}/content/liens`,

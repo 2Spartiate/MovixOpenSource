@@ -1,6 +1,7 @@
 import { useEffect } from 'react';
 import Lenis from 'lenis';
 import 'lenis/dist/lenis.css';
+import { useLightMode } from '@/context/LightModeContext';
 
 /**
  * Presets de fluidité Lenis — configurables via
@@ -140,7 +141,10 @@ const SCROLL_KEYS = new Set([
 ]);
 
 const SmoothScroll = () => {
+  const { effectivePrefs } = useLightMode();
   useEffect(() => {
+    const body = document.body;
+    if (!body) return;
     let lenis: Lenis | null = null;
     let rafId = 0;
 
@@ -207,7 +211,7 @@ const SmoothScroll = () => {
     const checkScrollIdle = () => {
       const elapsed = performance.now() - lastScrollAt;
       if (elapsed >= SCROLL_IDLE_TAIL_MS) {
-        document.body.classList.remove('is-scrolling');
+        body.classList.remove('is-scrolling');
         scrollIdleTimeout = undefined;
       } else {
         scrollIdleTimeout = window.setTimeout(checkScrollIdle, SCROLL_IDLE_TAIL_MS - elapsed);
@@ -215,7 +219,7 @@ const SmoothScroll = () => {
     };
 
     const setIsScrollingClass = () => {
-      document.body.classList.add('is-scrolling');
+      body.classList.add('is-scrolling');
       lastScrollAt = performance.now();
       if (scrollIdleTimeout === undefined) {
         scrollIdleTimeout = window.setTimeout(checkScrollIdle, SCROLL_IDLE_TAIL_MS);
@@ -237,7 +241,7 @@ const SmoothScroll = () => {
     const initLenis = () => {
       const userEnabled = getSmoothScrollSetting();
       const reducedMotion = window.matchMedia('(prefers-reduced-motion: reduce)').matches;
-      const isEnabled = userEnabled && !reducedMotion;
+      const isEnabled = userEnabled && !reducedMotion && effectivePrefs.transitions;
 
       if (!isEnabled) {
         if (lenis) {
@@ -355,7 +359,7 @@ const SmoothScroll = () => {
         window.clearTimeout(scrollIdleTimeout);
         scrollIdleTimeout = undefined;
       }
-      document.body.classList.remove('is-scrolling');
+      body.classList.remove('is-scrolling');
 
       if (lenis) {
         lenis.destroy();
@@ -375,7 +379,7 @@ const SmoothScroll = () => {
       window.removeEventListener('touchmove', onUserScrollInput, { capture: true });
       window.removeEventListener('keydown', onKeydown, { capture: true });
     };
-  }, []);
+  }, [effectivePrefs.transitions]);
 
   return null;
 };

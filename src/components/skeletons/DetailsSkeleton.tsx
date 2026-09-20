@@ -1,8 +1,12 @@
 import React from 'react';
 import { Skeleton } from '@/components/ui/Skeleton';
+import { useLightMode } from '@/context/LightModeContext';
+import { LightweightLoading } from '@/components/LightweightLoading';
 import ContentRowSkeleton from './ContentRowSkeleton';
 
 const DetailsSkeleton: React.FC = () => {
+  const { isLightMode } = useLightMode();
+  if (isLightMode) return <LightweightLoading className="min-h-[50vh]" />;
   return (
     <div className="min-h-screen bg-black text-white px-4 md:px-8 lg:px-16 py-6 animate-skeleton-fade">
       {/* Title block (matches h1.section-title text-4xl md:text-5xl + Released badge) */}

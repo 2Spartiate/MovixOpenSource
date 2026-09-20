@@ -23,6 +23,7 @@ const respondWithSources = (req, res, payload) =>
   respondWithResolvedSources(req, res, payload, { movieMapKey: 'links', label: 'CPASMAL' });
 const { fetchTmdbDetails } = require('../utils/tmdbCache');
 const { acquireRedisLock } = require('../utils/redisLock');
+const { createSourceRefresh, waitForSource } = require('../utils/sourceRefresh');
 
 // ---- Lazy-bound dependencies injected via configure() ----
 let deps = {
@@ -285,6 +286,7 @@ async function _runCpasmalSearch(searchQuery, title, year, type, normalize, maxP
       page++;
     } catch (error) {
       _log403('search', error);
+      if (!bestMatch) throw error;
       break;
     }
   }
@@ -431,7 +433,7 @@ async function extractMovieLinks(url, requestFn) {
     return { links, cpasmalYear };
   } catch (error) {
     _log403('extractMovieLinks', error);
-    return { links: { vf: [], vostfr: [] }, cpasmalYear: null };
+    throw error;
   }
 }
 
@@ -524,7 +526,7 @@ async function extractSeriesLinks(seriesUrl, seasonNumber, episodeNumber, reques
 
   } catch (error) {
     _log403('extractSeriesLinks', error);
-    return { vf: [], vostfr: [] };
+    throw error;
   }
 }
 
@@ -650,77 +652,39 @@ async function fetchCpasmalTvData(tmdbId, season, episode, throwOnError = true) 
   return { title, year, cpasmalUrl, links };
 }
 
-// === CPASMAL REQUEST DEDUPLICATION ===
-const ongoingCpasmalRequests = new Map();
+// L'attente HTTP expire seule ; le scrape et sa publication restent partagés.
+const cpasmalRefresh = createSourceRefresh();
 const CPASMAL_REQUEST_TIMEOUT = 15000;
-const CPASMAL_STALE_CLEANUP_MS = 10 * 60 * 1000;
+const CPASMAL_CHECK_INTERVAL = 40 * 60 * 1000;
 
-const getOrCreateCpasmalRequest = async (cacheKey, requestFunction) => {
-  if (ongoingCpasmalRequests.has(cacheKey)) {
-    const existing = ongoingCpasmalRequests.get(cacheKey);
-    let dedupTimer;
-    return Promise.race([
-      existing.promise.finally(() => clearTimeout(dedupTimer)),
-      new Promise((_, reject) => { dedupTimer = setTimeout(() => reject(new Error('Cpasmal dedup timeout')), CPASMAL_REQUEST_TIMEOUT); })
-    ]);
-  }
+const refreshCpasmalCache = (cacheKey, type, ...args) => cpasmalRefresh.run(cacheKey, async () => {
+  const cached = await deps.getFromCacheNoExpiration(CACHE_DIR.CPASMAL, cacheKey);
+  // Les réponses vides étaient antidatées de 30 minutes pour une reprise à 10 min.
+  const checkInterval = cached && !cached.notFound && hasEmptyLinks(cached)
+    ? 10 * 60 * 1000 : CPASMAL_CHECK_INTERVAL;
+  if (cached && (cpasmalRefresh.recentlyChecked(cacheKey, checkInterval) ||
+      !await deps.shouldUpdateCache(CACHE_DIR.CPASMAL, cacheKey))) return cached;
 
-  const requestPromise = (async () => {
-    let timeoutTimer;
-    try {
-      const result = await Promise.race([
-        requestFunction().finally(() => clearTimeout(timeoutTimer)),
-        new Promise((_, reject) => {
-          timeoutTimer = setTimeout(() => {
-            ongoingCpasmalRequests.delete(cacheKey);
-            reject(new Error('Cpasmal request timeout'));
-          }, CPASMAL_REQUEST_TIMEOUT);
-        })
-      ]);
-      return result;
-    } finally {
-      clearTimeout(timeoutTimer);
-      ongoingCpasmalRequests.delete(cacheKey);
-    }
-  })();
-
-  ongoingCpasmalRequests.set(cacheKey, { promise: requestPromise, createdAt: Date.now() });
-  return requestPromise;
-};
-
-// Nettoyage périodique des requêtes Cpasmal bloquées
-setInterval(() => {
-  const now = Date.now();
-  let cleaned = 0;
-  for (const [key, entry] of ongoingCpasmalRequests) {
-    if (entry.createdAt && (now - entry.createdAt > CPASMAL_STALE_CLEANUP_MS)) {
-      ongoingCpasmalRequests.delete(key);
-      cleaned++;
-    }
-  }
-  if (cleaned > 0) console.log(`[CPASMAL DEDUP] Nettoyage: ${cleaned} requêtes expirées supprimées`);
-}, 5 * 60 * 1000).unref();
-
-// === BACKGROUND UPDATE ===
+  const newData = type === 'movie'
+    ? await fetchCpasmalMovieData(args[0], false)
+    : await fetchCpasmalTvData(args[0], args[1], args[2], false);
+  const candidate = newData || {
+    notFound: true, tmdbId: args[0],
+    ...(type === 'tv' ? { season: args[1], episode: args[2] } : {}),
+    timestamp: Date.now(),
+  };
+  await saveCpasmalCachePreservingPlayable(cacheKey, candidate);
+  cpasmalRefresh.markChecked(cacheKey);
+  return candidate;
+});
 
 const updateCpasmalCache = async (cacheKey, type, ...args) => {
   try {
-    const shouldUpdate = await deps.shouldUpdateCache(CACHE_DIR.CPASMAL, cacheKey);
-    if (!shouldUpdate) {
-      return;
-    }
-
-    let newData;
-    if (type === 'movie') {
-      newData = await fetchCpasmalMovieData(args[0], false);
-    } else if (type === 'tv') {
-      newData = await fetchCpasmalTvData(args[0], args[1], args[2], false);
-    }
-
-    const candidate = newData || { notFound: true, timestamp: Date.now() };
-    await saveCpasmalCachePreservingPlayable(cacheKey, candidate);
-  } catch (error) {
-    // silent
+    // Vérifier la date avant de relire un JSON déjà servi depuis le cache.
+    if (!await deps.shouldUpdateCache(CACHE_DIR.CPASMAL, cacheKey)) return;
+    await refreshCpasmalCache(cacheKey, type, ...args);
+  } catch {
+    // La réponse en cache a déjà été envoyée.
   }
 };
 
@@ -759,27 +723,17 @@ router.get('/movie/:tmdbid', async (req, res) => {
         await respondWithSources(req, res, { ...cachedData, prochaineMiseAJour });
       }
 
-      // Background update if old OR if links are empty
-      try {
-        const stats = await fsp.stat(cacheFilePath);
-        const age = Date.now() - stats.mtime.getTime();
-        if (age > 20 * 60 * 1000 || hasEmptyLinks(cachedData)) {
-          updateCpasmalCache(cacheKey, 'movie', tmdbid);
-        }
-      } catch (e) { /* ignore */ }
+      updateCpasmalCache(cacheKey, 'movie', tmdbid);
       return;
     }
 
     // 2. Fetch fresh with deduplication
-    const data = await getOrCreateCpasmalRequest(cacheKey, () => fetchCpasmalMovieData(tmdbid, false));
+    const data = await waitForSource(refreshCpasmalCache(cacheKey, 'movie', tmdbid), CPASMAL_REQUEST_TIMEOUT, 'Cpasmal request timeout');
 
-    if (!data) {
-      const notFoundData = { notFound: true, tmdbId: tmdbid, timestamp: Date.now() };
-      await saveCpasmalCachePreservingPlayable(cacheKey, notFoundData);
+    if (!data || data.notFound) {
       return res.status(404).json({ error: 'Movie not found on Cpasmal' });
     }
 
-    await saveCpasmalCachePreservingPlayable(cacheKey, data);
     const prochaineMiseAJour = new Date(Date.now() + 40 * 60 * 1000).toISOString();
     await respondWithSources(req, res, { ...data, prochaineMiseAJour });
     if (process.env.DEBUG_CPASMAL) console.timeEnd(`[Cpasmal API] Total /movie/${tmdbid}`);
@@ -789,24 +743,6 @@ router.get('/movie/:tmdbid', async (req, res) => {
       return res.status(404).json({ error: error.message });
     }
     res.status(500).json({ error: 'Internal Server Error' });
-  }
-});
-
-// Route pour supprimer le cache d'un film cpasmal
-router.get('/movie/:tmdbid/clear-cache', async (req, res) => {
-  const { tmdbid } = req.params;
-  const cacheKey = generateCacheKey(`movie_${tmdbid}`);
-  const cacheFilePath = path.join(CACHE_DIR.CPASMAL, `${cacheKey}.json`);
-
-  try {
-    await fsp.unlink(cacheFilePath);
-    res.json({ success: true, message: `Cache cleared for movie ${tmdbid}` });
-  } catch (error) {
-    if (error.code === 'ENOENT') {
-      res.status(404).json({ error: `No cache found for movie ${tmdbid}` });
-    } else {
-      res.status(500).json({ error: 'Failed to clear cache' });
-    }
   }
 });
 
@@ -837,27 +773,17 @@ router.get('/tv/:tmdbid/:season/:episode', async (req, res) => {
         await respondWithSources(req, res, { ...cachedData, prochaineMiseAJour });
       }
 
-      // Background update if old OR if links are empty
-      try {
-        const stats = await fsp.stat(cacheFilePath);
-        const age = Date.now() - stats.mtime.getTime();
-        if (age > 20 * 60 * 1000 || hasEmptyLinks(cachedData)) {
-          updateCpasmalCache(cacheKey, 'tv', tmdbid, season, episode);
-        }
-      } catch (e) { /* ignore */ }
+      updateCpasmalCache(cacheKey, 'tv', tmdbid, season, episode);
       return;
     }
 
     // 2. Fetch fresh with deduplication
-    const data = await getOrCreateCpasmalRequest(cacheKey, () => fetchCpasmalTvData(tmdbid, season, episode, false));
+    const data = await waitForSource(refreshCpasmalCache(cacheKey, 'tv', tmdbid, season, episode), CPASMAL_REQUEST_TIMEOUT, 'Cpasmal request timeout');
 
-    if (!data) {
-      const notFoundData = { notFound: true, tmdbId: tmdbid, season, episode, timestamp: Date.now() };
-      await saveCpasmalCachePreservingPlayable(cacheKey, notFoundData);
+    if (!data || data.notFound) {
       return res.status(404).json({ error: 'TV Show not found on Cpasmal' });
     }
 
-    await saveCpasmalCachePreservingPlayable(cacheKey, data);
     const prochaineMiseAJour = new Date(Date.now() + 40 * 60 * 1000).toISOString();
     await respondWithSources(req, res, { ...data, prochaineMiseAJour });
 

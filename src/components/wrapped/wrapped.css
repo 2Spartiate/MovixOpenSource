@@ -1,0 +1,30 @@
+[data-wrapped-experience] .wrapped-heading {
+    font-size: clamp(1.8rem, min(5.2vw, 7dvh), 4.6rem);
+    text-wrap: balance;
+}
+[data-wrapped-experience] .wrapped-scene-layout { gap: clamp(1rem, 3dvh, 3rem); }
+[data-wrapped-experience] .wrapped-scene-copy > * + * { margin-top: clamp(.65rem, 1.8dvh, 1.5rem); }
+[data-wrapped-experience] .wrapped-gallery { height: clamp(150px, 27dvh, 420px); }
+[data-wrapped-experience] .wrapped-gallery-poster { width: min(25vw, 16dvh, 195px); }
+[data-wrapped-experience] .wrapped-gallery[data-focused=true] { height: clamp(180px, 32dvh, 490px); }
+[data-wrapped-experience] .wrapped-gallery[data-focused=true] .wrapped-gallery-poster { width: min(37vw, 21dvh, 255px); }
+[data-wrapped-experience] .wrapped-share-preview { width: min(48vw, 25dvh, 280px); }
+[data-wrapped-experience] .wrapped-share-preview[data-format=poster] { width: min(48vw, 30dvh, 280px); }
+[data-wrapped-experience] [data-wrapped-scene] { scrollbar-width: thin; scrollbar-color: #647180 transparent; }
+@media (min-width: 768px) {
+    [data-wrapped-experience] .wrapped-scene-layout { grid-template-columns: .9fr 1.1fr; }
+    [data-wrapped-experience] .wrapped-gallery { height: min(56dvh, 460px); }
+    [data-wrapped-experience] .wrapped-gallery-poster { width: min(14vw, 25dvh, 195px); }
+    [data-wrapped-experience] .wrapped-gallery[data-focused=true] { height: min(60dvh, 520px); }
+    [data-wrapped-experience] .wrapped-gallery[data-focused=true] .wrapped-gallery-poster { width: min(26vw, 34dvh, 300px); }
+    [data-wrapped-experience] .wrapped-share-preview { width: min(30vw, 36dvh, 340px); }
+    [data-wrapped-experience] .wrapped-share-preview[data-format=poster] { width: min(30vw, 43dvh, 340px); }
+}
+@media (max-height: 740px) {
+    [data-wrapped-experience] .wrapped-scene-content { padding-block: .5rem; }
+    [data-wrapped-experience] .wrapped-quiz-options { max-width: 420px; margin-inline: auto; }
+    [data-wrapped-experience] .wrapped-quiz-poster { width: min(100%, 15dvh); margin-inline: auto; }
+    [data-wrapped-experience] .wrapped-podium { gap: .65rem; }
+    [data-wrapped-experience] .wrapped-podium-poster { max-width: 13dvh; }
+    [data-wrapped-experience] .wrapped-podium-poster[data-rank="0"] { max-width: 22dvh; }
+}

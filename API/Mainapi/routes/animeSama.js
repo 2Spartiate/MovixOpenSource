@@ -12,10 +12,14 @@ const fsp = require('fs').promises;
 const path = require('path');
 const axios = require('axios');
 const writeFileAtomic = require('write-file-atomic');
+const { createSourceRefresh } = require('../utils/sourceRefresh');
+const animeRefresh = createSourceRefresh();
+const ANIME_CHECK_INTERVAL = 60 * 60 * 1000;
 
 const { ANIME_SAMA_CACHE_DIR, generateCacheKey } = require('../utils/cacheManager');
 const { memoryCache } = require('../config/redis');
 const { buildM3u8Map } = require('../utils/embedExtraction');
+const DEBUG_ANIMESAMA = process.env.DEBUG_ANIMESAMA === 'true';
 
 // Anime-Sama est le seul catalogue dont les lecteurs sont des chaînes brutes
 // (`players: ["https://…"]`) et non des objets : impossible d'y greffer un
@@ -365,7 +369,7 @@ class Season {
     this.client = client || deps.axiosAnimeSama;
   }
 
-  async _getPlayersLinksFrom(page) {
+  async _getPlayersLinksFrom(page, strict = false) {
     try {
       const episodesUrl = page + 'episodes.js';
       const episodesJsResponse = await deps.axiosAnimeSamaRequest({
@@ -375,6 +379,9 @@ class Season {
       });
 
       if (episodesJsResponse.status !== 200) {
+        if (strict && episodesJsResponse.status !== 404) {
+          throw new Error(`AnimeSama episodes HTTP ${episodesJsResponse.status}`);
+        }
         return [];
       }
 
@@ -416,15 +423,19 @@ class Season {
       return result;
     } catch (error) {
       if (!error.response || error.response.status !== 404) {
-        // Non-404 error
+        if (strict) throw error;
       }
       return [];
     }
   }
 
-  async episodes(existingEpisodes = null) {
-    const episodesPagesPromises = this.pages.map(page => this._getPlayersLinksFrom(page));
-    const episodesPages = await Promise.all(episodesPagesPromises);
+  async episodes(existingEpisodes = null, strict = false) {
+    const episodesPagesPromises = this.pages.map(page => this._getPlayersLinksFrom(page, strict));
+    // Attendre aussi les langues restantes avant de libérer la tâche commune.
+    const outcomes = await Promise.allSettled(episodesPagesPromises);
+    const failure = outcomes.find(outcome => outcome.status === 'rejected');
+    if (failure) throw failure.reason;
+    const episodesPages = outcomes.map(outcome => outcome.value);
     const episodesInSeason = Math.max(...episodesPages.map(ep => ep.length));
 
     const padding = episodesInSeason.toString().length;
@@ -519,7 +530,7 @@ class Catalogue {
     }
   }
 
-  async seasons() {
+  async seasons(strict = false) {
     try {
       const response = await deps.axiosAnimeSamaRequest({
         method: 'get',
@@ -562,6 +573,7 @@ class Catalogue {
 
       return seasons;
     } catch (error) {
+      if (strict) throw error;
       console.error(`Error getting seasons for ${this.name}:`, error.message);
       return [];
     }
@@ -588,10 +600,12 @@ class AnimeSama {
 
       const requestUrl = `${this.siteUrl}template-php/defaut/fetch.php`;
       const requestData = `query=${encodeURIComponent(query)}`;
-      console.log(`\n[AnimeSama Search] DEBUG INFO:`);
-      console.log(`[AnimeSama Search] Query: ${query}`);
-      console.log(`[AnimeSama Search] URL: ${requestUrl}`);
-      console.log(`[AnimeSama Search] Payload: ${requestData}`);
+      if (DEBUG_ANIMESAMA) {
+        console.log(`\n[AnimeSama Search] DEBUG INFO:`);
+        console.log(`[AnimeSama Search] Query: ${query}`);
+        console.log(`[AnimeSama Search] URL: ${requestUrl}`);
+        console.log(`[AnimeSama Search] Payload: ${requestData}`);
+      }
 
       const response = await deps.axiosAnimeSamaRequest({
         method: 'post',
@@ -602,24 +616,29 @@ class AnimeSama {
         }
       });
 
-      console.log(`[AnimeSama Search] Response status: ${response.status}`);
-      console.log(`[AnimeSama Search] Response content-type: ${response.headers?.['content-type'] || 'n/a'}`);
+      if (DEBUG_ANIMESAMA) {
+        console.log(`[AnimeSama Search] Response status: ${response.status}`);
+        console.log(`[AnimeSama Search] Response content-type: ${response.headers?.['content-type'] || 'n/a'}`);
+      }
 
       if (response.status !== 200) {
-        console.warn(`[AnimeSama Search] Non-200 status, abort. Body snippet:`, typeof response.data === 'string' ? response.data.slice(0, 500) : response.data);
+        console.warn(`[AnimeSama Search] Recherche interrompue : HTTP ${response.status}`);
+        if (DEBUG_ANIMESAMA) console.log('[AnimeSama Search] Body snippet:', typeof response.data === 'string' ? response.data.slice(0, 500) : response.data);
         return [];
       }
 
       const responseData = response.data;
-      const bodyLen = typeof responseData === 'string' ? responseData.length : -1;
-      console.log(`[AnimeSama Search] Body length: ${bodyLen}`);
-      if (typeof responseData === 'string') {
-        console.log(`[AnimeSama Search] Body snippet (first 500):`, responseData.slice(0, 500));
-        console.log(`[AnimeSama Search] Body snippet (last 500):`, responseData.slice(-500));
+      if (DEBUG_ANIMESAMA) {
+        const bodyLen = typeof responseData === 'string' ? responseData.length : -1;
+        console.log(`[AnimeSama Search] Body length: ${bodyLen}`);
+        if (typeof responseData === 'string') {
+          console.log(`[AnimeSama Search] Body snippet (first 500):`, responseData.slice(0, 500));
+          console.log(`[AnimeSama Search] Body snippet (last 500):`, responseData.slice(-500));
+        }
       }
 
       const results = this.parseSearchResults(responseData);
-      console.log(`[AnimeSama Search] parseSearchResults -> ${results.length} results`);
+      if (DEBUG_ANIMESAMA) console.log(`[AnimeSama Search] parseSearchResults -> ${results.length} results`);
 
       await deps.saveToCache(ANIME_SAMA_CACHE_DIR, cacheKey, results);
 
@@ -627,15 +646,11 @@ class AnimeSama {
         new Catalogue(result.url, result.name, this.client, result)
       );
     } catch (error) {
-      console.error(`\n[AnimeSama Search] ERROR FAIL:`);
-      console.error(`[AnimeSama Search] Query: ${query}`);
-      console.error(`[AnimeSama Search] Error Message: ${error.message}`);
-      if (error.response) {
-        console.error(`[AnimeSama Search] Status Code: ${error.response.status}`);
-        console.error(`[AnimeSama Search] Response Data:`, JSON.stringify(error.response.data, null, 2));
-      }
-      if (error.config) {
-        console.error(`[AnimeSama Search] Request Config URL:`, error.config.url);
+      console.error(`[AnimeSama Search] Échec : ${error.message} (HTTP ${error.response?.status || 'indisponible'})`);
+      if (DEBUG_ANIMESAMA) {
+        console.log(`[AnimeSama Search] Query: ${query}`);
+        if (error.response) console.log('[AnimeSama Search] Response Data:', JSON.stringify(error.response.data, null, 2));
+        if (error.config) console.log('[AnimeSama Search] Request Config URL:', error.config.url);
       }
       return [];
     }
@@ -650,11 +665,12 @@ class AnimeSama {
         return [];
       }
 
-      // Diagnostic counters
-      const allAnchors = (htmlData.match(/<a\b/gi) || []).length;
-      const asnAnchors = (htmlData.match(/class="asn-search-result"/gi) || []).length;
-      const catalogueHrefs = (htmlData.match(/href="[^"]*\/catalogue\/[^"]*"/gi) || []).length;
-      console.log(`[AnimeSama Parse] anchors=${allAnchors} asn-class=${asnAnchors} catalogue-hrefs=${catalogueHrefs}`);
+      if (DEBUG_ANIMESAMA) {
+        const allAnchors = (htmlData.match(/<a\b/gi) || []).length;
+        const asnAnchors = (htmlData.match(/class="asn-search-result"/gi) || []).length;
+        const catalogueHrefs = (htmlData.match(/href="[^"]*\/catalogue\/[^"]*"/gi) || []).length;
+        console.log(`[AnimeSama Parse] anchors=${allAnchors} asn-class=${asnAnchors} catalogue-hrefs=${catalogueHrefs}`);
+      }
 
       const anchorRegex = /<a\b([^>]*\bclass="asn-search-result"[^>]*)>([\s\S]*?)<\/a>/gi;
       let match;
@@ -667,17 +683,17 @@ class AnimeSama {
 
         const hrefMatch = attrs.match(/href="([^"]+)"/i);
         if (!hrefMatch) {
-          console.log(`[AnimeSama Parse] block #${iterations}: no href in attrs:`, attrs.slice(0, 200));
+          if (DEBUG_ANIMESAMA) console.log(`[AnimeSama Parse] block #${iterations}: no href in attrs:`, attrs.slice(0, 200));
           continue;
         }
         const href = hrefMatch[1];
 
         if (!href.includes('/catalogue/')) {
-          console.log(`[AnimeSama Parse] block #${iterations}: skipped (not catalogue): ${href}`);
+          if (DEBUG_ANIMESAMA) console.log(`[AnimeSama Parse] block #${iterations}: skipped (not catalogue): ${href}`);
           continue;
         }
         if (!/\/catalogue\/[a-zA-Z0-9][a-zA-Z0-9\-_.]+/.test(href)) {
-          console.log(`[AnimeSama Parse] block #${iterations}: skipped (bad slug): ${href}`);
+          if (DEBUG_ANIMESAMA) console.log(`[AnimeSama Parse] block #${iterations}: skipped (bad slug): ${href}`);
           continue;
         }
 
@@ -703,11 +719,11 @@ class AnimeSama {
             alternative_names_string: alternativeNames
           });
         } else {
-          console.log(`[AnimeSama Parse] block #${iterations}: skipped (no title). inner snippet:`, inner.slice(0, 300));
+          if (DEBUG_ANIMESAMA) console.log(`[AnimeSama Parse] block #${iterations}: skipped (no title). inner snippet:`, inner.slice(0, 300));
         }
       }
 
-      console.log(`[AnimeSama Parse] iterations=${iterations} kept=${results.length}`);
+      if (DEBUG_ANIMESAMA) console.log(`[AnimeSama Parse] iterations=${iterations} kept=${results.length}`);
       return results;
     } catch (error) {
       console.error('[AnimeSama Parse] Error:', error.message);
@@ -908,222 +924,132 @@ router.get('/search/:query', async (req, res) => {
         if (!anime.url || !anime.url.includes('/catalogue/') || !anime.name) {
           continue;
         }
-        let catalogueObj = null;
-        try {
-          catalogueObj = new Catalogue(anime.url, anime.name, client.client, anime);
-        } catch (e) {
-          continue;
-        }
-        if (!catalogueObj) continue;
-
-        let seasonsList = [];
-        try {
-          seasonsList = await catalogueObj.seasons();
-        } catch (e) {
-          continue;
-        }
-
         const safeAnimeName = anime.name.replace(/[^a-zA-Z0-9\s\-_]/g, '').trim();
-        const animeCacheFile = `${safeAnimeName}.json`;
-        const animeCachePath = path.join(animeCacheDir, animeCacheFile);
-
-        let existingAnimeCache = {};
-        try {
-          const animeContent = await fsp.readFile(animeCachePath, 'utf-8');
-          const animeData = JSON.parse(animeContent);
-          existingAnimeCache = animeData.seasons || {};
-        } catch (e) {
-          // No existing cache
-        }
-
-        const RECENT_UPDATE_THRESHOLD = 1 * 60 * 60 * 1000;
-        let shouldSkipAnime = false;
-        try {
-          const stats = await fsp.stat(animeCachePath);
-          const timeSinceLastUpdate = Date.now() - stats.mtime.getTime();
-          if (timeSinceLastUpdate < RECENT_UPDATE_THRESHOLD) {
-            shouldSkipAnime = true;
-          }
-        } catch (e) {
-          // File doesn't exist
-        }
-
-        if (shouldSkipAnime) continue;
-
-        let animeDataUpdated = false;
-        const updatedAnimeCache = { ...existingAnimeCache };
-
-        for (const seasonObj of seasonsList) {
-          const safeSeasonName = seasonObj.name.replace(/[^a-zA-Z0-9\s\-_]/g, '').trim();
-          let cachedEpisodes = null;
-          let shouldUpdate = false;
-
+        const animeCachePath = path.join(animeCacheDir, `${safeAnimeName}.json`);
+        await animeRefresh.run(animeCachePath, async () => {
+          let existingData = {};
+          let originalMtime = 0;
           try {
-            const seasonCache = existingAnimeCache[seasonObj.name];
-            if (seasonCache && seasonCache.episodes) {
-              cachedEpisodes = seasonCache.episodes;
-
-              const scrapedEpisodes = await seasonObj.episodes(cachedEpisodes);
-
-              const hasNewEpisodes = scrapedEpisodes.length > cachedEpisodes.length;
-              const hasNewLang = scrapedEpisodes.some((ep, idx) => {
-                const oldEp = cachedEpisodes[idx];
-                if (!oldEp) return true;
-                const oldLangs = (oldEp.streaming_links || []).map(l => l.language);
-                const newLangs = (ep.streaming_links || []).map(l => l.language);
-                return newLangs.some(l => !oldLangs.includes(l));
-              });
-
-              const hasNewPlayers = scrapedEpisodes.some((ep, idx) => {
-                const oldEp = cachedEpisodes[idx];
-                if (!oldEp) return false;
-
-                return (ep.streaming_links || []).some(newLink => {
-                  const oldLink = (oldEp.streaming_links || []).find(ol => ol.language === newLink.language);
-                  if (!oldLink) return false;
-
-                  const oldPlayers = Array.isArray(oldLink.players) ? oldLink.players : [];
-                  const newPlayers = Array.isArray(newLink.players) ? newLink.players : [];
-                  return newPlayers.length > oldPlayers.length ||
-                    newPlayers.some(player => !oldPlayers.includes(player));
-                });
-              });
-
-              if (hasNewEpisodes || hasNewLang || hasNewPlayers) {
-                shouldUpdate = true;
-                cachedEpisodes = scrapedEpisodes;
-              }
-            } else {
-              shouldUpdate = true;
-              cachedEpisodes = await seasonObj.episodes();
-            }
-          } catch (e) {
-            shouldUpdate = true;
-            cachedEpisodes = await seasonObj.episodes();
+            originalMtime = (await fsp.stat(animeCachePath)).mtime.getTime();
+            existingData = JSON.parse(await fsp.readFile(animeCachePath, 'utf-8'));
+            if (animeRefresh.recentlyChecked(animeCachePath, ANIME_CHECK_INTERVAL) ||
+                Date.now() - Math.max(originalMtime, Number(existingData.lastCheckedAt) || 0) < ANIME_CHECK_INTERVAL) return;
+          } catch (error) {
+            if (error.code !== 'ENOENT' && !(error instanceof SyntaxError)) throw error;
+            if (error.code === 'ENOENT' && animeRefresh.recentlyChecked(animeCachePath, ANIME_CHECK_INTERVAL)) return;
           }
+          const existingAnimeCache = existingData.seasons || {};
+          const catalogueObj = new Catalogue(anime.url, anime.name, client.client, anime);
+          const seasonsList = await catalogueObj.seasons(true);
+          if (!seasonsList.length && Object.keys(existingAnimeCache).length) {
+            throw new Error('Catalogue AnimeSama vide pendant une actualisation');
+          }
+          let animeDataUpdated = false;
+          const updatedAnimeCache = { ...existingAnimeCache };
 
-          if (shouldUpdate) {
+          for (const seasonObj of seasonsList) {
+            let cachedEpisodes = null;
+            let shouldUpdate = false;
+
             try {
-              const episodesData = cachedEpisodes.map(episode => ({
-                name: episode.name,
-                serie_name: episode.serie_name || episode.serieName,
-                season_name: episode.season_name || episode.seasonName,
-                index: episode.index,
-                streaming_links: (episode.streaming_links || []).map(linkObj => ({
-                  language: linkObj.language,
-                  players: Array.isArray(linkObj.players)
-                    ? linkObj.players.filter(url => !isEmptyPlayerUrl(url))
-                    : linkObj.players
-                }))
-              }));
+              const seasonCache = existingAnimeCache[seasonObj.name];
+              if (seasonCache && seasonCache.episodes) {
+                cachedEpisodes = seasonCache.episodes;
 
-              updatedAnimeCache[seasonObj.name] = {
-                timestamp: Date.now(),
-                episodes: episodesData
-              };
-              animeDataUpdated = true;
+                const scrapedEpisodes = await seasonObj.episodes(cachedEpisodes, true);
 
+                const hasNewEpisodes = scrapedEpisodes.length > cachedEpisodes.length;
+                const hasNewLang = scrapedEpisodes.some((ep, idx) => {
+                  const oldEp = cachedEpisodes[idx];
+                  if (!oldEp) return true;
+                  const oldLangs = (oldEp.streaming_links || []).map(l => l.language);
+                  const newLangs = (ep.streaming_links || []).map(l => l.language);
+                  return newLangs.some(l => !oldLangs.includes(l));
+                });
+
+                const hasNewPlayers = scrapedEpisodes.some((ep, idx) => {
+                  const oldEp = cachedEpisodes[idx];
+                  if (!oldEp) return false;
+
+                  return (ep.streaming_links || []).some(newLink => {
+                    const oldLink = (oldEp.streaming_links || []).find(ol => ol.language === newLink.language);
+                    if (!oldLink) return false;
+
+                    const oldPlayers = Array.isArray(oldLink.players) ? oldLink.players : [];
+                    const newPlayers = Array.isArray(newLink.players) ? newLink.players : [];
+                    return newPlayers.length > oldPlayers.length ||
+                      newPlayers.some(player => !oldPlayers.includes(player));
+                  });
+                });
+
+                if (hasNewEpisodes || hasNewLang || hasNewPlayers) {
+                  shouldUpdate = true;
+                  cachedEpisodes = scrapedEpisodes;
+                }
+              } else {
+                shouldUpdate = true;
+                cachedEpisodes = await seasonObj.episodes(null, true);
+              }
             } catch (e) {
-              console.error(`Erreur lors du scraping de la saison ${seasonObj.name} (${anime.name}):`, e.message);
+              throw e;
+            }
+
+            if (shouldUpdate) {
+              try {
+                const episodesData = cachedEpisodes.map(episode => ({
+                  name: episode.name,
+                  serie_name: episode.serie_name || episode.serieName,
+                  season_name: episode.season_name || episode.seasonName,
+                  index: episode.index,
+                  streaming_links: (episode.streaming_links || []).map(linkObj => ({
+                    language: linkObj.language,
+                    players: Array.isArray(linkObj.players)
+                      ? linkObj.players.filter(url => !isEmptyPlayerUrl(url))
+                      : linkObj.players
+                  }))
+                }));
+
+                updatedAnimeCache[seasonObj.name] = {
+                  timestamp: Date.now(),
+                  episodes: episodesData
+                };
+                animeDataUpdated = true;
+
+              } catch (e) {
+                throw e;
+              }
             }
           }
-        }
 
-        if (animeDataUpdated) {
-          try {
-            const unifiedCacheData = {
+          // Une vérification réussie espace aussi le prochain scan sans nouveau lecteur.
+          // Le contrôle de version est optimiste ; un contrôle inchangé ne réécrit
+          // jamais le payload, même si un autre worker publie après ce stat.
+          let latestMtime = 0;
+          try { latestMtime = (await fsp.stat(animeCachePath)).mtime.getTime(); }
+          catch (error) { if (error.code !== 'ENOENT') throw error; }
+          if (latestMtime !== originalMtime) return;
+          if (animeDataUpdated) {
+            await writeFileAtomic(animeCachePath, JSON.stringify({
+              ...existingData,
               timestamp: Date.now(),
-              seasons: updatedAnimeCache
-            };
-            await writeFileAtomic(animeCachePath, JSON.stringify(unifiedCacheData), 'utf-8');
-
+              lastCheckedAt: Date.now(),
+              seasons: updatedAnimeCache,
+            }), 'utf-8');
             await deps.cleanupOldCacheFiles(safeAnimeName, animeCacheDir);
-          } catch (e) {
-            // ignore
+          } else if (Object.keys(existingAnimeCache).length) {
+            const checkedAt = new Date(Date.now());
+            await fsp.utimes(animeCachePath, checkedAt, checkedAt);
+          } else {
+            await deps.migrateOldCacheFiles(safeAnimeName, animeCacheDir);
           }
-        } else if (Object.keys(existingAnimeCache).length === 0) {
-          await deps.migrateOldCacheFiles(safeAnimeName, animeCacheDir);
-        }
+          animeRefresh.markChecked(animeCachePath);
+        }).catch(() => {});
       }
     })();
 
   } catch (error) {
     console.error('Erreur /anime/search/:query:', error);
     return res.status(500).json({ error: 'Erreur serveur' });
-  }
-});
-
-// Delete anime cache
-router.delete('/search/:query/cache', async (req, res) => {
-  try {
-    const { query } = req.params;
-    const cacheKey = generateCacheKey(query);
-    const animeCacheDir = ANIME_SAMA_CACHE_DIR;
-
-    let deletedFiles = [];
-    let errors = [];
-
-    // 1. Delete search cache file
-    try {
-      const searchCacheFile = path.join(animeCacheDir, `${cacheKey}.json`);
-      await fsp.unlink(searchCacheFile);
-      deletedFiles.push(`search cache: ${cacheKey}.json`);
-    } catch (err) {
-      if (err.code !== 'ENOENT') {
-        errors.push(`Erreur suppression cache de recherche: ${err.message}`);
-      }
-    }
-
-    // 2. Delete unified anime cache
-    try {
-      const decodedQuery = decodeURIComponent(query);
-      const safeAnimeName = decodedQuery.replace(/[^a-zA-Z0-9\s\-_]/g, '').trim();
-      const animeFile = path.join(animeCacheDir, `${safeAnimeName}.json`);
-
-      try {
-        await fsp.unlink(animeFile);
-        deletedFiles.push(`unified cache: ${safeAnimeName}.json`);
-      } catch (err) {
-        if (err.code !== 'ENOENT') {
-          errors.push(`Erreur suppression cache unifie: ${err.message}`);
-        }
-      }
-
-      // 3. Delete old separate cache files
-      const allCacheFiles = await fsp.readdir(animeCacheDir).catch(() => []);
-      const oldSeasonFiles = allCacheFiles.filter(f =>
-        f.startsWith(safeAnimeName + '_') && f.endsWith('.json')
-      );
-
-      for (const oldFile of oldSeasonFiles) {
-        try {
-          await fsp.unlink(path.join(animeCacheDir, oldFile));
-          deletedFiles.push(`old season cache: ${oldFile}`);
-        } catch (err) {
-          errors.push(`Erreur suppression ancien cache ${oldFile}: ${err.message}`);
-        }
-      }
-    } catch (err) {
-      errors.push(`Erreur lors de la recherche des fichiers: ${err.message}`);
-    }
-
-    if (deletedFiles.length > 0) {
-      return res.status(200).json({
-        success: true,
-        message: `Cache anime "${decodeURIComponent(query)}" supprime.`,
-        deletedFiles,
-        errors: errors.length > 0 ? errors : undefined
-      });
-    } else {
-      return res.status(404).json({
-        success: false,
-        error: 'Aucun cache trouve pour cet anime.',
-        errors: errors.length > 0 ? errors : undefined
-      });
-    }
-  } catch (err) {
-    console.error('Erreur suppression cache anime:', err);
-    return res.status(500).json({ success: false, error: 'Erreur serveur.' });
   }
 });
 

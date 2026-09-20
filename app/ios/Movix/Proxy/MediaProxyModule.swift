@@ -1,4 +1,6 @@
 import Foundation
+import React
+import UIKit
 
 @objc(MediaProxy)
 final class MediaProxyModule: NSObject {
@@ -102,6 +104,76 @@ final class MediaProxyModule: NSObject {
   ) {
     MediaProxyJournal.clear()
     resolve(true)
+  }
+
+  @objc
+  func copyDiagnosticText(
+    _ text: String,
+    resolve: @escaping RCTPromiseResolveBlock,
+    reject: @escaping RCTPromiseRejectBlock
+  ) {
+    guard text.utf8.count <= 256_000 else {
+      reject("DIAGNOSTICS_COPY_FAILED", "Journal trop volumineux pour la copie", nil)
+      return
+    }
+    DispatchQueue.main.async {
+      UIPasteboard.general.string = text
+      resolve(true)
+    }
+  }
+
+  @objc
+  func shareDiagnosticText(
+    _ text: String,
+    resolve: @escaping RCTPromiseResolveBlock,
+    reject: @escaping RCTPromiseRejectBlock
+  ) {
+    DispatchQueue.global(qos: .utility).async {
+      do {
+        guard let data = text.data(using: .utf8), data.count <= 8 * 1024 * 1024 else {
+          reject("DIAGNOSTICS_EXPORT_FAILED", "Journal trop volumineux", nil)
+          return
+        }
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent("movix-diagnostics", isDirectory: true)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        let oldFiles = (try? FileManager.default.contentsOfDirectory(at: directory, includingPropertiesForKeys: [.contentModificationDateKey])) ?? []
+        for old in oldFiles {
+          if let date = try? old.resourceValues(forKeys: [.contentModificationDateKey]).contentModificationDate,
+             date < Date().addingTimeInterval(-86400) {
+            try? FileManager.default.removeItem(at: old)
+          }
+        }
+        let file = directory.appendingPathComponent("movix-diagnostic-\(UUID().uuidString).txt")
+        try data.write(to: file, options: .atomic)
+        DispatchQueue.main.async {
+          // Les paramètres et le journal sont des modales RN : présenter depuis
+          // le contrôleur visible, et ancrer aussi la feuille sur iPad.
+          guard let presenter = RCTPresentedViewController(), presenter.viewIfLoaded?.window != nil,
+                !(presenter is UIActivityViewController) else {
+            try? FileManager.default.removeItem(at: file)
+            reject("DIAGNOSTICS_SHARE_FAILED", "Écran de partage indisponible", nil)
+            return
+          }
+          let sheet = UIActivityViewController(activityItems: [file], applicationActivities: nil)
+          if let popover = sheet.popoverPresentationController {
+            popover.sourceView = presenter.view
+            popover.sourceRect = CGRect(x: presenter.view.bounds.midX, y: presenter.view.bounds.midY, width: 1, height: 1)
+            popover.permittedArrowDirections = []
+          }
+          sheet.completionWithItemsHandler = { _, completed, _, error in
+            try? FileManager.default.removeItem(at: file)
+            if error != nil {
+              reject("DIAGNOSTICS_SHARE_FAILED", "Partage impossible", nil)
+            } else {
+              resolve(completed)
+            }
+          }
+          presenter.present(sheet, animated: true)
+        }
+      } catch {
+        reject("DIAGNOSTICS_EXPORT_FAILED", "Création du fichier impossible", nil)
+      }
+    }
   }
 
   @objc

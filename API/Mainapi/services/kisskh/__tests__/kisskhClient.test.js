@@ -36,8 +36,8 @@ function createDeps(request, overrides = {}) {
   return {
     request,
     proxyPolicy: fakePolicy(),
-    baseUrl: 'https://kisskh.nl',
-    allowedHosts: ['kisskh.nl'],
+    baseUrl: 'https://kisskh.do',
+    allowedHosts: ['kisskh.do'],
     resolveDns: async () => [{ address: '93.184.216.34', family: 4 }],
     bundleRegistry: { async resolveApprovedAlgorithm() { return ALGORITHM; } },
     ...overrides,
@@ -88,7 +88,7 @@ test('default metadata transport uses authenticated SOCKS5h remote DNS for Proxy
   const request = createDefaultRequest({ request: harness.request });
 
   await request({
-    url: 'https://kisskh.nl/api/DramaList/Search?q=Business+Proposal',
+    url: 'https://kisskh.do/api/DramaList/Search?q=Business+Proposal',
     headers: { Accept: 'application/json' },
     timeout: 1_000,
     maxCompressedBytes: 2 * 1024 * 1024,
@@ -97,9 +97,9 @@ test('default metadata transport uses authenticated SOCKS5h remote DNS for Proxy
     proxy: PROXIES[0],
   });
 
-  assert.equal(harness.state.options.hostname, 'kisskh.nl');
-  assert.equal(harness.state.options.servername, 'kisskh.nl');
-  assert.equal(harness.state.options.headers.Host, 'kisskh.nl');
+  assert.equal(harness.state.options.hostname, 'kisskh.do');
+  assert.equal(harness.state.options.servername, 'kisskh.do');
+  assert.equal(harness.state.options.headers.Host, 'kisskh.do');
   assert.equal(harness.state.options.agent.shouldLookup, false, 'SOCKS5h must resolve through the proxy');
   assert.equal(harness.state.options.lookup, undefined);
 
@@ -121,7 +121,7 @@ test('default metadata transport uses authenticated SOCKS5h remote DNS for Proxy
   } finally {
     SocksClient.createConnection = originalCreateConnection;
   }
-  assert.deepEqual(socksOptions.destination, { host: 'kisskh.nl', port: 443 });
+  assert.deepEqual(socksOptions.destination, { host: 'kisskh.do', port: 443 });
 });
 
 test('uses the exact typed Search and Drama endpoints with bounded metadata options', async () => {
@@ -143,9 +143,27 @@ test('uses the exact typed Search and Drama endpoints with bounded metadata opti
   assert.ok(calls.every((call) => call.timeout === 10_000));
   assert.ok(calls.every((call) => call.maxCompressedBytes === 2 * 1024 * 1024));
   assert.ok(calls.every((call) => call.maxDecompressedBytes === 2 * 1024 * 1024));
-  assert.ok(calls.every((call) => call.headers.Referer === 'https://kisskh.nl/'));
+  assert.ok(calls.every((call) => call.headers.Referer === 'https://kisskh.do/'));
   assert.ok(calls.every((call) => call.proxy));
   assert.notEqual(calls[0].proxy, calls[1].proxy);
+});
+
+test('caches successful Search and Drama metadata without caching episode or subtitle responses', async () => {
+  let requests = 0;
+  const client = require('../kisskhClient').createKisskhClient(createDeps(async (options) => {
+    requests += 1;
+    const path = new URL(options.url).pathname;
+    if (path.includes('/Search')) return ok([]);
+    if (path.includes('/Drama/')) return ok({ id: 4608, title: 'Business Proposal', episodes: [] });
+    return ok({ id: 86439, Video: 'one-time' });
+  }));
+  assert.deepEqual(await client.search('Business Proposal'), []);
+  assert.deepEqual(await client.search('Business Proposal'), []);
+  assert.deepEqual(await client.getDrama(4608), { id: 4608, title: 'Business Proposal', episodes: [] });
+  assert.deepEqual(await client.getDrama(4608), { id: 4608, title: 'Business Proposal', episodes: [] });
+  await client.getEpisode(86439);
+  await client.getEpisode(86439);
+  assert.equal(requests, 4);
 });
 
 test('uses the paginated List endpoint with strict catalogue bounds', async () => {
@@ -166,6 +184,33 @@ test('uses the paginated List endpoint with strict catalogue bounds', async () =
   await assert.rejects(client.list(1, 101, 0), (error) => error.code === 'invalid_input');
   await assert.rejects(client.list(1, 100, 5), (error) => error.code === 'invalid_input');
   assert.equal(calls.length, 1);
+});
+
+test('partial catalogue requests use the provider Last Update order with bounded input', async () => {
+  const calls = [];
+  const client = require('../kisskhClient').createKisskhClient(createDeps(async (options) => {
+    calls.push(options);
+    return ok({ page: 1, pageSize: 100, totalCount: 1, data: [] });
+  }));
+  await client.list(1, 100, 0, 2);
+  assert.equal(new URL(calls[0].url).searchParams.get('order'), '2');
+  await assert.rejects(client.list(1, 100, 0, 4), (error) => error.code === 'invalid_input');
+  await assert.rejects(client.list(1, 100, 0, '2'), (error) => error.code === 'invalid_input');
+  assert.equal(calls.length, 1);
+});
+
+test('configured base URL supplies the default allowlist for scraping and subtitle metadata', async () => {
+  const calls = [];
+  const client = require('../kisskhClient').createKisskhClient(createDeps(async (options) => {
+    calls.push(options);
+    return ok([]);
+  }, { baseUrl: 'https://kisskh.tv/', allowedHosts: undefined }));
+  await client.search('Test drama', 0);
+  await client.getSubtitles(86439);
+  assert.equal(calls.length, 2);
+  assert.ok(calls.every((call) => new URL(call.url).origin === 'https://kisskh.tv'));
+  assert.ok(calls.every((call) => call.headers.Referer === 'https://kisskh.tv/'));
+  assert.equal(new URL(calls[1].url).pathname, '/api/Sub/86439');
 });
 
 test('Episode and Sub use exact current paths and distinct approved kkey contexts', async () => {
@@ -260,6 +305,56 @@ test('transport failures rotate proxies for at most three attempts', async () =>
   assert.deepEqual(calls.map((call) => call.proxy.host), PROXIES.map((proxy) => proxy.host));
 });
 
+test('an unavailable provider cools down without proxy or Redis work and can recover', async () => {
+  for (const failure of ['timeout', 'http503']) {
+    let clock = 10_000;
+    let requests = 0;
+    let bundleReads = 0;
+    let offline = true;
+    const policy = fakePolicy();
+    const client = require('../kisskhClient').createKisskhClient(createDeps(async () => {
+      requests += 1;
+      if (!offline) return ok([]);
+      if (failure === 'timeout') throw new Error('metadata timeout');
+      return { status: 503, headers: {}, data: {} };
+    }, { proxyPolicy: policy, now: () => clock,
+      bundleRegistry: { async resolveApprovedAlgorithm() { bundleReads += 1; return ALGORITHM; } },
+    }));
+    await assert.rejects(client.search('First'), { code: 'provider_unavailable' });
+    assert.equal(requests, 3);
+    const before = policy.calls.reserve;
+    const burst = await Promise.allSettled(Array.from({ length: 100 }, (_, index) =>
+      index % 2 ? client.search(`Title ${index}`) : client.getEpisode(index + 1)));
+    assert.ok(burst.every((result) => result.status === 'rejected'
+      && result.reason.code === 'provider_unavailable'));
+    assert.equal(requests, 3);
+    assert.equal(policy.calls.reserve, before);
+    assert.equal(bundleReads, 0, 'the cooldown also protects bundle metadata reads');
+    clock += 60_000;
+    offline = false;
+    assert.deepEqual(await client.search('Recovered'), []);
+    assert.equal(requests, 4);
+  }
+});
+
+test('pending metadata requests are bounded before proxy selection and slots are released', async () => {
+  let release;
+  const pending = new Promise((resolve) => { release = resolve; });
+  const policy = fakePolicy();
+  const client = require('../kisskhClient').createKisskhClient(createDeps(async () => {
+    await pending;
+    return ok([]);
+  }, { proxyPolicy: policy }));
+  const burst = Promise.allSettled(Array.from({ length: 100 }, (_, index) => client.search(`Title ${index}`)));
+  await new Promise((resolve) => setImmediate(resolve));
+  const selected = policy.calls.reserve;
+  release();
+  const results = await burst;
+  assert.ok(selected > 0 && selected <= 12, `selected: ${selected}`);
+  assert.equal(results.filter((result) => result.status === 'fulfilled').length, selected);
+  assert.deepEqual(await client.search('Next'), []);
+});
+
 test('redirects are manual and HTTPS/allowlist/public DNS is revalidated every hop', async () => {
   const requests = [];
   const dnsCalls = [];
@@ -281,7 +376,7 @@ test('redirects are manual and HTTPS/allowlist/public DNS is revalidated every h
   assert.equal(requests.length, 2);
   assert.ok(requests.every((request) => request.redirect === 'manual'));
   assert.equal(requests[0].proxy, requests[1].proxy);
-  assert.deepEqual(dnsCalls, ['kisskh.nl', 'kisskh.nl']);
+  assert.deepEqual(dnsCalls, ['kisskh.do', 'kisskh.do']);
   assert.equal(policy.calls.reserveGlobal, 2);
 });
 
@@ -333,12 +428,12 @@ test('safe errors redact full URLs, kkeys, query values and proxy credentials', 
   }
   assert.equal(caught.code, 'provider_unavailable');
   const publicError = JSON.stringify(caught);
-  assert.doesNotMatch(`${caught.message} ${publicError}`, /kisskh\.nl|kkey|86439|user|secret|https?:/i);
+  assert.doesNotMatch(`${caught.message} ${publicError}`, /kisskh\.do|kkey|86439|user|secret|https?:/i);
 });
 
 test('invalid base URLs and unbounded inputs fail closed', async () => {
   const { createKisskhClient } = require('../kisskhClient');
-  assert.throws(() => createKisskhClient(createDeps(async () => ok([]), { baseUrl: 'http://kisskh.nl' })));
+  assert.throws(() => createKisskhClient(createDeps(async () => ok([]), { baseUrl: 'http://kisskh.do' })));
   const client = createKisskhClient(createDeps(async () => ok([])));
   await assert.rejects(client.search(' '.repeat(3)), (error) => error.code === 'invalid_input');
   await assert.rejects(client.search('x'.repeat(201)), (error) => error.code === 'invalid_input');

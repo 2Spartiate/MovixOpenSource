@@ -293,14 +293,12 @@ const Movies: React.FC = () => {
   const [featuredMovies, setFeaturedMovies] = useState<Movie[]>([]);
   const [topMovies, setTopMovies] = useState<Movie[]>([]);
   const [categories, setCategories] = useState<Category[]>([]);
-  const [currentMovieIndex, setCurrentMovieIndex] = useState(0);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [currentPage, setCurrentPage] = useState(1);
   const [hasMore, setHasMore] = useState(true);
   const [isLoadingMore, setIsLoadingMore] = useState(false);
   const observer = useRef<IntersectionObserver>();
-  const sliderIntervalRef = useRef<NodeJS.Timeout | null>(null);
   const [isTop10CardHovered, setIsTop10CardHovered] = React.useState(false);
   const top10RowRef = React.useRef<HTMLDivElement>(null);
   const [genreItems, setGenreItems] = useState<{ id: number; name: string; route: string; imageUrl?: string }[]>([
@@ -723,22 +721,7 @@ const Movies: React.FC = () => {
   }, [currentPage]);
 
 
-  // Function to handle manual navigation
-  const handleManualNavigation = (index: number) => {
-    // Reset timer when manually changing slide
-    if (sliderIntervalRef.current) {
-      clearInterval(sliderIntervalRef.current);
-    }
 
-    setCurrentMovieIndex(index);
-
-    // Set new interval
-    sliderIntervalRef.current = setInterval(() => {
-      setCurrentMovieIndex(prevIndex =>
-        prevIndex === featuredMovies.length - 1 ? 0 : prevIndex + 1
-      );
-    }, 6000);
-  };
 
   const getWatchStatus = (movieId: number) => {
     const watchlistItems = JSON.parse(localStorage.getItem('watchlist_movie') || '[]');

@@ -1,5 +1,5 @@
 import React, { useEffect, useLayoutEffect, useState, useRef, lazy, Suspense } from 'react';
-import { BrowserRouter, Routes, Route, Navigate, useLocation, useNavigationType, useNavigate, matchPath } from 'react-router-dom';
+import { BrowserRouter, Routes, Route, Navigate, useLocation, useNavigationType, useNavigate } from 'react-router-dom';
 import { Toaster } from './components/ui/sonner';
 import { TooltipProvider } from './components/ui/tooltip';
 import Header from './components/Header';
@@ -29,6 +29,7 @@ import RequireUsernameChange from './components/RequireUsernameChange';
 import { TopProgressBar } from './components/TopProgressBar';
 import SmoothScroll from './components/SmoothScroll';
 import { ROUTES, type RouteEntry } from './routing/registry';
+import { IdleRoutePrefetch } from '@/routing/IdleRoutePrefetch';
 import { DelayedSuspense } from './components/DelayedSuspense';
 import { RouteProgressBar } from './components/RouteProgressBar';
 import ScreenSaver from './components/ScreenSaver';
@@ -36,6 +37,7 @@ import { useIdleTimer } from './hooks/useIdleTimer';
 import { startVipVerification } from './utils/vipUtils';
 import { broadcastAuthChange, clearStoredAuthSession, getResolvedAccountContext } from './utils/accountAuth';
 import { isSyncableStorageKey, SYNC_OUTBOX_STORAGE_KEY } from './utils/syncStorage';
+import { isWrappedTestRoute } from './utils/wrappedExperiment';
 import i18n, { detectInitialLanguage } from './i18n';
 import { useTranslation } from 'react-i18next';
 import { motion, AnimatePresence, MotionConfig } from 'framer-motion';
@@ -300,6 +302,8 @@ const ScrollToTop = () => {
   const location = useLocation();
   const navigationType = useNavigationType();
   const prevPathRef = React.useRef(location.pathname);
+  const prevScrollUrlRef = React.useRef<string | null>(null);
+  const prevScrollNavigationTypeRef = React.useRef(navigationType);
 
   useEffect(() => {
     const handleRestorationSync = (event?: StorageEvent) => {
@@ -334,6 +338,13 @@ const ScrollToTop = () => {
   useLayoutEffect(() => {
     const { preserveScrollOnBack, disableRouteScrollToTop } = syncHistoryScrollRestoration();
     const isBackOrForward = navigationType === 'POP';
+    const scrollUrl = location.pathname + location.search;
+    const navigationTypeChanged = prevScrollNavigationTypeRef.current !== navigationType;
+    prevScrollNavigationTypeRef.current = navigationType;
+    // Fermer un lecteur via l'historique change PUSH en POP sans changer de
+    // page : conserver le défilement et éviter un nouveau scan du DOM.
+    if (prevScrollUrlRef.current === scrollUrl && navigationTypeChanged) return undefined;
+    prevScrollUrlRef.current = scrollUrl;
 
     // Sur /search, ne pas scroll to top si seuls les query params changent (pagination)
     const pathChanged = prevPathRef.current !== location.pathname;
@@ -1673,8 +1684,8 @@ const ProfileGate: React.FC<{ children: React.ReactNode }> = ({ children }) => {
     };
   }, [isLoading, profiles.length, isAuthenticated, loadingTimedOut]);
 
-  // Don't show profile gate for non-authenticated users, VIP users, watch routes, or BIP39 link flows
-  if (!isAuthenticated || isVipUser || isVipAuth || isWatchRoute || isBip39LinkRoute || isOauthAuthorizeRoute) {
+  // La démonstration Wrapped utilise exclusivement des fixtures, sans profil.
+  if (!isAuthenticated || isVipUser || isVipAuth || isWatchRoute || isBip39LinkRoute || isOauthAuthorizeRoute || isWrappedTestRoute(location.pathname, location.search)) {
     if (isWatchRoute || isBip39LinkRoute || isOauthAuthorizeRoute) {
       debugAppLog('ProfileGate: Skipping profile gate for route:', location.pathname);
     }
@@ -1830,39 +1841,10 @@ const AppWithIntro: React.FC = () => {
     });
   }, []);
 
-  // Idle prefetch (Milestone 6): preload high-traffic route chunks.
-  // Perf : attend window.load + un VRAI idle (pas de { timeout } forcé — l'ancien
-  // timeout de 3s tirait en plein burst de chargement de la Home sur machines lentes),
-  // et respecte Data Saver.
-  useEffect(() => {
-    const IDLE_PREFETCH = ['/movies', '/tv-shows', '/anime', '/search'];
-    if ((navigator as Navigator & { connection?: { saveData?: boolean } }).connection?.saveData === true) {
-      return;
-    }
-
-    const prefetch = () => {
-      const ric: (cb: () => void) => void =
-        (window as Window & { requestIdleCallback?: (cb: () => void) => number }).requestIdleCallback
-          ? (cb) => (window as unknown as { requestIdleCallback: (cb: () => void) => number }).requestIdleCallback(cb)
-          : (cb) => { setTimeout(cb, 8000); };
-      ric(() => {
-        for (const path of IDLE_PREFETCH) {
-          const entry = ROUTES.find(r => matchPath(r.path, path));
-          entry?.loader({ silent: true }).catch(() => {/* swallow — best-effort prefetch */});
-        }
-      });
-    };
-
-    if (document.readyState === 'complete') {
-      prefetch();
-      return;
-    }
-    window.addEventListener('load', prefetch, { once: true });
-    return () => window.removeEventListener('load', prefetch);
-  }, []);
 
   return (
     <div id={PLAYER_FULLSCREEN_HOST_ID} className="min-h-screen bg-black text-white relative overflow-clip">
+      <IdleRoutePrefetch />
       {/* Intro overlay — le site charge derrière */}
       {showIntro && (
         <Suspense fallback={null}>
@@ -1978,8 +1960,8 @@ const MaintenancePage = ({ onContinue }: { onContinue: () => void }) => (
 
 // Wraps the tree in a <MotionConfig> tied to the Mode léger / animation prefs.
 // When `transitions` is disabled (manually or because Mode léger is on),
-// framer-motion treats EVERY animation as if `prefers-reduced-motion: reduce`
-// were set — initial/animate/exit are skipped on transform/opacity for free.
+// MotionConfig limite les transformations. LightModeProvider coupe aussi
+// les fondus et les délais via MotionGlobalConfig.skipAnimations.
 const AnimationMotionConfig: React.FC<{ children: React.ReactNode }> = ({ children }) => {
   const { effectivePrefs } = useLightMode();
   return (

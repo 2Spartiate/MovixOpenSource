@@ -1,14 +1,35 @@
 const crypto = require('node:crypto');
 const { performance } = require('node:perf_hooks');
+const { KisskhError } = require('./errors');
 
 const KEY_PREFIX = 'kisskh:metadata';
-const GLOBAL_MIN_INTERVAL_MS = 1;
+const GLOBAL_MIN_INTERVAL_MS = 100;
+const GLOBAL_NEXT_KEY = `${KEY_PREFIX}:global:next`;
+const GLOBAL_MAX_WAIT_MS = 2_000;
+const GLOBAL_MAX_PENDING = 20;
 const PROXY_MIN_INTERVAL_MS = 1000;
-const RATE_LIMIT_QUARANTINE_MS = 60_000;
 const MAX_PROXY_CANDIDATES = 1000;
+const MAX_PROXY_RESERVATIONS = 32;
+const MAX_PENDING_RESERVATIONS = 12;
 const DEFAULT_RESERVATION_DEADLINE_MS = 2000;
 const MAX_RESERVATION_DEADLINE_MS = 10_000;
 const DEADLINE_EXCEEDED = Symbol('deadline_exceeded');
+const BREAKER_KEY = `${KEY_PREFIX}:breaker:429`;
+const CIRCUIT_DEFAULT_MS = 60_000;
+const RESERVE_GLOBAL_SCRIPT = [
+  "local current = tonumber(redis.call('GET', KEYS[1]) or '0')",
+  'local now = tonumber(ARGV[1])',
+  'local interval = tonumber(ARGV[2])',
+  'local slot = math.max(now, current)',
+  'if slot - now >= tonumber(ARGV[3]) then return -1 end',
+  'local next_slot = slot + interval',
+  "redis.call('SET', KEYS[1], tostring(next_slot), 'PX', next_slot - now + interval)",
+  'return slot - now',
+].join('\n');
+
+function rateLimited() {
+  return new KisskhError('provider_rate_limited', 'KissKH temporairement limite');
+}
 
 function normalizeProxyIdentity(proxy) {
   if (typeof proxy === 'string') {
@@ -43,6 +64,30 @@ function positiveInteger(value, fallback, label) {
   return selected;
 }
 
+function pickRetryAfter(headers) {
+  if (!headers || typeof headers !== 'object') return null;
+  if (typeof headers['retry-after'] === 'string') return headers['retry-after'];
+  if (typeof headers['Retry-After'] === 'string') return headers['Retry-After'];
+  const key = Object.keys(headers).find((value) => value.toLowerCase() === 'retry-after');
+  return typeof key === 'string' ? headers[key] : null;
+}
+
+function parseRetryAfterValue(value, nowMs, circuitDefaultMs) {
+  if (typeof value !== 'string' || !value.trim()) {
+    return nowMs + Math.max(1_000, circuitDefaultMs);
+  }
+  const trimmed = value.trim();
+  const numeric = Number.parseInt(trimmed, 10);
+  if (String(numeric) === trimmed && Number.isSafeInteger(numeric) && numeric >= 0) {
+    return nowMs + Math.max(1_000, circuitDefaultMs, numeric * 1_000);
+  }
+  const byDate = Date.parse(trimmed);
+  if (Number.isFinite(byDate)) {
+    return Math.max(byDate, nowMs + Math.max(1_000, circuitDefaultMs));
+  }
+  return nowMs + Math.max(1_000, circuitDefaultMs);
+}
+
 function createKisskhProxyPolicy(deps = {}) {
   const redis = deps.redis || require('../../config/redis').redis;
   const proxyManager = !deps.getProxyCandidates || !deps.reserveProxy
@@ -65,6 +110,7 @@ function createKisskhProxyPolicy(deps = {}) {
   );
   const quarantineBaseMs = positiveInteger(deps.quarantineBaseMs, 30_000, 'quarantineBaseMs');
   const quarantineMaxMs = positiveInteger(deps.quarantineMaxMs, 900_000, 'quarantineMaxMs');
+  const circuitDefaultMs = positiveInteger(deps.circuitDefaultMs, CIRCUIT_DEFAULT_MS, 'circuitDefaultMs');
   if (quarantineMaxMs < quarantineBaseMs || maxCandidates > MAX_PROXY_CANDIDATES
       || reservationDeadlineMs > MAX_RESERVATION_DEADLINE_MS
       || typeof getProxyCandidates !== 'function' || typeof reserveProxy !== 'function'
@@ -73,14 +119,45 @@ function createKisskhProxyPolicy(deps = {}) {
   }
   const fallback = new Map();
   let globalNextAt = 0;
+  let globalPending = 0;
+  let globalRetryAt = 0;
+  let reservationsPending = 0;
+  let reservationRetryAt = 0;
+  let blockedUntil = 0;
+  let breakerRead = null;
 
   async function reserveGlobal() {
     const requestedAt = now();
-    const slot = Math.max(requestedAt, globalNextAt);
-    globalNextAt = slot + GLOBAL_MIN_INTERVAL_MS;
-    const waitMs = slot - requestedAt;
-    if (waitMs > 0) await sleep(waitMs);
-    return waitMs;
+    if (globalPending >= GLOBAL_MAX_PENDING || requestedAt < globalRetryAt
+        || globalNextAt - requestedAt >= GLOBAL_MAX_WAIT_MS) throw rateLimited();
+    globalPending += 1;
+    try {
+      let waitMs;
+      const evaluateRedisScript = redis?.['eval']?.bind(redis);
+      if (typeof evaluateRedisScript === 'function') {
+        try {
+          waitMs = Number(await evaluateRedisScript(
+            RESERVE_GLOBAL_SCRIPT, 1, GLOBAL_NEXT_KEY,
+            requestedAt, GLOBAL_MIN_INTERVAL_MS, GLOBAL_MAX_WAIT_MS,
+          ));
+          if (!Number.isSafeInteger(waitMs) || waitMs < -1 || waitMs >= GLOBAL_MAX_WAIT_MS) {
+            waitMs = undefined;
+          }
+        } catch {
+          // Sans Redis, conserver la meme borne dans ce processus.
+        }
+      }
+      if (waitMs === undefined) waitMs = Math.max(0, globalNextAt - requestedAt);
+      if (waitMs === -1 || waitMs >= GLOBAL_MAX_WAIT_MS) {
+        globalRetryAt = now() + GLOBAL_MIN_INTERVAL_MS;
+        throw rateLimited();
+      }
+      globalNextAt = Math.max(globalNextAt, requestedAt + waitMs + GLOBAL_MIN_INTERVAL_MS);
+      if (waitMs > 0) await sleep(waitMs);
+      return waitMs;
+    } finally {
+      globalPending -= 1;
+    }
   }
 
   async function read(key) {
@@ -156,60 +233,114 @@ function createKisskhProxyPolicy(deps = {}) {
   }
 
   async function assertCircuitClosed() {
+    // Une panne connue doit etre rejetee avant de produire du travail Redis.
+    if (blockedUntil > now()) throw rateLimited();
+    if (!breakerRead) {
+      const pending = read(BREAKER_KEY).then((value) => {
+        const expiry = Number(value);
+        if (Number.isFinite(expiry)) blockedUntil = Math.max(blockedUntil, expiry);
+      });
+      breakerRead = pending;
+      pending.finally(() => {
+        if (breakerRead === pending) breakerRead = null;
+      }).catch(() => {});
+    }
+    await breakerRead;
+    if (blockedUntil > now()) throw rateLimited();
+    // Redis expire sa cle tout seul. Un DEL ici serait inutile a chaque miss
+    // et pourrait effacer un nouveau circuit ouvert par un autre worker.
+    fallback.delete(BREAKER_KEY);
     return true;
   }
 
   async function reserve() {
+    if (blockedUntil > now()) throw rateLimited();
+    if (reservationsPending >= MAX_PENDING_RESERVATIONS || now() < reservationRetryAt) return null;
+    reservationsPending += 1;
+    try {
+      const proxy = await selectProxy();
+      if (!proxy) reservationRetryAt = now() + PROXY_MIN_INTERVAL_MS;
+      return proxy;
+    } finally {
+      reservationsPending -= 1;
+    }
+  }
+
+  async function selectProxy() {
     const deadlineAt = deadlineNow() + reservationDeadlineMs;
+    const circuit = await runBeforeDeadline(assertCircuitClosed, deadlineAt);
+    if (circuit === DEADLINE_EXCEEDED) return null;
     const rawCandidates = await runBeforeDeadline(
       () => getProxyCandidates({ maxCandidates }),
       deadlineAt,
     );
     if (rawCandidates === DEADLINE_EXCEEDED) return null;
-    if (!Array.isArray(rawCandidates) || rawCandidates.length > maxCandidates) {
+    if (!rawCandidates || typeof rawCandidates !== 'object'
+        || typeof rawCandidates[Symbol.iterator] !== 'function'
+        || (Array.isArray(rawCandidates) && rawCandidates.length > maxCandidates)) {
       throw new TypeError('candidats proxy KissKH invalides');
     }
 
+    const iterator = rawCandidates[Symbol.iterator]();
     const seen = new Set();
-    const candidates = [];
-    for (const proxy of rawCandidates) {
-      const keys = proxyKeys(proxy);
-      if (seen.has(keys.digest)) continue;
-      seen.add(keys.digest);
-      candidates.push({ proxy, quarantine: keys.quarantine });
-    }
-    if (!candidates.length) return null;
+    let scanned = 0;
+    let reservations = 0;
+    let exhausted = false;
+    let batchSize = 1;
 
-    const quarantineValues = await runBeforeDeadline(
-      () => readMany(candidates.map(({ quarantine }) => quarantine)),
-      deadlineAt,
-    );
-    if (quarantineValues === DEADLINE_EXCEEDED) return null;
-    const checkedAt = now();
-    const expiredKeys = [];
-    const eligible = [];
-    candidates.forEach((candidate, index) => {
-      const rawExpiry = quarantineValues[index];
-      const expiresAt = rawExpiry === null || rawExpiry === undefined ? Number.NaN : Number(rawExpiry);
-      if (Number.isFinite(expiresAt) && expiresAt > checkedAt) return;
-      if (Number.isFinite(expiresAt)) expiredKeys.push(candidate.quarantine);
-      eligible.push(candidate.proxy);
-    });
-    if (expiredKeys.length) {
-      const removed = await runBeforeDeadline(() => remove(...expiredKeys), deadlineAt);
-      if (removed === DEADLINE_EXCEEDED) return null;
-    }
+    while (!exhausted && scanned < maxCandidates && reservations < MAX_PROXY_RESERVATIONS) {
+      if (deadlineNow() >= deadlineAt) return null;
+      const candidates = [];
+      while (candidates.length < batchSize && scanned < maxCandidates) {
+        const next = iterator.next();
+        if (next.done) {
+          exhausted = true;
+          break;
+        }
+        scanned += 1;
+        const keys = proxyKeys(next.value);
+        if (seen.has(keys.digest)) continue;
+        seen.add(keys.digest);
+        candidates.push({ proxy: next.value, quarantine: keys.quarantine });
+      }
+      if (!candidates.length) return null;
 
-    for (const proxy of eligible) {
-      const reserved = await runBeforeDeadline(
-        () => reserveProxy(proxy, { minIntervalMs: PROXY_MIN_INTERVAL_MS }),
+      const quarantineValues = await runBeforeDeadline(
+        () => readMany(candidates.map(({ quarantine }) => quarantine)),
         deadlineAt,
       );
-      if (reserved === DEADLINE_EXCEEDED) return null;
-      if (reserved === true) return proxy;
-      if (reserved !== false) {
-        throw new TypeError('reservation proxy KissKH invalide');
+      if (quarantineValues === DEADLINE_EXCEEDED) return null;
+      const checkedAt = now();
+      const expiredKeys = [];
+      const eligible = [];
+      candidates.forEach((candidate, index) => {
+        const rawExpiry = quarantineValues[index];
+        const expiresAt = rawExpiry === null || rawExpiry === undefined ? Number.NaN : Number(rawExpiry);
+        if (Number.isFinite(expiresAt) && expiresAt > checkedAt) return;
+        if (Number.isFinite(expiresAt)) expiredKeys.push(candidate.quarantine);
+        eligible.push(candidate.proxy);
+      });
+      if (expiredKeys.length) {
+        const removed = await runBeforeDeadline(() => remove(...expiredKeys), deadlineAt);
+        if (removed === DEADLINE_EXCEEDED) return null;
       }
+
+      for (const proxy of eligible) {
+        if (reservations >= MAX_PROXY_RESERVATIONS) return null;
+        reservations += 1;
+        const reserved = await runBeforeDeadline(
+          () => reserveProxy(proxy, { minIntervalMs: PROXY_MIN_INTERVAL_MS }),
+          deadlineAt,
+        );
+        if (reserved === DEADLINE_EXCEEDED) return null;
+        if (reserved === true) return proxy;
+        if (reserved !== false) {
+          throw new TypeError('reservation proxy KissKH invalide');
+        }
+      }
+      // Le premier proxy suffit normalement. En cas d'indisponibilite, lire
+      // les quarantaines par petits lots pour borner les allers-retours Redis.
+      batchSize = MAX_PROXY_RESERVATIONS;
     }
     return null;
   }
@@ -231,11 +362,23 @@ function createKisskhProxyPolicy(deps = {}) {
     await remove(keys.failures, keys.quarantine);
   }
 
-  async function record429(proxy) {
-    const keys = proxyKeys(proxy);
-    const expiresAt = now() + RATE_LIMIT_QUARANTINE_MS;
-    await write(keys.quarantine, expiresAt, RATE_LIMIT_QUARANTINE_MS);
-    return expiresAt;
+  async function record429(proxyOrHeaders, maybeHeaders = null) {
+    const headers = maybeHeaders === null ? proxyOrHeaders : maybeHeaders;
+    const nowMs = now();
+    const previous = Number(await read(BREAKER_KEY));
+    const previousUntil = Number.isFinite(previous) ? previous : 0;
+    const nextUntil = Math.max(parseRetryAfterValue(
+      pickRetryAfter(headers),
+      nowMs,
+      circuitDefaultMs,
+    ), previousUntil, blockedUntil);
+    blockedUntil = nextUntil;
+    await write(BREAKER_KEY, nextUntil, Math.max(nextUntil - nowMs, circuitDefaultMs));
+    if (nextUntil <= nowMs) {
+      await remove(BREAKER_KEY);
+      return nowMs;
+    }
+    return nextUntil;
   }
 
   return Object.freeze({ assertCircuitClosed, record429, recordFailure, recordSuccess, reserve, reserveGlobal });

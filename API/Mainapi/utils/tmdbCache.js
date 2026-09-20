@@ -8,10 +8,12 @@
 
 const axios = require('axios');
 const { redis } = require('../config/redis');
+const { createSingleFlight } = require('./singleFlight');
 
 // TTL par type de requête
 const TTL_DETAILS = 24 * 60 * 60;  // 24h — les détails d'un film/série changent rarement
 const TTL_SEARCH  = 12 * 60 * 60;  // 12h — les résultats de recherche peuvent évoluer
+const runTmdbRequest = createSingleFlight();
 
 function redisReady() {
   return redis && redis.status === 'ready';
@@ -32,6 +34,36 @@ async function redisSet(key, value, ttl) {
   } catch { /* ignore */ }
 }
 
+/** Attend un travail partagé sans transmettre l'annulation d'un appelant au transport. */
+function waitForCaller(promise, signal) {
+  if (!signal) return promise;
+  if (signal.aborted) return Promise.resolve(null);
+
+  return new Promise((resolve) => {
+    const onAbort = () => resolve(null);
+    signal.addEventListener('abort', onAbort, { once: true });
+    promise.then(resolve, () => resolve(null)).finally(() => signal.removeEventListener('abort', onAbort));
+  });
+}
+
+/**
+ * Partage le miss Redis dans le worker puis revalide le cache avant l'appel amont.
+ * La promesse commune ne reçoit jamais le signal HTTP d'un appelant individuel.
+ */
+function getOrFetch(redisKey, ttl, request) {
+  return runTmdbRequest(redisKey, async () => {
+    const cached = await redisGet(redisKey);
+    if (cached) return cached;
+    try {
+      const data = await request();
+      if (data) await redisSet(redisKey, data, ttl);
+      return data || null;
+    } catch {
+      return null;
+    }
+  });
+}
+
 /**
  * Récupère les détails TMDB pour un ID donné, avec cache Redis.
  * Clé : tmdb:details:{type}:{id}
@@ -43,29 +75,23 @@ async function redisSet(key, value, ttl) {
  * @param {string} [language] - Langue (défaut: "fr-FR")
  * @returns {object|null}
  */
-async function fetchTmdbDetails(tmdbApiUrl, tmdbApiKey, id, type, language = 'fr-FR') {
+async function fetchTmdbDetails(tmdbApiUrl, tmdbApiKey, id, type, language = 'fr-FR', { signal } = {}) {
+  if (signal?.aborted) return null;
   const redisKey = `tmdb:details:${type}:${id}:${language}`;
 
   // 1. Cache Redis
   const cached = await redisGet(redisKey);
   if (cached) return cached;
+  if (signal?.aborted) return null;
 
-  // 2. Appel API TMDB
-  try {
+  const work = getOrFetch(redisKey, TTL_DETAILS, async () => {
     const response = await axios.get(`${tmdbApiUrl}/${type}/${id}`, {
       params: { api_key: tmdbApiKey, language },
-      timeout: 10000
+      timeout: 10000,
     });
-
-    if (!response.data) return null;
-
-    // 3. Sauvegarder dans Redis
-    await redisSet(redisKey, response.data, TTL_DETAILS);
     return response.data;
-  } catch (error) {
-    // Ne pas cacher les erreurs
-    return null;
-  }
+  });
+  return waitForCaller(work, signal);
 }
 
 /**
@@ -87,19 +113,14 @@ async function searchTmdb(tmdbApiUrl, tmdbApiKey, type, query, extraParams = {},
   const cached = await redisGet(redisKey);
   if (cached) return cached;
 
-  try {
+  return getOrFetch(redisKey, TTL_SEARCH, async () => {
     const response = await axios.get(`${tmdbApiUrl}/search/${type}`, {
       params: { api_key: tmdbApiKey, query, language, ...extraParams },
       timeout: 10000
     });
 
-    if (response.data) {
-      await redisSet(redisKey, response.data, TTL_SEARCH);
-    }
     return response.data;
-  } catch (error) {
-    return null;
-  }
+  });
 }
 
 /**
@@ -112,19 +133,14 @@ async function fetchTmdbSeason(tmdbApiUrl, tmdbApiKey, tvId, seasonNumber, langu
   const cached = await redisGet(redisKey);
   if (cached) return cached;
 
-  try {
+  return getOrFetch(redisKey, TTL_DETAILS, async () => {
     const response = await axios.get(`${tmdbApiUrl}/tv/${tvId}/season/${seasonNumber}`, {
       params: { api_key: tmdbApiKey, language },
       timeout: 10000
     });
 
-    if (response.data) {
-      await redisSet(redisKey, response.data, TTL_DETAILS);
-    }
     return response.data;
-  } catch (error) {
-    return null;
-  }
+  });
 }
 
 /**
@@ -137,18 +153,13 @@ async function fetchTmdbAlternativeTitles(tmdbApiUrl, tmdbApiKey, id, mediaType 
   const cached = await redisGet(redisKey);
   if (cached) return cached;
 
-  try {
+  return getOrFetch(redisKey, TTL_DETAILS, async () => {
     const response = await axios.get(`${tmdbApiUrl}/${mediaType}/${id}/alternative_titles`, {
       params: { api_key: tmdbApiKey },
       timeout: 10000
     });
-    if (response.data) {
-      await redisSet(redisKey, response.data, TTL_DETAILS);
-    }
     return response.data;
-  } catch {
-    return null;
-  }
+  });
 }
 
 /**
@@ -168,25 +179,20 @@ async function fetchTmdbFrenchReleaseYear(tmdbApiUrl, tmdbApiKey, id) {
     return null;
   }
 
-  try {
+  const data = await getOrFetch(redisKey, TTL_DETAILS, async () => {
     const response = await axios.get(`${tmdbApiUrl}/movie/${id}/release_dates`, {
       params: { api_key: tmdbApiKey },
       timeout: 10000
     });
 
-    if (response.data) {
-      await redisSet(redisKey, response.data, TTL_DETAILS);
-    }
-
-    const frRelease = response.data?.results?.find(r => r.iso_3166_1 === 'FR');
-    if (frRelease && frRelease.release_dates && frRelease.release_dates.length > 0) {
-      const date = frRelease.release_dates[0].release_date;
-      if (date) return new Date(date).getFullYear();
-    }
-    return null;
-  } catch (error) {
-    return null;
+    return response.data;
+  });
+  const frRelease = data?.results?.find(r => r.iso_3166_1 === 'FR');
+  if (frRelease && frRelease.release_dates && frRelease.release_dates.length > 0) {
+    const date = frRelease.release_dates[0].release_date;
+    if (date) return new Date(date).getFullYear();
   }
+  return null;
 }
 
 /**
@@ -199,19 +205,14 @@ async function fetchTmdbImages(tmdbApiUrl, tmdbApiKey, id, type) {
   const cached = await redisGet(redisKey);
   if (cached) return cached;
 
-  try {
+  return getOrFetch(redisKey, TTL_DETAILS, async () => {
     const response = await axios.get(`${tmdbApiUrl}/${type}/${id}/images`, {
       params: { api_key: tmdbApiKey },
       timeout: 10000
     });
 
-    if (response.data) {
-      await redisSet(redisKey, response.data, TTL_DETAILS);
-    }
     return response.data;
-  } catch (error) {
-    return null;
-  }
+  });
 }
 
 module.exports = {

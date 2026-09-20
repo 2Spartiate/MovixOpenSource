@@ -1,5 +1,7 @@
 import { useEffect, useRef, useState } from 'react';
 import { getActiveChunkLoads } from '../routing/lazyWithRetry';
+import { useLightMode } from '@/context/LightModeContext';
+import { useTranslation } from 'react-i18next';
 
 const SHOW_DELAY_MS = 120;
 const COMPLETE_FILL_MS = 400;
@@ -21,7 +23,7 @@ type Phase = 'idle' | 'loading' | 'completing' | 'fading';
  *
  * Mounted once at the App level; survives across route changes.
  */
-export const TopProgressBar = () => {
+const AnimatedTopProgressBar = () => {
   const [phase, setPhase] = useState<Phase>('idle');
   const startTimeRef = useRef<number>(0);
   const progressRef = useRef<number>(0);
@@ -175,6 +177,7 @@ export const TopProgressBar = () => {
 
   return (
     <div
+      data-top-progress
       aria-hidden="true"
       style={{
         position: 'fixed',
@@ -203,4 +206,35 @@ export const TopProgressBar = () => {
       />
     </div>
   );
+};
+
+const StaticTopProgressBar = () => {
+  const { t } = useTranslation();
+  const [loading, setLoading] = useState(() => getActiveChunkLoads() > 0);
+  useEffect(() => {
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const start = () => {
+      clearTimeout(timer);
+      timer = setTimeout(() => setLoading(true), SHOW_DELAY_MS);
+    };
+    const end = () => { clearTimeout(timer); setLoading(false); };
+    window.addEventListener('chunk:load:start', start);
+    window.addEventListener('chunk:load:end', end);
+    if (getActiveChunkLoads() > 0) setLoading(true);
+    return () => {
+      clearTimeout(timer);
+      window.removeEventListener('chunk:load:start', start);
+      window.removeEventListener('chunk:load:end', end);
+    };
+  }, []);
+  return loading ? (
+    <div data-top-progress role="status" className="pointer-events-none fixed inset-x-0 top-0 z-[2147483647] h-0.5 bg-red-600">
+      <span className="sr-only">{t('common.loading')}</span>
+    </div>
+  ) : null;
+};
+
+export const TopProgressBar = () => {
+  const { effectivePrefs } = useLightMode();
+  return effectivePrefs.loadingAnimations && effectivePrefs.transitions ? <AnimatedTopProgressBar /> : <StaticTopProgressBar />;
 };

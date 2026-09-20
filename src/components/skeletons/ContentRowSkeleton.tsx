@@ -1,8 +1,12 @@
 import React from 'react';
 import { ChevronLeft, ChevronRight } from 'lucide-react';
 import { Skeleton } from '@/components/ui/Skeleton';
+import { useLightMode } from '@/context/LightModeContext';
+import { LightweightLoading } from '@/components/LightweightLoading';
 
 const ContentRowSkeleton: React.FC = () => {
+  const { isLightMode } = useLightMode();
+  if (isLightMode) return <LightweightLoading className="mb-8 min-h-[200px]" />;
   return (
     <div className="mb-8 animate-skeleton-fade">
       {/* Title (matches text-2xl font-bold) */}

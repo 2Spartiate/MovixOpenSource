@@ -90,7 +90,8 @@ internal class CastLoadCoordinator(
                         finishLoad(
                             sequence,
                             Result.failure(
-                                IllegalStateException("MOVIX_CAST_LOAD_REJECTED"),
+                                accepted.exceptionOrNull()
+                                    ?: IllegalStateException("MOVIX_CAST_LOAD_REJECTED"),
                             ),
                         )
                     }

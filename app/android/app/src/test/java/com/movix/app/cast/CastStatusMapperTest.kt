@@ -8,6 +8,49 @@ import org.junit.Test
 
 class CastStatusMapperTest {
     @Test
+    fun preservesBoundedNativeFailureCodesWithoutReplacingTheUiError() {
+        val status = CastStatusMapper.withoutOwnedLoad(
+            true, "Salon", false, false, "MOVIX_CAST_LOAD_REJECTED", "GCK_STATUS_2100",
+        )
+        assertEquals("MOVIX_CAST_LOAD_REJECTED", status.errorCode)
+        assertEquals("GCK_STATUS_2100", status.nativeErrorCode)
+        assertNull(CastStatusMapper.withoutOwnedLoad(
+            true, "Salon", true, false, "MOVIX_CAST_LOAD_REJECTED", "GCK_STATUS_2100",
+        ).nativeErrorCode)
+        assertNull(CastStatusMapper.withoutOwnedLoad(
+            true, "Salon", false, false, "MOVIX_CAST_LOAD_REJECTED", "https://secret.example/token",
+        ).nativeErrorCode)
+    }
+
+    @Test
+    fun connectedReceiverWithoutMediaIsIdleNotInterrupted() {
+        val status = CastStatusMapper.withoutOwnedLoad(true, "Salon", false, false)
+        assertEquals("idle", status.state)
+        assertNull(status.errorCode)
+    }
+
+    @Test
+    fun preparingNewLoadNeverReportsAnOldRelayAsLost() {
+        val status = CastStatusMapper.withoutOwnedLoad(true, "Salon", true, true, "MOVIX_CAST_LOAD_REJECTED")
+        assertEquals("loading", status.state)
+        assertNull(status.errorCode)
+    }
+
+    @Test
+    fun onlyOrphanedMovixMediaRequiresReload() {
+        val status = CastStatusMapper.withoutOwnedLoad(true, "Salon", false, true)
+        assertEquals("error", status.state)
+        assertEquals("MOVIX_RELAY_RELOAD_REQUIRED", status.errorCode)
+        assertNull(CastStatusMapper.withoutOwnedLoad(false, null, false, true).errorCode)
+    }
+
+    @Test
+    fun preservesActualLoadFailureAcrossStatusRefreshes() {
+        val status = CastStatusMapper.withoutOwnedLoad(true, "Salon", false, true, "MOVIX_RELAY_UPSTREAM_ERROR")
+        assertEquals("MOVIX_RELAY_UPSTREAM_ERROR", status.errorCode)
+    }
+
+    @Test
     fun mapsStablePlaybackStatesAndTiming() {
         val status = CastStatusMapper.map(
             CastStatusSnapshot(

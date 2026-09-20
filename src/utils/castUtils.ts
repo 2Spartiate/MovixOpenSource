@@ -893,8 +893,8 @@ export const isAirPlayConnected = (videoElement?: HTMLVideoElement): boolean => 
 };
 
 /**
- * Initialize AirPlay for a video element
- * Sets up event listeners and configures the video element for AirPlay
+ * Observe AirPlay availability and connection state for a video element.
+ * Keep the playback engine's remote-playback flags until an explicit request.
  * 
  * @returns Cleanup function to remove event listeners
  */
@@ -915,7 +915,6 @@ export const initializeAirPlay = (
     if (isRemotePlaybackSupported(video)) {
       console.log('[RemotePlayback] Initializing as AirPlay-like fallback');
       const remote = (video as any).remote;
-      if ('disableRemotePlayback' in video) (video as any).disableRemotePlayback = false;
 
       let availabilityCallbackId: number | null = null;
       let lastAvailable = false;
@@ -959,19 +958,10 @@ export const initializeAirPlay = (
 
   console.log('[AirPlay] Initializing...');
 
-  // Configure video element for AirPlay compatibility
-  // x-webkit-airplay="allow" enables AirPlay for this video element
-  video.setAttribute('x-webkit-airplay', 'allow');
-  
-  // Enable wireless video playback (required for AirPlay)
-  if (typeof video.webkitWirelessVideoPlaybackDisabled !== 'undefined') {
-    video.webkitWirelessVideoPlaybackDisabled = false;
-  }
-  
-  // Also ensure standard remote playback is not disabled
-  if ('disableRemotePlayback' in video) {
-    (video as any).disableRemotePlayback = false;
-  }
+  // Sur iPhone, Hls.js désactive la sortie distante pour ouvrir
+  // ManagedMediaSource sans source AirPlay alternative. Au remontage du
+  // lecteur, cet observateur s'exécute après l'attachement HLS : réactiver
+  // AirPlay ici bloque le média à 0:00. Seul requestAirPlay doit le faire.
 
   /**
    * Handle changes in AirPlay device availability
@@ -1054,6 +1044,7 @@ export const requestAirPlay = async (videoElement: HTMLVideoElement): Promise<vo
       if (typeof video.webkitWirelessVideoPlaybackDisabled !== 'undefined') {
         video.webkitWirelessVideoPlaybackDisabled = false;
       }
+      video.disableRemotePlayback = false;
       video.webkitShowPlaybackTargetPicker();
       console.log('[AirPlay] WebKit picker shown');
       return;

@@ -5,9 +5,8 @@
  */
 
 const express = require("express");
-const http = require("http");
-const https = require("https");
 const compression = require("compression");
+const { createGlobalBodyParsers } = require('./middleware/bodyParsing');
 
 // Middleware modules
 const corsMiddleware = require("./middleware/cors");
@@ -50,6 +49,7 @@ const axios = require("axios");
 const { wrapper } = require("axios-cookiejar-support");
 const tough = require("tough-cookie");
 const axiosHelpers = require("./utils/axiosHelpers");
+const { isHydrackerBlackout } = require("./utils/hydrackerBlackout");
 
 const DEFAULT_DARKIWORLD_BASE_URL = "https://darkiworld2026.com";
 
@@ -105,11 +105,13 @@ const darkiHeaders = {
 };
 
 // Coflix config
-const COFLIX_BASE_URL = "https://coflix.date";
+const COFLIX_BASE_URL = (
+  process.env.COFLIX_BASE_URL || "https://coflix.esq"
+).replace(/\/$/, "");
 const coflixHeaders = {
   "User-Agent":
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36",
-  Referer: "https://coflix.date",
+  Referer: COFLIX_BASE_URL,
 };
 
 // === Axios instances for each source ===
@@ -167,6 +169,9 @@ const DARKINO_REFRESH_LOCK_KEY = "darkino:refreshLock";
 const DARKINO_REFRESH_LOCK_TTL_MS = 30 * 1000; // filet si le worker crash pendant le GET (axios timeout = 5s)
 
 const refreshDarkinoSessionIfNeeded = async () => {
+  // Blackout : la session upstream n'est plus entretenue du tout — c'est la
+  // synchro périodique qui partait vers darkiworld toutes les 10 minutes.
+  if (isHydrackerBlackout()) return;
   try {
     const last = Number(await redis.get(DARKINO_REFRESH_LAST_KEY)) || 0;
     if (Date.now() - last <= DARKINO_SESSION_REFRESH_INTERVAL) return;
@@ -214,22 +219,12 @@ axiosHelpers.configure({
   FSTREAM_BASE_URL: FSTREAM_BASE_URL_VAL,
 });
 
-// === Initialize global agent keep-alive with socket limits ===
-http.globalAgent.keepAlive = true;
-http.globalAgent.maxSockets = 128; // Prevent unbounded socket accumulation
-http.globalAgent.maxFreeSockets = 32;
-https.globalAgent.keepAlive = true;
-https.globalAgent.maxSockets = 128;
-https.globalAgent.maxFreeSockets = 32;
-// Retire each pooled socket after N requests so a long-lived worker rotates
-// its keep-alive sockets instead of pinning the same TLS sessions / native
-// socket objects for the whole process lifetime.
-http.globalAgent.maxRequestsPerSocket = 1000;
-https.globalAgent.maxRequestsPerSocket = 1000;
+// Les agents HTTP globaux sont configurés dans proxyManager, chargé ci-dessus.
 
 // === Create Express app ===
 const vipDonationsRoutes = require('./routes/vipDonations');
 const app = express();
+app.use(require('./utils/diagnostics').middleware);
 
 // === Mount middleware in correct order ===
 
@@ -269,12 +264,14 @@ app.use(
 // 5MB by SYNC_LIMITS.maxRequestBytes (utils/syncPolicy.js); OAuth icon uploads
 // cap at 256KB. 8MB leaves headroom while preventing a single request from
 // pinning tens of MB of buffer until the response completes.
-app.use(express.json({ limit: "8mb" }));
+// Sync/auth parsèment leur corps après leurs contrôles d'entrée propres.
+const bodyParsers = createGlobalBodyParsers();
+app.use(bodyParsers.json);
 
 // 8. JSON parse error handler (must come right after json parser)
 app.use(jsonParseErrorHandler);
 
-app.use(express.urlencoded({ extended: true, limit: "1mb" }));
+app.use(bodyParsers.urlencoded);
 
 // 9. Serve uploaded OAuth app icons (`public/oauth-icons/<filename>`).
 //    Le panel admin upload ici, OAuthAuthorizePage lit `/oauth-icons/<filename>`.
@@ -344,6 +341,7 @@ coflix.configure({
   axiosLecteurVideoRequest: axiosHelpers.axiosLecteurVideoRequest,
   makeCoflixRequest: require("./utils/proxyManager").makeCoflixRequest,
   coflixHeaders,
+  COFLIX_BASE_URL,
   getFromCacheNoExpiration,
   saveToCache,
   formatCoflixError: axiosHelpers.formatCoflixError,

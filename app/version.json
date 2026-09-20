@@ -1,13 +1,13 @@
 {
-  "version": "2.5.27",
-  "buildNumber": 36,
+  "version": "2.6.1",
+  "buildNumber": 38,
   "apkUrl": "https://raw.githubusercontent.com/movixcorp/MovixOpenSource/main/app/movix-android.apk",
-  "apkSizeBytes": 72584769,
-  "apkSha256": "9a4bed5628b011b81880818c8ead413f9447d867ad9c229141edc9236b4ca56c",
+  "apkSizeBytes": 72592577,
+  "apkSha256": "371b3d701dfb03a70a84ac4cd1d8891f3fe4f7d06037d2350c1decf3862ae91b",
   "mandatory": false,
-  "releasedAt": "2026-09-08T13:47:24.820Z",
+  "releasedAt": "2026-09-20T14:59:32.254Z",
   "releaseNotes": {
-    "fr": "Correction de l'extraction et du proxy pour les hébergeurs Fsvid, Vidzy et Uqload.",
-    "en": "Fixed extraction and proxying for Fsvid, Vidzy and Uqload."
+    "fr": "Correction du lecteur Streamed Golf et mise à jour du userscript embarqué.",
+    "en": "Fixed Streamed Golf playback and updated the embedded userscript."
   }
 }

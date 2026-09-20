@@ -12,6 +12,11 @@ import { installHttpCache } from './utils/httpCache'
 import { installSegmentedSeasons } from './utils/segmentedSeasons'
 import './index.css'
 import './styles/light-mode.css'
+import { initErrorTracking } from './utils/errorTracking'
+
+// Suivi des crashs (GlitchTip) : posé avant tout le reste, les handlers globaux
+// ne voient que ce qui se passe après eux. Inactif en dev et sans DSN.
+initErrorTracking();
 
 type MovixConsoleWarningWindow = Window & {
   __movixConsoleSafetyWarningStarted?: boolean;
@@ -248,6 +253,9 @@ if ('serviceWorker' in navigator) {
           subscribeToPush();
         }
       }
-    } catch {}
+    } catch {
+      // SW indisponible (navigation privée stricte, vieux navigateur) : le site
+      // fonctionne sans, on ne remonte rien.
+    }
   });
 }

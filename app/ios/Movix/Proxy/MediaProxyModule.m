@@ -23,6 +23,14 @@ RCT_EXTERN_METHOD(getJournal:(RCTPromiseResolveBlock)resolve
 RCT_EXTERN_METHOD(clearJournal:(RCTPromiseResolveBlock)resolve
                   reject:(RCTPromiseRejectBlock)reject)
 
+RCT_EXTERN_METHOD(copyDiagnosticText:(NSString *)text
+                  resolve:(RCTPromiseResolveBlock)resolve
+                  reject:(RCTPromiseRejectBlock)reject)
+
+RCT_EXTERN_METHOD(shareDiagnosticText:(NSString *)text
+                  resolve:(RCTPromiseResolveBlock)resolve
+                  reject:(RCTPromiseRejectBlock)reject)
+
 RCT_EXTERN_METHOD(recordJournalEntry:(NSString *)phase
                   method:(NSString *)method
                   url:(NSString *)url

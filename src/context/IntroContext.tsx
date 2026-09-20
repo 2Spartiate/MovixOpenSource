@@ -1,4 +1,5 @@
 import React, { createContext, useState, useContext, useEffect, useCallback, useMemo } from 'react';
+import { useLightMode } from '@/context/LightModeContext';
 
 interface IntroContextProps {
   showIntro: boolean;
@@ -11,6 +12,7 @@ interface IntroContextProps {
 const IntroContext = createContext<IntroContextProps | undefined>(undefined);
 
 export const IntroProvider: React.FC<{ children: React.ReactNode }> = ({ children }) => {
+  const { effectivePrefs } = useLightMode();
   const [showIntro, setShowIntro] = useState(false);
   const [introCompleted, setIntroCompleted] = useState(true);
 
@@ -23,6 +25,13 @@ export const IntroProvider: React.FC<{ children: React.ReactNode }> = ({ childre
       setIntroCompleted(false);
     }
   }, []);
+
+  useEffect(() => {
+    if (!effectivePrefs.transitions) {
+      setShowIntro(false);
+      setIntroCompleted(true);
+    }
+  }, [effectivePrefs.transitions]);
 
   // Ecouter les changements de setting (toggle depuis SettingsPage)
   useEffect(() => {
@@ -47,8 +56,8 @@ export const IntroProvider: React.FC<{ children: React.ReactNode }> = ({ childre
   }, []);
 
   const value = useMemo(
-    () => ({ showIntro, setShowIntro, introCompleted, completeIntro, skipIntro }),
-    [showIntro, setShowIntro, introCompleted, completeIntro, skipIntro]
+    () => ({ showIntro: showIntro && effectivePrefs.transitions, setShowIntro, introCompleted: introCompleted || !effectivePrefs.transitions, completeIntro, skipIntro }),
+    [showIntro, setShowIntro, introCompleted, completeIntro, skipIntro, effectivePrefs.transitions]
   );
 
   return (

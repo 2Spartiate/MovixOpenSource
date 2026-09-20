@@ -1,0 +1,10 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="512" height="256" viewBox="0 0 512 256" fill="none">
+  <title>Faisceau de projection</title>
+  <defs>
+    <linearGradient id="beam-light" x1="24" y1="128" x2="488" y2="128" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#f2faff" stop-opacity=".48"/><stop offset=".28" stop-color="#d5edff" stop-opacity=".24"/><stop offset=".7" stop-color="#b5dcff" stop-opacity=".08"/><stop offset="1" stop-color="#9dceff" stop-opacity="0"/>
+    </linearGradient>
+    <filter id="beam-feather" x="0" y="0" width="512" height="256" filterUnits="userSpaceOnUse"><feGaussianBlur stdDeviation="4"/></filter>
+  </defs>
+  <path d="M24 123.7 488 24V232L24 132.3Z" fill="url(#beam-light)" filter="url(#beam-feather)"/>
+</svg>

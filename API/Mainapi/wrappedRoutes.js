@@ -12,6 +12,9 @@ const express = require('express');
 const router = express.Router();
 const jwt = require('jsonwebtoken');
 const { fetchTmdbDetails } = require('./utils/tmdbCache');
+const { fetchWrappedCommunity } = require('./utils/wrappedCommunity');
+const { buildRace, buildFormatWinners, buildEras } = require('./utils/wrappedStory');
+const { runBudgetedBatches } = require('./utils/wrappedEnrichment');
 
 // Lazy import pour éviter les dépendances circulaires au démarrage
 let _syncModule = null;
@@ -24,7 +27,7 @@ function getSyncModule() {
 const TMDB_API_URL = 'https://api.themoviedb.org/3';
 
 // Redis key prefixes & TTLs
-const WRAPPED_CACHE_PREFIX = 'wrapped:gen:';        // generated wrapped result
+const WRAPPED_CACHE_PREFIX = 'wrapped:gen:v3:';     // includes narrative and community data
 const PERCENTILE_CACHE_PREFIX = 'wrapped:pctile:';  // percentile ranking (global, heavy query)
 const WRAPPED_CACHE_TTL    = 10 * 60;               // 10 min (seconds)
 const PERCENTILE_CACHE_TTL = 30 * 60;               // 30 min (seconds) - global data, doesn't change fast
@@ -176,14 +179,14 @@ function extractWrappedFields(data) {
 /**
  * Fetch details from TMDB (via tmdbCache Redis centralisé)
  */
-async function fetchTMDBDetails(contentId, contentType) {
+async function fetchTMDBDetails(contentId, contentType, { signal } = {}) {
     // Skip live-tv as it's not from TMDB
     if (contentType === 'live-tv') {
         return { title: `Live TV #${contentId}`, poster_path: null, genres: [] };
     }
 
     const mediaType = contentType === 'anime' ? 'tv' : contentType;
-    const data = await fetchTmdbDetails(TMDB_API_URL, process.env.TMDB_API_KEY, contentId, mediaType, 'fr-FR');
+    const data = await fetchTmdbDetails(TMDB_API_URL, process.env.TMDB_API_KEY, contentId, mediaType, 'fr-FR', { signal });
     return extractWrappedFields(data);
 }
 
@@ -569,15 +572,14 @@ router.post('/track', verifyToken, trackRateLimit, async (req, res) => {
  */
 router.get('/generate/:year', verifyToken, generateRateLimit, async (req, res) => {
     const _t = { start: Date.now() };
-    const { year } = req.params;
+    const year = Number(req.params.year);
     const userId = req.user.sub;
     const profileId = req.headers['x-profile-id'] || req.query.profileId;
 
     console.log(`[Wrapped][PERF] ── Generate ${year} for user=${userId} profile=${profileId || 'all'} ──`);
 
     // Validate year parameter
-    const parsedYear = parseInt(year);
-    if (isNaN(parsedYear) || parsedYear < 2024 || parsedYear > new Date().getFullYear()) {
+    if (!Number.isInteger(year) || year < 2024 || year > new Date().getFullYear()) {
         return res.status(400).json({ success: false, error: 'Invalid year' });
     }
 
@@ -586,7 +588,7 @@ router.get('/generate/:year', verifyToken, generateRateLimit, async (req, res) =
     }
 
     // ── 0. Redis cache check (skip if ?fresh=1) ────────────────────────────────
-    const cacheKey = `${WRAPPED_CACHE_PREFIX}${userId}-${profileId || 'all'}-${year}`;
+    const cacheKey = `${WRAPPED_CACHE_PREFIX}${req.user.userType || 'legacy'}:${userId}-${profileId || 'all'}-${year}`;
     if (!req.query.fresh) {
         const cached = await redisGet(cacheKey);
         if (cached) {
@@ -616,6 +618,16 @@ router.get('/generate/:year', verifyToken, generateRateLimit, async (req, res) =
             const result = await queryFn();
             _sqlTimings[label] = Date.now() - t0;
             return result;
+        }
+        let storyAvailable = true;
+        async function optionalStoryQuery(label, queryFn) {
+            try {
+                return await timedQuery(label, queryFn);
+            } catch (error) {
+                storyAvailable = false;
+                console.warn(`[Wrapped] Optional ${label} data unavailable:`, error.code || error.message);
+                return [[]];
+            }
         }
 
         // ── Helper: fetch percentile (Redis cache or SQL fallback) ──────────────
@@ -664,6 +676,8 @@ router.get('/generate/:year', verifyToken, generateRateLimit, async (req, res) =
             [viewingStats],
             [typeStats],
             [topContentAll],
+            [storyContentAll],
+            [storyMonthlyRows],
             [monthlyStats],
             [topPages],
             [hourlyStats],
@@ -673,7 +687,8 @@ router.get('/generate/:year', verifyToken, generateRateLimit, async (req, res) =
             [recordDayRows],
             [weekdayRows],
             [rewatchRows],
-            percentile
+            percentile,
+            communityStats
         ] = await Promise.all([
             // 1. Viewing Stats
             timedQuery('viewingStats', () => pool.execute(`
@@ -697,11 +712,30 @@ router.get('/generate/:year', verifyToken, generateRateLimit, async (req, res) =
                     COALESCE(MAX(NULLIF(content_title, '')), MAX(content_title)) as content_title,
                     content_id,
                     content_type,
-                    ROUND(SUM(watch_duration) / 60) as duration
+                    ROUND(SUM(watch_duration) / 60) as duration,
+                    SUM(watch_duration) AS raw_seconds
                 FROM wrapped_viewing_data ${whereClause}
                 AND content_type != 'live-tv'
                 GROUP BY content_id, content_type
-                ORDER BY duration DESC LIMIT 10
+                ORDER BY raw_seconds DESC, CAST(content_type AS CHAR), content_id LIMIT 10
+            `, queryParams)),
+
+            // Narrative story: full yearly totals keep format winners independent from the top five.
+            optionalStoryQuery('storyContent', () => pool.execute(`
+                SELECT COALESCE(MAX(NULLIF(content_title, '')), MAX(content_title)) AS content_title,
+                       content_id, content_type, SUM(watch_duration) AS seconds
+                FROM wrapped_viewing_data ${whereClause} AND content_type IN ('movie', 'tv', 'anime')
+                GROUP BY content_id, content_type
+                ORDER BY seconds DESC, CAST(content_type AS CHAR), content_id
+            `, queryParams)),
+
+            // Keep per-title monthly minutes separate: the race must not be cumulative.
+            optionalStoryQuery('storyMonthly', () => pool.execute(`
+                SELECT month, COALESCE(MAX(NULLIF(content_title, '')), MAX(content_title)) AS content_title,
+                       content_id, content_type, SUM(watch_duration) AS seconds
+                FROM wrapped_viewing_data ${whereClause} AND content_type IN ('movie', 'tv', 'anime')
+                GROUP BY month, content_id, content_type
+                ORDER BY month, seconds DESC, CAST(content_type AS CHAR), content_id
             `, queryParams)),
 
             // 4. Monthly breakdown
@@ -784,12 +818,33 @@ router.get('/generate/:year', verifyToken, generateRateLimit, async (req, res) =
             `, [...queryParams, ...queryParams])),
 
             // 10. Percentile (Redis-cached 30min, SQL fallback)
-            fetchPercentile()
+            fetchPercentile(),
+
+            // Optionnel : une indisponibilité des commentaires ne bloque pas le récap.
+            fetchWrappedCommunity(pool, { userId, userType: req.user.userType, profileId, year })
+                .catch(error => {
+                    console.warn('[Wrapped] Community statistics unavailable:', error.code || error.message);
+                    return null;
+                })
         ]);
 
         // Derive top5 and top10-for-genres from the single top10 result
         const topContent = topContentAll.slice(0, 5);
         const topContentForGenres = topContentAll; // all 10
+        const storyRace = buildRace(storyContentAll, storyMonthlyRows, year, new Date());
+        const storyFormatWinners = buildFormatWinners(storyContentAll);
+        const storyMonthlyTopRows = [];
+        const storyMonthlyCounts = new Map();
+        for (const row of [...storyMonthlyRows].sort((a, b) => Number(a.month) - Number(b.month) || Number(b.seconds) - Number(a.seconds))) {
+            const count = storyMonthlyCounts.get(row.month) || 0;
+            if (count < 2) storyMonthlyTopRows.push(row);
+            storyMonthlyCounts.set(row.month, count + 1);
+        }
+        const storyEnrichmentRows = [
+            ...(storyRace?.items || []),
+            ...storyFormatWinners,
+            ...storyMonthlyTopRows
+        ];
 
         _t.sqlEnd = Date.now();
         const timingsStr = Object.entries(_sqlTimings).map(([k, v]) => `${k}=${v}ms`).join(' | ');
@@ -813,6 +868,14 @@ router.get('/generate/:year', verifyToken, generateRateLimit, async (req, res) =
 
         // ── 2. TMDB enrichment (parallel, Redis-cached) ────────────────────────
         _t.tmdbStart = Date.now();
+        const tmdbDeadline = _t.tmdbStart + 8000;
+        const fetchTmdbWithinBudget = async (entries) => {
+            const pairs = await runBudgetedBatches(entries, async ({ key, content }, { signal }) => {
+                const details = await fetchTMDBDetails(content.content_id, content.content_type, { signal });
+                return details ? [key, details] : null;
+            }, { concurrency: 6, budgetMs: Math.max(0, tmdbDeadline - Date.now()) });
+            for (const [key, details] of pairs) tmdbCache.set(key, details);
+        };
 
         // Deduplicate: merge top5 + top10-genres + first/last into a single unique set
         const allContentToEnrich = new Map(); // key: "type:id" -> content row
@@ -820,6 +883,21 @@ router.get('/generate/:year', verifyToken, generateRateLimit, async (req, res) =
             const k = `${c.content_type}:${c.content_id}`;
             if (!allContentToEnrich.has(k)) allContentToEnrich.set(k, c);
         });
+        for (const row of storyEnrichmentRows) {
+            const key = `${row.content_type}:${row.content_id}`;
+            if (!allContentToEnrich.has(key)) allContentToEnrich.set(key, row);
+        }
+        for (const topic of communityStats?.topTitles || []) {
+            const key = `${topic.type}:${topic.tmdbId}`;
+            if (!allContentToEnrich.has(key)) {
+                allContentToEnrich.set(key, { content_type: topic.type, content_id: String(topic.tmdbId) });
+            }
+        }
+        if (communityStats?.highlight) {
+            const { type, tmdbId } = communityStats.highlight;
+            const key = `${type}:${tmdbId}`;
+            if (!allContentToEnrich.has(key)) allContentToEnrich.set(key, { content_type: type, content_id: String(tmdbId) });
+        }
         const firstWatchData = firstWatch[0] || null;
         const lastWatchData  = lastWatch[0] || null;
         if (firstWatchData && !firstWatchData.content_title) {
@@ -831,7 +909,7 @@ router.get('/generate/:year', verifyToken, generateRateLimit, async (req, res) =
             if (!allContentToEnrich.has(k)) allContentToEnrich.set(k, lastWatchData);
         }
 
-        console.log(`[Wrapped][PERF] 🎯 TMDB: ${allContentToEnrich.size} unique items to enrich (deduped from ${topContent.length + topContentForGenres.length + (firstWatchData ? 1 : 0) + (lastWatchData ? 1 : 0)})`);
+        console.log(`[Wrapped][PERF] 🎯 TMDB: ${allContentToEnrich.size} unique items to enrich`);
 
         // ── Batch TMDB: single MGET for all Redis cache keys, then API-fetch misses ──
         const tmdbCache = new Map(); // key -> details
@@ -855,7 +933,10 @@ router.get('/generate/:year', verifyToken, generateRateLimit, async (req, res) =
 
             try {
                 const tMget = Date.now();
-                const mgetResults = await redis.mget(...redisKeys);
+                const [mgetResults = []] = await runBudgetedBatches([redisKeys], async (keys) => redis.mget(...keys), {
+                    concurrency: 1,
+                    budgetMs: Math.max(0, tmdbDeadline - Date.now())
+                });
                 console.log(`[Wrapped][TMDB] ⚡ MGET ${redisKeys.length} keys in ${Date.now() - tMget}ms`);
 
                 const apiMisses = []; // items not found in Redis
@@ -873,25 +954,16 @@ router.get('/generate/:year', verifyToken, generateRateLimit, async (req, res) =
                 // Fetch remaining misses from TMDB API in parallel
                 if (apiMisses.length > 0) {
                     console.log(`[Wrapped][TMDB] 🌐 Fetching ${apiMisses.length} items from API (${apiMisses.length} Redis misses)`);
-                    await Promise.all(apiMisses.map(async ({ key, content }) => {
-                        const details = await fetchTMDBDetails(content.content_id, content.content_type);
-                        if (details) tmdbCache.set(key, details);
-                    }));
+                    await fetchTmdbWithinBudget(apiMisses);
                 }
             } catch (mgetErr) {
                 // Fallback: parallel individual fetches
                 console.warn('[Wrapped][TMDB] MGET failed, falling back to individual fetches:', mgetErr.message);
-                await Promise.all(itemsNeedingFetch.map(async ({ key, content }) => {
-                    const details = await fetchTMDBDetails(content.content_id, content.content_type);
-                    if (details) tmdbCache.set(key, details);
-                }));
+                await fetchTmdbWithinBudget(itemsNeedingFetch);
             }
         } else if (itemsNeedingFetch.length > 0) {
             // No Redis: parallel individual fetches
-            await Promise.all(itemsNeedingFetch.map(async ({ key, content }) => {
-                const details = await fetchTMDBDetails(content.content_id, content.content_type);
-                if (details) tmdbCache.set(key, details);
-            }));
+            await fetchTmdbWithinBudget(itemsNeedingFetch);
         }
 
         _t.tmdbEnd = Date.now();
@@ -908,6 +980,20 @@ router.get('/generate/:year', verifyToken, generateRateLimit, async (req, res) =
         }
         const enrichedTopContent = applyTMDB(topContent);
         const enrichedForGenres  = applyTMDB(topContentForGenres);
+        const enrichedStoryContent = applyTMDB(storyContentAll);
+        const enrichedStoryMonths = applyTMDB(storyMonthlyRows);
+        const enrichedStoryRace = buildRace(enrichedStoryContent, enrichedStoryMonths, year, new Date());
+        const story = storyAvailable ? {
+            race: enrichedStoryRace ? {
+                items: enrichedStoryRace.items.map((item, index) => toWrappedTopContent(item, index + 1)),
+                months: enrichedStoryRace.months
+            } : null,
+            eras: buildEras(enrichedStoryMonths, year, new Date()).map((era) => ({
+                ...era,
+                title: toWrappedTopContent(era.title, 1)
+            })),
+            formatWinners: buildFormatWinners(enrichedStoryContent).map((item, index) => toWrappedTopContent(item, index + 1))
+        } : null;
 
         // Apply to first/last watch
         if (firstWatchData && !firstWatchData.content_title) {
@@ -1035,7 +1121,12 @@ router.get('/generate/:year', verifyToken, generateRateLimit, async (req, res) =
                 if (cached) rwTitle = cached.title;
                 else {
                     try {
-                        const d = await fetchTMDBDetails(rewatchRow.content_id, rewatchRow.content_type);
+                        const remainingTmdbBudget = Math.max(0, tmdbDeadline - Date.now());
+                        const details = await runBudgetedBatches([{ key: 'rewatch', content: rewatchRow }], async ({ content }, { signal }) => {
+                            const value = await fetchTMDBDetails(content.content_id, content.content_type, { signal });
+                            return value ? ['rewatch', value] : null;
+                        }, { concurrency: 1, budgetMs: remainingTmdbBudget });
+                        const d = details[0]?.[1] || null;
                         rwTitle = d?.title || null;
                     } catch { /* slide skippée si pas de titre */ }
                 }
@@ -1127,7 +1218,23 @@ router.get('/generate/:year', verifyToken, generateRateLimit, async (req, res) =
             recordDay,
             weekday,
             rewatch: rewatchData,
-            watchAgeYear
+            watchAgeYear,
+            story,
+            community: communityStats ? {
+                ...communityStats,
+                topTitles: communityStats.topTitles.flatMap(topic => {
+                    const details = tmdbCache.get(`${topic.type}:${topic.tmdbId}`);
+                    return details?.title ? [{ ...topic, title: details.title, poster_path: details.poster_path || null }] : [];
+                }),
+                highlight: communityStats.highlight ? (() => {
+                    const details = tmdbCache.get(`${communityStats.highlight.type}:${communityStats.highlight.tmdbId}`);
+                    return {
+                        ...communityStats.highlight,
+                        title: details?.title || `${communityStats.highlight.type} #${communityStats.highlight.tmdbId}`,
+                        poster_path: details?.poster_path || null
+                    };
+                })() : null,
+            } : null
         };
 
         // ── 6. Store in Redis cache (fire-and-forget) ───────────────────────────
@@ -1144,6 +1251,24 @@ router.get('/generate/:year', verifyToken, generateRateLimit, async (req, res) =
         res.status(500).json({ success: false, error: 'Generation failed' });
     }
 });
+
+function toWrappedTopContent(content, rank) {
+    const minutes = Number(content.duration) || 0;
+    return {
+        rank,
+        title: content.content_title || `${content.content_type} #${content.content_id}`,
+        type: content.content_type,
+        minutes,
+        hours: Math.round(minutes / 60),
+        durationLabel: formatDurationShort(minutes),
+        tmdbId: Number(content.content_id),
+        poster_path: content.poster_path || null,
+        backdrop_path: content.backdrop_path || null,
+        year: content.release_year || null,
+        vote_average: content.vote_average || null,
+        genres: content.genres || []
+    };
+}
 
 // ============================================
 // === FONCTIONS DE GÉNÉRATION TEMPLATES ===

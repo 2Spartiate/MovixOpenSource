@@ -7,7 +7,7 @@ const fsp = require('fs').promises;
 const path = require('path');
 const crypto = require('crypto');
 const writeFileAtomic = require('write-file-atomic');
-const { memoryCache } = require('../config/redis');
+const { redis, memoryCache } = require('../config/redis');
 
 // === CACHE DIRECTORIES ===
 // NOTE: __dirname is API/utils/, so we go up one level to reach API/
@@ -129,80 +129,31 @@ const saveToCache = async (cacheDir, key, data) => {
 // Map pour stocker les promesses en cours d'exécution
 const ongoingFStreamRequests = new Map();
 const FSTREAM_REQUEST_TIMEOUT = 8000;
-const FSTREAM_STALE_CLEANUP_MS = 5 * 60 * 1000; // 5 min max
 
 // Fonction pour obtenir ou créer une requête FStream partagée
 const getOrCreateFStreamRequest = async (cacheKey, requestFunction) => {
-  // Si une requête est déjà en cours pour cette clé, retourner la promesse existante
-  if (ongoingFStreamRequests.has(cacheKey)) {
-    const entry = ongoingFStreamRequests.get(cacheKey);
-    let dedupTimer;
-    return Promise.race([
-      entry.promise.finally(() => clearTimeout(dedupTimer)),
-      new Promise((_, reject) => { dedupTimer = setTimeout(() => reject(new Error('timeout of 6000ms exceeded')), FSTREAM_REQUEST_TIMEOUT); })
-    ]);
+  let entry = ongoingFStreamRequests.get(cacheKey);
+  if (!entry) {
+    const promise = Promise.resolve().then(requestFunction).finally(() => {
+      if (ongoingFStreamRequests.get(cacheKey)?.promise === promise) ongoingFStreamRequests.delete(cacheKey);
+    });
+    entry = { promise };
+    ongoingFStreamRequests.set(cacheKey, entry);
   }
 
-  // Créer une nouvelle promesse et la stocker
-  const requestPromise = (async () => {
-    let timeoutTimer;
-    try {
-      const result = await Promise.race([
-        requestFunction().finally(() => clearTimeout(timeoutTimer)),
-        new Promise((_, reject) => {
-          timeoutTimer = setTimeout(() => {
-            ongoingFStreamRequests.delete(cacheKey);
-            reject(new Error('timeout of 6000ms exceeded'));
-          }, FSTREAM_REQUEST_TIMEOUT);
-        })
-      ]);
-      return result;
-    } finally {
-      clearTimeout(timeoutTimer);
-      ongoingFStreamRequests.delete(cacheKey);
-    }
-  })();
-
-  ongoingFStreamRequests.set(cacheKey, { promise: requestPromise, createdAt: Date.now() });
-
-  return requestPromise;
-};
-
-// Nettoyage automatique des requêtes expirées (toutes les 2 minutes pour réagir plus vite)
-setInterval(() => {
-  const now = Date.now();
-  let cleaned = 0;
-
-  for (const [key, entry] of ongoingFStreamRequests) {
-    if (entry.createdAt && (now - entry.createdAt > FSTREAM_STALE_CLEANUP_MS)) {
-      ongoingFStreamRequests.delete(key);
-      cleaned++;
-    }
-  }
-
-  if (cleaned > 0) {
-    console.log(`[FSTREAM DEDUP] Nettoyage automatique: ${cleaned} requêtes expirées supprimées`);
-  }
-}, 2 * 60 * 1000).unref(); // Toutes les 2 minutes — unref to not prevent process exit
-
-// Fonction pour sauvegarder des donn\u00e9es FStream en cache
-const saveFStreamToCache = async (cacheKey, data) => {
+  let timer;
   try {
-    const cacheFilePath = path.join(CACHE_DIR.FSTREAM, `${cacheKey}.json`);
-    const cacheData = {
-      data: data
-    };
-
-    // Utiliser l'\u00e9criture atomique pour les fichiers de cache FStream
-    await writeFileAtomic(cacheFilePath, JSON.stringify(cacheData), 'utf8');
-    // Mettre aussi en cache m\u00e9moire
-    await memoryCache.set(`fstream:${cacheKey}`, cacheData);
-    return true;
-  } catch (error) {
-    console.error(`[FSTREAM CACHE] Erreur lors de la sauvegarde en cache pour ${cacheKey}:`, error);
-    return false;
-  }
+    return await Promise.race([
+      entry.promise,
+      new Promise((_, reject) => {
+        timer = setTimeout(() => reject(new Error(`timeout of ${FSTREAM_REQUEST_TIMEOUT}ms exceeded`)), FSTREAM_REQUEST_TIMEOUT);
+      }),
+    ]);
+  } finally { clearTimeout(timer); }
 };
+
+// Le délai borne l'attente HTTP ; la promesse reste partagée jusqu'à la fin du
+// scrape pour qu'une nouvelle requête ne déclenche pas un travail en doublon.
 
 // Fonction pour g\u00e9n\u00e9rer une cl\u00e9 de cache FStream
 const generateFStreamCacheKey = (type, id, season = null, episode = null) => {
@@ -214,36 +165,34 @@ const generateFStreamCacheKey = (type, id, season = null, episode = null) => {
 const clearFStreamCache = async () => {
   try {
     const cacheDir = CACHE_DIR.FSTREAM;
-    const files = await fsp.readdir(cacheDir);
+    const files = await fsp.readdir(cacheDir, { withFileTypes: true }).catch((error) => error.code === 'ENOENT' ? [] : Promise.reject(error));
+    let deletedFiles = 0;
 
     for (const file of files) {
-      if (file.endsWith('.json')) {
-        await fsp.unlink(path.join(cacheDir, file));
+      if (file.isFile() && file.name.endsWith('.json')) {
+        await invalidateFStreamCache(path.basename(file.name, '.json'));
+        deletedFiles++;
       }
     }
 
-    return { success: true, deletedFiles: files.length };
+    return { success: true, deletedFiles };
   } catch (error) {
     console.error(`[FSTREAM CACHE] Erreur lors du nettoyage: ${error.message}`);
     return { success: false, error: error.message };
   }
 };
 
-// Fonction pour v\u00e9rifier si une donn\u00e9e FStream est en cache
-const getFStreamFromCache = async (cacheKey) => {
-  try {
-    const cacheFilePath = path.join(CACHE_DIR.FSTREAM, `${cacheKey}.json`);
-    const cacheData = JSON.parse(await fsp.readFile(cacheFilePath, 'utf8'));
-
-    return cacheData.data;
-  } catch (error) {
-    if (error.code === 'ENOENT') {
-      return null;
-    }
-    console.error(`[FSTREAM CACHE] Erreur lors de la r\u00e9cup\u00e9ration du cache pour ${cacheKey}:`, error);
-    return null;
-  }
+const { createFStreamCacheStore: createStore } = require('./fstreamCache');
+const createFStreamCacheStore = (options = {}) => createStore({ cacheDir: CACHE_DIR.FSTREAM, redis, ...options });
+const fstreamCacheStore = createFStreamCacheStore();
+const saveFStreamToCache = (cacheKey, data) => fstreamCacheStore.save(cacheKey, data);
+const getFStreamFromCache = async (cacheKey) => (await fstreamCacheStore.get(cacheKey))?.data || null;
+const invalidateFStreamCache = (cacheKey) => fstreamCacheStore.invalidate(cacheKey);
+const getFStreamRefreshInfo = async (cacheKey) => {
+  const entry = await fstreamCacheStore.get(cacheKey);
+  return { entry, isFresh: fstreamCacheStore.isFresh(entry) };
 };
+const refreshFStreamCache = (cacheKey, scrape, validate) => fstreamCacheStore.getOrRefresh(cacheKey, scrape, validate);
 
 // Fonction pour vérifier si une donnée est en cache sans vérifier la date d'expiration
 const getFromCacheNoExpiration = async (cacheDir, key) => {
@@ -293,16 +242,14 @@ const getFromCacheNoExpiration = async (cacheDir, key) => {
   }
 };
 
-// Fonction utilitaire pour vérifier si un fichier de cache a été modifié dans les 40 dernières minutes
-const shouldUpdateCache = async (cacheDir, cacheKey) => {
+// Vérifier l'âge du cache, avec un délai de 40 minutes par défaut.
+const shouldUpdateCache = async (cacheDir, cacheKey, refreshWindowMs = 40 * 60 * 1000) => {
   const cacheFilePath = path.join(cacheDir, `${cacheKey}.json`);
   try {
     const stats = await fsp.stat(cacheFilePath);
     const now = Date.now();
     const fileAge = now - stats.mtime.getTime();
-    const fortyMinutes = 40 * 60 * 1000; // 40 minutes en millisecondes
-
-    if (fileAge < fortyMinutes) {
+    if (fileAge < refreshWindowMs) {
       return false; // Ne pas mettre à jour le cache
     }
     return true; // Mettre à jour le cache
@@ -446,5 +393,9 @@ module.exports = {
   saveFStreamToCache,
   generateFStreamCacheKey,
   clearFStreamCache,
-  getFStreamFromCache
+  getFStreamFromCache,
+  invalidateFStreamCache,
+  getFStreamRefreshInfo,
+  refreshFStreamCache,
+  createFStreamCacheStore
 };

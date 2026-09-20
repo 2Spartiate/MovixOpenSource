@@ -421,13 +421,15 @@ function sanitizeStorageObject(rawData, options = {}) {
     throw new SyncPolicyError('Trop de cles synchronisees pour ce profil', 413, 'TOO_MANY_KEYS');
   }
 
-  const bytes = keyCount === 0 ? 0 : getUtf8ByteLength(sanitized);
+  const serialized = JSON.stringify(sanitized);
+  const bytes = keyCount === 0 ? 0 : Buffer.byteLength(serialized, 'utf8');
   if (bytes > maxBytes) {
     throw new SyncPolicyError('Quota de stockage depasse pour ce profil', 413, 'PROFILE_QUOTA_EXCEEDED');
   }
 
   return {
     data: sanitized,
+    serialized,
     changed,
     stats: {
       bytes,

@@ -1174,13 +1174,15 @@ const WatchAnime: React.FC = () => {
   }, []);
 
   useEffect(() => {
-    document.body.style.overflow = 'hidden';
-    document.body.style.height = '100vh';
+    const body = document.body;
+    if (!body) return;
+    body.style.overflow = 'hidden';
+    body.style.height = '100vh';
     document.documentElement.style.overflow = 'hidden';
     document.documentElement.style.height = '100vh';
     return () => {
-      document.body.style.overflow = '';
-      document.body.style.height = '';
+      body.style.overflow = '';
+      body.style.height = '';
       document.documentElement.style.overflow = '';
       document.documentElement.style.height = '';
     };

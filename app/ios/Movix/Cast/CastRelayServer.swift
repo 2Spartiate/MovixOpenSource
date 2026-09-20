@@ -477,6 +477,7 @@ final class CastRelayServer: @unchecked Sendable {
   private let sessionBarrier: CastRelayAccessBarrier
   private let store: CastRelaySessionStore
   private let stopGate = CastRelayStopGate()
+  private let lifetime = CastRelayLifetime()
   private let queue = DispatchQueue(label: "com.movix.cast.lan-relay")
   private let lock = NSLock()
   private var listener: CastRelayListener?
@@ -601,6 +602,7 @@ final class CastRelayServer: @unchecked Sendable {
         contentURL: contentURL,
         profile: profile,
         textTracks: preparedTracks,
+        lifetime: lifetime,
         stop: { [server = self] in await server.stop() }
       )
     } catch {
@@ -770,12 +772,14 @@ final class CastRelayServer: @unchecked Sendable {
 
   @discardableResult
   private func transitionToTerminalSynchronously() -> Bool {
-    lock.castWithLock {
+    let transitioned = lock.castWithLock {
       guard !stoppingOrStopped else { return false }
       stoppingOrStopped = true
       sessionBarrier.revoke()
       return true
     }
+    if transitioned { lifetime.terminate() }
+    return transitioned
   }
 
   private func beginPreparation() -> Bool {

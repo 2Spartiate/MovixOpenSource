@@ -94,7 +94,7 @@ const SwiftfluxGate: React.FC<SwiftfluxGateProps> = ({ request, onResolved, onCl
   }, [close]);
 
   const openAd = useCallback(() => {
-    if (SWIFTFLUX_AD_URL) window.open(SWIFTFLUX_AD_URL, '_blank', 'noopener,noreferrer');
+    if (SWIFTFLUX_AD_URL) window.open(SWIFTFLUX_AD_URL, '_blank', 'noopener');
     setStep('verify');
   }, []);
 

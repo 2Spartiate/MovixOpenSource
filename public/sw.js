@@ -72,7 +72,13 @@ function releaseImageFetchSlot() {
 async function handleTmdbImage(req) {
   const cache = await caches.open(IMAGE_CACHE_NAME);
   const cached = await cache.match(req);
-  if (cached) return cached;
+  // Une réponse opaque (obtenue pour un <img>, mode no-cors) ne peut être
+  // servie qu'à une requête no-cors. La resservir à un fetch() en mode cors
+  // (extraction de couleur des affiches dans les pages de détail) fait échouer
+  // la requête : « Response served by service worker is opaque ». Dans ce cas
+  // on repasse par le réseau, et la réponse CORS obtenue remplace l'opaque.
+  const opaqueForCors = cached && cached.type === 'opaque' && req.mode !== 'no-cors';
+  if (cached && !opaqueForCors) return cached;
 
   await acquireImageFetchSlot();
   try {
@@ -120,12 +126,35 @@ async function trimAssetCache(cache) {
   await Promise.all(staleKeys.map((key) => cache.delete(key)));
 }
 
+const ASSET_RETRY_DELAY_MS = 400;
+
+// Un échec réseau ici rejette la promesse donnée à `respondWith`, et la page ne
+// voit plus l'erreur réelle mais un « TypeError: FetchEvent.respondWith
+// received an error: … » qui l'enveloppe — vu sur Safari 14 le 2026-09-02, sur
+// le chunk de la page Movies. Les assets sont hashés, donc immuables, et un GET
+// est idempotent : on retente une fois après une courte pause. Un blip réseau
+// (bascule Wi-Fi/4G, onglet qui se réveille) est absorbé sans que la page ait à
+// recharger. Au second échec on relaie l'erreur d'origine, que lazyWithRetry
+// reconnaît côté page pour son propre rechargement encadré.
+async function fetchAssetWithRetry(req) {
+  try {
+    return await fetch(req);
+  } catch (err) {
+    await new Promise((resolve) => setTimeout(resolve, ASSET_RETRY_DELAY_MS));
+    try {
+      return await fetch(req);
+    } catch {
+      throw err;
+    }
+  }
+}
+
 async function handleAsset(req) {
   const cache = await caches.open(ASSET_CACHE_NAME);
   const cached = await cache.match(req);
   if (cached) return cached;
 
-  const res = await fetch(req);
+  const res = await fetchAssetWithRetry(req);
   // Uniquement les vraies réussites : une 404 (chunk d'un ancien build) ou une
   // réponse opaque mises en cache seraient resservies indéfiniment.
   if (res && res.ok && res.type === 'basic') {
@@ -344,7 +373,7 @@ self.addEventListener('activate', (event) => {
 });
 
 // ============================================================================
-// Push notifications (préservé tel quel)
+// Push notifications — domaine courant transmis par l'API
 // ============================================================================
 
 self.addEventListener('push', (event) => {
@@ -355,7 +384,7 @@ self.addEventListener('push', (event) => {
     self.registration.showNotification(data.title || 'Movix', {
       body: data.body || '',
       icon: data.icon ? new URL(data.icon, baseUrl).href : `${baseUrl}/movix-192.png`,
-      badge: `${baseUrl}/movix-192.png`,
+      badge: data.badge ? new URL(data.badge, baseUrl).href : `${baseUrl}/movix-192.png`,
       image: data.image || undefined,
       data: data.data || {},
     })
@@ -364,21 +393,38 @@ self.addEventListener('push', (event) => {
 
 self.addEventListener('notificationclick', (event) => {
   event.notification.close();
-  const { contentType, contentId } = event.notification.data || {};
-  let url = '/';
+  const { contentType, contentId, url: notificationUrl } = event.notification.data || {};
+  let pathname = '/';
   if (contentType && contentId) {
-    url = contentType === 'movie' ? `/movie/${contentId}` : `/tv/${contentId}`;
+    pathname = `/${contentType === 'movie' ? 'movie' : 'tv'}/${encodeURIComponent(contentId)}`;
+  }
+  // Compatibilité avec les notifications reçues avant l'ajout de l'URL absolue.
+  let url = new URL(pathname, self.location.origin);
+  if (typeof notificationUrl === 'string' && notificationUrl) {
+    try {
+      const candidate = new URL(notificationUrl, self.location.origin);
+      if (['https:', 'http:'].includes(candidate.protocol) && !candidate.username && !candidate.password) {
+        url = candidate;
+      }
+    } catch {
+      // Une URL invalide ne doit pas empêcher d'ouvrir le contenu sur l'origine connue.
+    }
   }
   event.waitUntil(
-    clients.matchAll({ type: 'window', includeUncontrolled: true }).then((windowClients) => {
+    clients.matchAll({ type: 'window', includeUncontrolled: true }).then(async (windowClients) => {
       for (const client of windowClients) {
-        if (client.url.includes(self.location.origin)) {
-          client.focus();
-          client.navigate(url);
-          return;
+        try {
+          if (new URL(client.url).origin === self.location.origin) {
+            await client.focus();
+            // Une navigation vers un autre domaine peut réussir en renvoyant null.
+            await client.navigate(url.href);
+            return;
+          }
+        } catch {
+          // Onglet fermé ou navigation refusée : tenter l'ouverture d'une fenêtre.
         }
       }
-      return clients.openWindow(url);
+      return clients.openWindow(url.href);
     })
   );
 });

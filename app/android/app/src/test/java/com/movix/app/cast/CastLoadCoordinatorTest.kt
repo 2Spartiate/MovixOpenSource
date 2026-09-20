@@ -91,9 +91,11 @@ class CastLoadCoordinatorTest {
             completion = it
         }
         relay.complete(prepared())
-        remote.rejectLoad()
+        val error = CastCommandException("MOVIX_CAST_LOAD_REJECTED", "GCK_STATUS_2100")
+        remote.rejectLoad(error)
 
         assertTrue(completion?.isFailure == true)
+        assertEquals(error, completion?.exceptionOrNull())
         assertEquals("session-token", relay.discardedSession)
         assertNull(relay.stopReason)
         assertEquals(1, remote.loadCalls)
@@ -191,7 +193,8 @@ private class FakeCastRemoteClient : CastRemoteClient {
     }
 
     fun acceptLoad() = loadCallback?.invoke(Result.success(Unit))
-    fun rejectLoad() = loadCallback?.invoke(Result.failure(IllegalStateException("rejected")))
+    fun rejectLoad(error: Throwable = IllegalStateException("rejected")) =
+        loadCallback?.invoke(Result.failure(error))
     override fun play(callback: (Result<Unit>) -> Unit) = callback(Result.success(Unit))
     override fun pause(callback: (Result<Unit>) -> Unit) = callback(Result.success(Unit))
     override fun seekTo(seconds: Double, callback: (Result<Unit>) -> Unit) =

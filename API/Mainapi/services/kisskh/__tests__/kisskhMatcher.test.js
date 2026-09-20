@@ -210,6 +210,64 @@ test('localized equality outranks original and alternative equality', () => {
   assert.deepEqual(ranked.map((entry) => entry.candidate.id), [1, 3, 2]);
 });
 
+test('catalogue index preserves full-scan scores, ordering, ambiguity and season rules', () => {
+  const { buildTmdbTitleCandidates, createKisskhCatalogIndex, rankKisskhCandidates } = matcher();
+  const candidates = [
+    { id: 1, title: 'The Signal (2016)', country: 'South Korea', episodes: [{ number: 1 }] },
+    { id: 2, title: 'Signal (2018)', country: 'China', episodes: [{ number: 1 }] },
+    { id: 3, title: 'Signal Season II', episodesCount: 12 },
+    { id: 4, title: 'Signal Special', episodesCount: 1 },
+    { id: 5, title: 'Renegade Immortal - Xian Ni', episodesCount: 152 },
+    { id: 6, title: 'My Stubborn: Uncut (2026)', episodesCount: 12 },
+    { id: 7, title: 'My Stubborn', episodesCount: 12 },
+    { id: 8, title: 'Swallowed Star Season 2+3+4', episodesCount: 208 },
+    { id: 9, title: 'Swallowed Star', episodesCount: 26 },
+    { id: 10, title: 'Café — L’Été 2nd Season', episodesCount: 8 },
+    { id: 11, title: 'Signal (2016)', episodes: [{ number: 1 }, { number: 2 }] },
+    { id: 12, name: 'An Original Title', countryCode: 'JP' },
+    { id: 13, dramaName: 'Signal Part 2', episodesCount: 12 },
+  ];
+  const index = createKisskhCatalogIndex(candidates);
+  for (const title of ['Signal', 'The Signal', 'Xian Ni', 'My Stubborn', 'Swallowed Star', 'L Ete', 'Cafe', 'Original Title', 'Absent']) {
+    for (const seasonNumber of [undefined, 0, 1, 2, 3]) {
+      for (const seasonCount of [1, 4]) {
+        for (const retainAmbiguous of [false, true]) {
+          const criteria = {
+            titles: buildTmdbTitleCandidates({
+              localized: { name: title },
+              original: { original_name: 'Signal' },
+              alternatives: { results: [{ title: 'My Stubborn' }, { title: 'Swallowed Star' }] },
+            }),
+            year: 2016, countries: ['KR'], expectedEpisodeCount: 2,
+            seasonNumber, seasonCount, retainAmbiguous,
+          };
+          assert.deepEqual(index.rank(criteria), rankKisskhCandidates(criteria, candidates));
+        }
+      }
+    }
+  }
+  assert.deepEqual(index.rank({ titles: ['Absent'] }), []);
+  assert.deepEqual(index.rank({ titles: [] }), []);
+  assert.throws(() => index.rank({ titles: ['Signal'], seasonNumber: -1 }), /seasonNumber invalide/);
+});
+
+test('catalogue lookups do not inspect unrelated titles again after indexing', () => {
+  const { createKisskhCatalogIndex } = matcher();
+  let unrelatedReads = 0;
+  const candidates = Array.from({ length: 1_000 }, (_, index) => ({
+    id: index + 1,
+    get title() { unrelatedReads += 1; return `Unrelated drama ${index}`; },
+  }));
+  candidates.push({ id: 2_000, title: 'The Target - La Cible (2026)' });
+  const index = createKisskhCatalogIndex(candidates);
+  unrelatedReads = 0;
+  for (let iteration = 0; iteration < 100; iteration += 1) {
+    assert.deepEqual(index.rank({ titles: ['Absent'] }), []);
+    assert.equal(index.rank({ titles: ['Target', 'La Cible'] })[0]?.candidate.id, 2_000);
+  }
+  assert.equal(unrelatedReads, 0);
+});
+
 test('candidate title construction deduplicates normalized aliases and is bounded', () => {
   const { buildTmdbTitleCandidates, buildSeasonAwareQueries, MAX_TITLE_CANDIDATES, MAX_QUERIES } = matcher();
   const titles = buildTmdbTitleCandidates({

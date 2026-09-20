@@ -1,9 +1,84 @@
 import Foundation
+import GoogleCast
 import Network
+import ObjectiveC
 import XCTest
 @testable import Movix
 
 final class CastMediaPreparerTests: XCTestCase {
+  func testSenderNormalizesSDKIdleReasonsAndOnlyEndsIdlePlayback() {
+    // Valeurs de GCKMediaStatus.h 4.8.4 : NONE=0, FINISHED=1,
+    // CANCELLED=2, INTERRUPTED=3, ERROR=4.
+    let cases: [(GCKMediaPlayerIdleReason, String?, String)] = [
+      (.none, nil, "idle"),
+      (.finished, "FINISHED", "ended"),
+      (.cancelled, "CANCELLED", "idle"),
+      (.interrupted, "INTERRUPTED", "idle"),
+      (.error, "ERROR", "error"),
+    ]
+    for (index, entry) in cases.enumerated() {
+      XCTAssertEqual(entry.0.rawValue, index)
+      XCTAssertEqual(CastModule.normalizedIdleReason(entry.0), entry.1)
+      XCTAssertEqual(CastModule.normalizedState(.idle, idleReason: entry.0), entry.2)
+      XCTAssertEqual(CastModule.normalizedState(.playing, idleReason: entry.0), "playing")
+      XCTAssertEqual(CastModule.normalizedState(.loading, idleReason: entry.0), "loading")
+    }
+    XCTAssertNil(CastModule.normalizedIdleReason(nil))
+    XCTAssertEqual(CastModule.normalizedState(nil), "idle")
+  }
+
+  @MainActor
+  func testSenderCarriesHLSFormatsAndRelayOwnershipIntoActualSDKMediaInformation() throws {
+    for (profile, audio, video) in [
+      (CastMediaProfile.hlsTS(), 4, 1),
+      (CastMediaProfile.hlsFMP4(), 7, 2),
+      (CastMediaProfile.progressive("video/mp4")!, 0, 0),
+    ] {
+      let relay = PreparedCastRelay(
+        contentURL: URL(string: "http://192.168.1.20:1234/cast/session/root")!,
+        profile: profile, textTracks: [], stop: {}
+      )
+      let media = try CastModule.makeMediaInformation(relay: relay, metadata: ["title": "Film"])
+      XCTAssertEqual(media.hlsSegmentFormat.rawValue, audio)
+      XCTAssertEqual(media.hlsVideoSegmentFormat.rawValue, video)
+      XCTAssertEqual((media.customData as? [String: String])?["movixTransport"], "ios-lan-v1")
+      XCTAssertEqual(media.contentURL, relay.contentURL)
+    }
+  }
+
+  func testSenderImplementsTheInstalledSDKSelectors() {
+    for selector in [
+      "sessionManager:willStartSession:",
+      "sessionManager:didFailToStartSession:withError:",
+      "sessionManager:didEndSession:withError:",
+      "sessionManager:didSuspendSession:withReason:",
+      "requestDidComplete:",
+      "request:didFailWithError:",
+      "request:didAbortWithReason:",
+    ] {
+      XCTAssertNotNil(class_getInstanceMethod(CastModule.self, NSSelectorFromString(selector)), selector)
+    }
+  }
+
+  func testInspectorAcceptsLargeMP4WhenHeadIsUnsupportedAndRangeIsIgnored() async throws {
+    for headStatus in [405, 501] {
+      let upstream = FakeCastInspectionUpstream()
+      let body = FakeCastInspectionBody(Data(repeating: 0, count: 1024 * 1024))
+      upstream.enqueue(url: "https://cdn.example/movie", method: "HEAD", status: headStatus, headers: [:], body: Data())
+      upstream.enqueue(
+        url: "https://cdn.example/movie", method: "GET", status: 200,
+        headers: ["Content-Type": "video/mp4"], bodyObject: body
+      )
+      let profile = try await CastMediaInspector(upstream: upstream).inspect(
+        target: target("https://cdn.example/movie"), hintedContentType: nil
+      )
+      XCTAssertEqual(profile.contentType, "video/mp4")
+      XCTAssertEqual(body.readCount, 0, "A progressive response need not be downloaded to identify its type")
+      XCTAssertTrue(body.didCancel, "The probe must release its connection")
+      XCTAssertNotNil(upstream.requests.last?.localHeaders["Range"])
+    }
+  }
+
   func testModelRejectsSeventeenTracksOversizedMetadataAndInvalidVTT() throws {
     let validTrack = try CastSourceTrack(
       inlineVTT: "WEBVTT\n\n00:00:01.000 --> 00:00:02.000\nBonjour\n"
@@ -622,12 +697,17 @@ private final class FakeCastInspectionBody: MediaProxyUpstreamBody, @unchecked S
   private let lock = NSLock()
   private var data: Data?
   private var cancelled = false
+  private var reads = 0
+
+  var didCancel: Bool { lock.withPreparationLock { cancelled } }
+  var readCount: Int { lock.withPreparationLock { reads } }
 
   init(_ data: Data) { self.data = data }
 
   func nextChunk() async throws -> Data? {
     try lock.withPreparationLock {
       guard !cancelled else { throw MediaProxyUpstreamError.cancelled }
+      reads += 1
       defer { data = nil }
       return data
     }

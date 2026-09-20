@@ -403,6 +403,9 @@ final class CastRelayServerTests: XCTestCase {
   func testPathChangeReceiverChangeAndBackgroundStopTheRelay() async throws {
     let pathMonitor = FakeCastRelayPathMonitor()
     let pathHarness = try await makeHarness(makePathMonitor: { pathMonitor })
+    let pathTerminated = expectation(description: "Path loss reaches the prepared relay owner")
+    pathTerminated.assertForOverFulfill = true
+    pathHarness.prepared.lifetime.observeTermination { pathTerminated.fulfill() }
     pathMonitor.emit(CastRouteSnapshot(candidates: [
       LocalInterfaceAddress(
         name: "wifi42",
@@ -416,6 +419,8 @@ final class CastRelayServerTests: XCTestCase {
     XCTAssertFalse(pathHarness.server.isStopped)
     pathMonitor.emit(CastRouteSnapshot(candidates: []))
     try await waitUntil { pathHarness.server.isStopped }
+    XCTAssertFalse(pathHarness.prepared.lifetime.isActive)
+    await pathHarness.server.stop()
 
     let receiverHarness = try await makeHarness()
     await receiverHarness.server.receiverDidChange(to: ip("192.168.1.41"))
@@ -425,6 +430,30 @@ final class CastRelayServerTests: XCTestCase {
     let backgroundHarness = try await makeHarness(notificationCenter: center)
     center.post(name: UIApplication.didEnterBackgroundNotification, object: nil)
     try await waitUntil { backgroundHarness.server.isStopped }
+    // L'abonnement tardif couvre un arrêt entre prepare() et l'installation
+    // du propriétaire du LOAD : le signal terminal ne doit pas se perdre.
+    let backgroundTerminated = expectation(description: "Late observer receives background termination")
+    backgroundTerminated.assertForOverFulfill = true
+    backgroundHarness.prepared.lifetime.observeTermination {
+      XCTAssertFalse(backgroundHarness.prepared.lifetime.isActive)
+      backgroundTerminated.fulfill()
+    }
+    await backgroundHarness.server.stop()
+    await fulfillment(of: [pathTerminated, backgroundTerminated], timeout: 1)
+  }
+
+  func testRelayLifetimeNotificationIsTerminalOnceAndAllowsReentrantStateRead() {
+    let lifetime = CastRelayLifetime()
+    let terminated = expectation(description: "One terminal signal")
+    terminated.assertForOverFulfill = true
+    lifetime.observeTermination {
+      XCTAssertFalse(lifetime.isActive, "Reading the state from the observer must not deadlock")
+      terminated.fulfill()
+    }
+    lifetime.terminate()
+    lifetime.terminate()
+    XCTAssertFalse(lifetime.isActive)
+    wait(for: [terminated], timeout: 1)
   }
 
   func testLifecycleCallbacksSynchronouslyRevokeBeforeNewWorkAndSelfCancelDoesNotDeadlock() async throws {

@@ -21,9 +21,63 @@ const { respondWithResolvedSources } = require('../utils/embedExtraction');
 const respondWithSources = (req, res, payload) =>
   respondWithResolvedSources(req, res, payload, { movieMapKey: 'data', label: 'VOIRDRAMA' });
 const { fetchTmdbDetails } = require('../utils/tmdbCache');
+const { createSingleFlight } = require('../utils/singleFlight');
+const diagnostics = require('../utils/diagnostics');
 
 // === VOIRDRAMA CONFIGURATION ===
 const VOIRDRAMA_BASE_URL = 'https://voirdrama.to';
+const runDramaRefresh = createSingleFlight();
+const DRAMA_REFRESH_CHECK_INTERVAL_MS = 5 * 60 * 1000;
+const DRAMA_REFRESH_FAILURE_BACKOFF_MS = 60 * 1000;
+const DRAMA_REFRESH_STATE_LIMIT = 500;
+const refreshChecks = new Map();
+const refreshCooldowns = new Map();
+
+function remember(map, key, value) {
+  if (map.has(key)) map.delete(key);
+  map.set(key, value);
+  while (map.size > DRAMA_REFRESH_STATE_LIMIT) map.delete(map.keys().next().value);
+}
+
+function hasPlayableSources(payload) {
+  return payload?.success && Array.isArray(payload.data) && payload.data.some((source) => source && source.link);
+}
+
+function isRetryableDramaFailure(payload) {
+  return payload?.success === false && (payload.retryable === true
+    // Cet ancien message désignait aussi les pages d'erreur Cloudflare mises en cache.
+    || payload.error === 'Film/Série non trouvé sur Voirdrama');
+}
+
+function temporaryDramaFailure(error) {
+  return {
+    success: false,
+    error: String(error.message || 'VoirDrama temporairement indisponible').slice(0, 1024),
+    retryable: true,
+    ...(Number.isInteger(error.upstreamStatus) ? { upstreamStatus: error.upstreamStatus } : {}),
+  };
+}
+
+function assertDramaResponse(response, stage) {
+  if (response.statusCode >= 200 && response.statusCode < 300) return;
+  const error = new Error(`VoirDrama temporairement indisponible (HTTP ${response.statusCode}, ${stage})`);
+  error.upstreamStatus = response.statusCode;
+  throw error;
+}
+
+function respondWithDramaError(res, payload) {
+  if (isRetryableDramaFailure(payload)) {
+    res.set('Retry-After', String(DRAMA_REFRESH_FAILURE_BACKOFF_MS / 1000));
+    return res.status(503).json(payload);
+  }
+  return res.status(404).json(payload);
+}
+
+function deferDramaRefresh(cacheKey, result) {
+  // Conserver le résultat pendant la pause évite un retour null sur un cache froid.
+  remember(refreshCooldowns, cacheKey, { until: Date.now() + DRAMA_REFRESH_FAILURE_BACKOFF_MS, result });
+  return result;
+}
 
 // Impit — remplacement de got-scraping (Rust TLS fingerprint + HTTP/2 natif, pas de http2-wrapper)
 let impitClient = null;
@@ -35,7 +89,11 @@ async function getImpitClient() {
   return impitClient;
 }
 
-async function impitFetch(url, options = {}) {
+function impitFetch(url, options = {}) {
+  return diagnostics.observeTextRequest('impit', url, options, () => fetchImpitBody(url, options));
+}
+
+async function fetchImpitBody(url, options) {
   const client = await getImpitClient();
   const controller = new AbortController();
   const timeoutId = setTimeout(() => controller.abort(), 15000);
@@ -56,6 +114,7 @@ let TMDB_API_URL;
 let getFromCacheNoExpiration;
 let saveToCache;
 let shouldUpdateCache24h;
+let fetchDramaTvDataForRefresh = null;
 
 /**
  * Inject runtime dependencies that still live in server.js.
@@ -66,6 +125,56 @@ function configure(deps) {
   if (deps.getFromCacheNoExpiration) getFromCacheNoExpiration = deps.getFromCacheNoExpiration;
   if (deps.saveToCache) saveToCache = deps.saveToCache;
   if (deps.shouldUpdateCache24h) shouldUpdateCache24h = deps.shouldUpdateCache24h;
+  if (typeof deps.fetchDramaTvData === 'function') fetchDramaTvDataForRefresh = deps.fetchDramaTvData;
+}
+
+async function readDramaCache(cacheDir, cacheKey) {
+  const data = await getFromCacheNoExpiration(cacheDir, cacheKey);
+  return isRetryableDramaFailure(data) ? null : data;
+}
+
+async function shouldRefreshDramaCache(cacheDir, cacheKey) {
+  const now = Date.now();
+  if (now < (refreshCooldowns.get(cacheKey)?.until || 0)) return false;
+  const previousCheck = refreshChecks.get(cacheKey);
+  if (previousCheck && now - previousCheck < DRAMA_REFRESH_CHECK_INTERVAL_MS) return false;
+  const shouldRefresh = await shouldUpdateCache24h(cacheDir, cacheKey);
+  // Seul un cache frais est espacé ici. Une entrée stale doit être revalidée après un échec.
+  if (!shouldRefresh) remember(refreshChecks, cacheKey, now);
+  return shouldRefresh;
+}
+
+async function refreshDramaCache(cacheDir, cacheKey, tmdbid, season, episode, cachedData) {
+  const cooldown = refreshCooldowns.get(cacheKey);
+  if (Date.now() < cooldown?.until) return hasPlayableSources(cachedData) ? cachedData : cooldown.result;
+
+  return runDramaRefresh(cacheKey, async () => {
+    const pendingCooldown = refreshCooldowns.get(cacheKey);
+    if (Date.now() < pendingCooldown?.until) return hasPlayableSources(cachedData) ? cachedData : pendingCooldown.result;
+    const currentData = await readDramaCache(cacheDir, cacheKey);
+    if (currentData && !(await shouldRefreshDramaCache(cacheDir, cacheKey))) return currentData;
+    const dataToPreserve = currentData || cachedData;
+    try {
+      const freshData = await (fetchDramaTvDataForRefresh || fetchDramaTvData)(tmdbid, season, episode);
+      // Une panne amont ne doit jamais devenir un résultat négatif durable.
+      if (isRetryableDramaFailure(freshData)) {
+        return deferDramaRefresh(cacheKey, hasPlayableSources(dataToPreserve) ? dataToPreserve : freshData);
+      }
+      // A stale usable answer must survive a failed upstream refresh.
+      if (hasPlayableSources(dataToPreserve) && !hasPlayableSources(freshData)) {
+        return deferDramaRefresh(cacheKey, dataToPreserve);
+      }
+      const saved = await saveToCache(cacheDir, cacheKey, freshData);
+      if (saved === false) {
+        return deferDramaRefresh(cacheKey, dataToPreserve || freshData);
+      }
+      remember(refreshChecks, cacheKey, Date.now());
+      refreshCooldowns.delete(cacheKey);
+      return freshData;
+    } catch (error) {
+      return deferDramaRefresh(cacheKey, hasPlayableSources(dataToPreserve) ? dataToPreserve : temporaryDramaFailure(error));
+    }
+  });
 }
 
 // ---------------------------------------------------------------------------
@@ -106,6 +215,7 @@ async function fetchDramaTvData(tmdbId, season, episode) {
         'referer': VOIRDRAMA_BASE_URL + '/',
       },
     });
+    assertDramaResponse(searchResponse, 'recherche');
 
     // 4. Parse Search Result
     const rawData = searchResponse.body;
@@ -114,13 +224,13 @@ async function fetchDramaTvData(tmdbId, season, episode) {
     const htmlMatch = rawData.match(/___ASPSTART_HTML___([\s\S]*?)___ASPEND_HTML___/);
 
     if (!htmlMatch) {
-      console.log(`[VOIRDRAMA] Structure de réponse de recherche invalide ou pas de résultats HTML (statusCode=${searchResponse.statusCode}, bodyLength=${rawData?.length}, body=${rawData?.substring(0, 500)})`);
-      return { success: false, error: 'Film/Série non trouvé sur Voirdrama' };
+      throw new Error(`Réponse de recherche VoirDrama invalide (HTTP ${searchResponse.statusCode}, bodyLength=${rawData.length})`);
     }
 
     const $ = cheerio.load(htmlMatch[1]);
 
     let bestLink = null;
+    let candidateError = null;
     let fallbackLink = $('div.asp_content h3 a.asp_res_url').first().attr('href');
 
     if (!firstAirDate) {
@@ -173,6 +283,8 @@ async function fetchDramaTvData(tmdbId, season, episode) {
         if (!bestLink) {
           try {
             const pageResponse = await impitFetch(link);
+            if (pageResponse.statusCode === 404) continue;
+            assertDramaResponse(pageResponse, 'fiche série');
             const $page = cheerio.load(pageResponse.body);
 
             let pageDateFound = false;
@@ -203,7 +315,8 @@ async function fetchDramaTvData(tmdbId, season, episode) {
             }
 
           } catch (err) {
-            // Check next candidate
+            // Essayer les autres candidats, sans masquer une panne si aucun ne correspond.
+            candidateError = err;
           }
         }
       }
@@ -211,6 +324,7 @@ async function fetchDramaTvData(tmdbId, season, episode) {
 
     // Fallback if no specific date match found
     if (!bestLink) {
+      if (candidateError) throw candidateError;
       return { success: false, error: 'Série non trouvée sur Voirdrama (Aucune date correspondante)' };
     }
 
@@ -226,6 +340,10 @@ async function fetchDramaTvData(tmdbId, season, episode) {
 
     // 6. Fetch Episode Page
     const episodeResponse = await impitFetch(episodeUrl);
+    if (episodeResponse.statusCode === 404) {
+      return { success: false, error: 'Épisode non trouvé sur Voirdrama' };
+    }
+    assertDramaResponse(episodeResponse, 'page épisode');
 
     // 7. Extract Sources
     const episodeHtml = episodeResponse.body;
@@ -296,7 +414,7 @@ async function fetchDramaTvData(tmdbId, season, episode) {
 
   } catch (error) {
     console.error('[VOIRDRAMA] Error:', error.message);
-    return { success: false, error: error.message };
+    return temporaryDramaFailure(error);
   }
 }
 
@@ -330,42 +448,28 @@ router.get('/:type/:tmdbid', async (req, res) => {
     await fsp.mkdir(cacheDir, { recursive: true });
 
     // Stale-while-revalidate: return cached data immediately
-    const cachedData = await getFromCacheNoExpiration(cacheDir, cacheKey);
-    let dataReturned = false;
-
+    const cachedData = await readDramaCache(cacheDir, cacheKey);
     if (cachedData) {
       // Return cached data immediately
       if (!cachedData.success) {
-        res.status(404).json(cachedData);
+        respondWithDramaError(res, cachedData);
       } else {
         await respondWithSources(req, res, cachedData);
       }
-      dataReturned = true;
-
-      // Background update if cache should be updated
-      const shouldUpdate = await shouldUpdateCache24h(cacheDir, cacheKey);
+      // Background update if cache should be updated. Une seule opération publie le résultat.
+      const shouldUpdate = await shouldRefreshDramaCache(cacheDir, cacheKey);
       if (shouldUpdate) {
-        // Background update (non-blocking)
-        (async () => {
-          try {
-            const freshData = await fetchDramaTvData(tmdbid, season, episode);
-            await saveToCache(cacheDir, cacheKey, freshData);
-          } catch (bgError) {
-            console.error(`[VOIRDRAMA] Background update error:`, bgError.message);
-          }
-        })();
+        refreshDramaCache(cacheDir, cacheKey, tmdbid, season, episode, cachedData)
+          .catch((bgError) => console.error('[VOIRDRAMA] Background update error:', bgError.message));
       }
       return;
     }
 
-    // No cache - fetch fresh data
-    const result = await fetchDramaTvData(tmdbid, season, episode);
-
-    // Save to cache (both success and error results)
-    await saveToCache(cacheDir, cacheKey, result);
+    // No cache: all callers await the same fetch and publication.
+    const result = await refreshDramaCache(cacheDir, cacheKey, tmdbid, season, episode, null);
 
     if (!result.success) {
-      return res.status(404).json(result);
+      return respondWithDramaError(res, result);
     }
 
     await respondWithSources(req, res, result);
@@ -377,69 +481,6 @@ router.get('/:type/:tmdbid', async (req, res) => {
       error: 'Erreur interne',
       details: error.message
     });
-  }
-});
-
-// ---------------------------------------------------------------------------
-// DELETE /:type/:tmdbid/cache
-// Supprime le cache d'une saison entière (ou d'un épisode spécifique)
-// Ex: DELETE /api/drama/tv/68398/cache?season=2
-// Ex: DELETE /api/drama/tv/68398/cache?season=2&episode=3
-// ---------------------------------------------------------------------------
-router.delete('/:type/:tmdbid/cache', async (req, res) => {
-  const { tmdbid } = req.params;
-  const { season, episode } = req.query;
-
-  if (!season) {
-    return res.status(400).json({ success: false, error: 'Le paramètre ?season= est requis.' });
-  }
-
-  const cacheDir = path.join(__dirname, '..', 'cache', 'voirdrama');
-  const deletedFiles = [];
-  const errors = [];
-
-  try {
-    if (episode) {
-      // Supprimer un épisode spécifique
-      const cacheKey = generateCacheKey(`voirdrama_${tmdbid}_${season}_${episode}`);
-      const filePath = path.join(cacheDir, `${cacheKey}.json`);
-      try {
-        await fsp.unlink(filePath);
-        deletedFiles.push(`S${season}E${episode}`);
-      } catch (err) {
-        if (err.code !== 'ENOENT') errors.push(err.message);
-      }
-    } else {
-      // Supprimer toute la saison — tester tous les épisodes de 1 à 200
-      const prefix = `voirdrama_${tmdbid}_${season}_`;
-      for (let ep = 1; ep <= 200; ep++) {
-        const cacheKey = generateCacheKey(`${prefix}${ep}`);
-        const filePath = path.join(cacheDir, `${cacheKey}.json`);
-        try {
-          await fsp.unlink(filePath);
-          deletedFiles.push(`S${season}E${ep}`);
-        } catch (err) {
-          if (err.code !== 'ENOENT') errors.push(err.message);
-        }
-      }
-    }
-
-    if (deletedFiles.length > 0) {
-      return res.json({
-        success: true,
-        message: `Cache voirdrama supprimé pour ${tmdbid} saison ${season}`,
-        deleted: deletedFiles,
-        errors: errors.length > 0 ? errors : undefined
-      });
-    } else {
-      return res.status(404).json({
-        success: false,
-        error: `Aucun cache trouvé pour ${tmdbid} saison ${season}`
-      });
-    }
-  } catch (error) {
-    console.error('[VOIRDRAMA] Cache delete error:', error);
-    return res.status(500).json({ success: false, error: 'Erreur serveur' });
   }
 });
 

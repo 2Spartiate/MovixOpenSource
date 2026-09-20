@@ -35,12 +35,13 @@ enum MediaProxyJournal {
   // ne fait pas ce saut de fil.
   private static let lock = NSLock()
 
-  // Les trois sont gardés par `lock`. `timestampFormatter` en particulier :
+  // Cet état est gardé par `lock`. `timestampFormatter` en particulier :
   // DateFormatter n'est pas sûr en concurrence, et c'est ce qui plantait
   // l'application — deux requêtes média simultanées le formataient en même
   // temps et corrompaient sa mémoire interne.
   private static var entries: [String] = []
   private static var enabledStorage = false
+  private static var generation: UInt64 = 0
   private static let timestampFormatter: DateFormatter = {
     let formatter = DateFormatter()
     formatter.dateFormat = "HH:mm:ss.SSS"
@@ -57,6 +58,7 @@ enum MediaProxyJournal {
   static func setEnabled(_ value: Bool) {
     lock.lock()
     defer { lock.unlock() }
+    if enabledStorage != value { generation &+= 1 }
     enabledStorage = value
     if !value { entries.removeAll() }
   }
@@ -75,7 +77,7 @@ enum MediaProxyJournal {
     // l'emportent pour les en-têtes qu'il laisse passer.
     localRequestHeaders: [String: String]? = nil
   ) {
-    guard isEnabled else { return }
+    guard let capturedGeneration = captureGeneration() else { return }
 
     // Horodatage capturé ici, mis en forme sous le verrou : l'entrée porte
     // l'instant de la requête, pas celui où le verrou a été obtenu.
@@ -108,20 +110,7 @@ enum MediaProxyJournal {
       body += "  erreur: \(error)\n"
     }
 
-    lock.lock()
-    // Relecture sous le verrou : la capture a pu être coupée pendant la mise en
-    // forme, et une entrée qui arrive après `setEnabled(false)` ressusciterait
-    // un tampon que l'utilisateur croit vidé.
-    guard enabledStorage else {
-      lock.unlock()
-      return
-    }
-    let entry = "[\(timestampFormatter.string(from: capturedAt))] " + body
-    entries.append(entry)
-    if entries.count > maximumEntries {
-      entries.removeFirst(entries.count - maximumEntries)
-    }
-    lock.unlock()
+    guard let entry = append(body: body, capturedAt: capturedAt, generation: capturedGeneration) else { return }
 
     // `privacy: .public` est délibéré : un journal de diagnostic caviardé en
     // « <private> » ne diagnostique rien. Il ne part qu'en mémoire et sur
@@ -135,6 +124,36 @@ enum MediaProxyJournal {
     }
   }
 
+  // Ces deux étapes permettent de construire l'entrée hors du verrou sans
+  // réinsérer une ancienne entrée après clear() ou désactivation/réactivation.
+  static func captureGeneration() -> UInt64? {
+    lock.lock()
+    defer { lock.unlock() }
+    return enabledStorage ? generation : nil
+  }
+
+  static func append(body: String, capturedAt: Date, generation capturedGeneration: UInt64) -> String? {
+    lock.lock()
+    // Relecture sous le verrou : la capture a pu être coupée pendant la mise en
+    // forme, et une entrée qui arrive après `setEnabled(false)` ressusciterait
+    // un tampon que l'utilisateur croit vidé.
+    guard enabledStorage else {
+      lock.unlock()
+      return nil
+    }
+    guard generation == capturedGeneration else {
+      lock.unlock()
+      return nil
+    }
+    let entry = "[\(timestampFormatter.string(from: capturedAt))] " + body
+    entries.append(entry)
+    if entries.count > maximumEntries {
+      entries.removeFirst(entries.count - maximumEntries)
+    }
+    lock.unlock()
+    return entry
+  }
+
   static func snapshot() -> [String] {
     lock.lock()
     defer { lock.unlock() }
@@ -144,6 +163,7 @@ enum MediaProxyJournal {
   static func clear() {
     lock.lock()
     defer { lock.unlock() }
+    generation &+= 1
     entries.removeAll()
   }
 }

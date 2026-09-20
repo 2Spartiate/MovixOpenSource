@@ -210,6 +210,28 @@ router.get(
     }
 );
 
+/** Configuration d'affichage réservée aux VIP, sans secrets de fournisseur. */
+router.get(
+    '/debrid/providers',
+    setNoStore,
+    requireInternalWiring,
+    requireVip,
+    async (req, res) => {
+        try {
+            const upstream = await axios.get(`${resolveProxiesEmbedBase()}/api/debrid/providers`, {
+                headers: internalHeaders({
+                    Accept: 'application/json',
+                    'x-access-key': req.headers['x-access-key'] || '',
+                }),
+                timeout: 10000,
+            });
+            return res.json(upstream.data);
+        } catch (error) {
+            return relayUpstream(res, error, 'debrid:providers');
+        }
+    }
+);
+
 /**
  * POST /api/media/debrid/unlock
  * Body: { link, provider, password? }

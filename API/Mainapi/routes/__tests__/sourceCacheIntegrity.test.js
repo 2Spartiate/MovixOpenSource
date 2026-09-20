@@ -201,6 +201,9 @@ test('TMDB/Coflix cannot overwrite a concurrently refreshed playable cache with 
     const olderEmptyRequest = fetch(`${url}/api/tmdb/movie/42`);
     await firstSearchStarted;
 
+    // Simuler la publication d'un autre worker : les appels du même worker
+    // partagent désormais le scrape bloqué ci-dessus.
+    cache = playable;
     const freshPlayableResponse = await fetch(`${url}/api/tmdb/movie/42`);
     assert.equal(freshPlayableResponse.status, 200);
     assert.deepEqual((await freshPlayableResponse.json()).player_links, playable.player_links);
@@ -547,7 +550,221 @@ test('Cpasmal cannot overwrite a concurrently refreshed playable cache with an o
   }
 });
 
-test('FStream chooses the exact FROM season before parsing its VF payload', async () => {
+async function createFStreamBusinessHarness(t, type) {
+  const { createFStreamCacheStore } = require('../../utils/fstreamCache');
+  const cacheDir = await fs.mkdtemp(path.join(os.tmpdir(), 'movix-fstream-business-'));
+  const store = createFStreamCacheStore({ cacheDir, redis: null, refreshMs: 1, retryMs: 10000 });
+  const routePath = path.join(ROUTES_DIR, 'fstream.js');
+  const utilsDir = path.join(__dirname, '..', '..', 'utils');
+  let tmdbFetches = 0;
+  let finished = () => {};
+  const title = type === 'movie' ? 'Movie Test' : 'Series Test';
+  const upstreamTitle = type === 'movie' ? title : `${title} (2023) - Saison 1`;
+  const search = `<div class="search-item" onclick="location.href='/123456-source.html'"><div class="search-title">${upstreamTitle}</div></div>`;
+  const errors = [];
+  t.mock.method(console, 'error', (...args) => errors.push(args.join(' ')));
+  // Expected movie HTML fallback / TV date-rejection diagnostics are captured.
+  const diagnostics = [];
+  t.mock.method(console, 'log', (...args) => diagnostics.push(args.join(' ')));
+  const restore = installModuleStubs({
+    [path.join(utilsDir, '..', 'config', 'redis.js')]: { redis: null },
+    [path.join(utilsDir, 'cacheManager.js')]: {
+      generateFStreamCacheKey: () => 'business-key',
+      getFStreamFromCache: async (key) => (await store.get(key))?.data,
+      getFStreamRefreshInfo: async (key) => {
+        const entry = await store.get(key);
+        return { entry, isFresh: store.isFresh(entry) };
+      },
+      refreshFStreamCache: async (...args) => { const value = await store.getOrRefresh(...args); finished(value); return value; },
+      ongoingFStreamRequests: new Map(),
+      getOrCreateFStreamRequest: async (_key, request) => request(),
+    },
+    [path.join(utilsDir, 'tmdbCache.js')]: {
+      fetchTmdbDetails: async () => {
+        tmdbFetches++;
+        await delay(25);
+        return { id: 42, title, name: title, original_title: title, original_name: title, first_air_date: '2022-01-01', overview: 'Test' };
+      },
+    },
+    [path.join(utilsDir, 'axiosHelpers.js')]: {
+      axiosFStreamRequest: async (config) => config.method === 'post'
+        ? { status: 200, data: search }
+        : { status: 503, data: '' },
+      configure: () => {},
+    },
+    [path.join(utilsDir, 'proxyManager.js')]: {
+      PROXIES: ['test-proxy'], DARKINO_PROXIES: [], withFStreamProxy: (_entry, request) => request({}),
+    },
+    [require.resolve('axios')]: async (config) => {
+      if (config.url.includes('/engine/ajax/film_api.php')) return { status: 200, data: { players: {} } };
+      if (config.url.includes('/static/series/123456.js')) return { status: 200, data: { vf: { 1: { premium: 'https://test.invalid/player' } }, vostfr: {}, vo: {} } };
+      throw new Error(`Unexpected test request: ${config.url}`);
+    },
+  });
+  delete require.cache[require.resolve(routePath)];
+  const app = express();
+  app.use('/api/fstream', require(routePath));
+  const { server, url } = await listen(app);
+  t.after(async () => {
+    await close(server);
+    delete require.cache[require.resolve(routePath)];
+    restore();
+    await fs.rm(cacheDir, { recursive: true, force: true });
+    assert.deepEqual(errors, [], 'no unexpected upstream error should be logged');
+    assert.ok(diagnostics.length > 0);
+  });
+  return {
+    store, cacheDir,
+    url: `${url}/api/fstream/${type === 'movie' ? 'movie/42' : 'tv/42/season/1'}`,
+    get tmdbFetches() { return tmdbFetches; },
+    nextRefresh: () => new Promise((resolve) => { finished = resolve; }),
+  };
+}
+
+for (const type of ['movie', 'tv']) {
+  test(`FStream real ${type} route preserves business responses, cooldown and playable cache`, { timeout: 5000 }, async (t) => {
+    const harness = await createFStreamBusinessHarness(t, type);
+    const responses = await Promise.all([fetch(harness.url), fetch(harness.url)]);
+    const bodies = await Promise.all(responses.map((response) => response.json()));
+    const expectedStatus = type === 'movie' ? 404 : 200;
+    assert.ok(responses.every((response) => response.status === expectedStatus));
+    assert.deepEqual(bodies[0], bodies[1]);
+    if (type === 'movie') {
+      assert.deepEqual(bodies[0], { error: 'Aucun lecteur video trouve', searchQuery: 'Movie Test', bestResult: 'Movie Test' });
+    } else {
+      assert.equal(bodies[0].success, false);
+      assert.deepEqual(bodies[0].episodes, {});
+      assert.equal(bodies[0].total, 0);
+      assert.equal(bodies[0].search.bestMatch.year, 2023);
+      assert.deepEqual(bodies[0].metadata.dateValidation, { fstreamYear: null, tmdbYear: '2022', isAvailable: false });
+    }
+    assert.equal(harness.tmdbFetches, 2, 'one shared scrape with its FR/EN metadata requests');
+    const cooldownResponse = await fetch(harness.url);
+    assert.equal(cooldownResponse.status, expectedStatus);
+    assert.deepEqual(await cooldownResponse.json(), bodies[0]);
+    assert.equal(harness.tmdbFetches, 2);
+    assert.equal(await harness.store.get('business-key'), null);
+    await assert.rejects(fs.access(path.join(harness.cacheDir, 'business-key.json')));
+
+    const cached = type === 'movie'
+      ? { success: true, total: 1, players: { Default: [{ url: 'https://cached.invalid/player' }] } }
+      : { success: true, total: 1, episodes: { 1: { number: 1, languages: { VF: [{ url: 'https://cached.invalid/player' }] } } } };
+    await harness.store.save('business-key', cached);
+    await delay(5);
+    const refreshed = harness.nextRefresh();
+    const cachedResponse = await fetch(harness.url);
+    assert.equal(cachedResponse.status, 200);
+    assert.deepEqual(await cachedResponse.json(), cached);
+    await refreshed;
+    assert.deepEqual((await harness.store.get('business-key')).data, cached);
+    assert.deepEqual(JSON.parse(await fs.readFile(path.join(harness.cacheDir, 'business-key.json'), 'utf8')).data, cached);
+  });
+}
+
+for (const { id, season, title, originalTitle, year, pageId } of [
+  { id: 5920, season: 6, title: 'Mentalist', originalTitle: 'The Mentalist', year: 2008, pageId: 15555 },
+  { id: 222766, season: 1, title: 'Chacal', originalTitle: 'The Day of the Jackal', year: 2024, pageId: 15118995 },
+]) {
+  test(`FStream conserve et publie la fiche originale de ${title} S${season}`, async (t) => {
+    const { createFStreamCacheStore } = require('../../utils/fstreamCache');
+    const cacheDir = await fs.mkdtemp(path.join(os.tmpdir(), 'movix-fstream-titles-'));
+    const store = createFStreamCacheStore({ cacheDir, redis: null });
+    const key = `tv_${id}_s${season}`;
+    const routePath = path.join(ROUTES_DIR, 'fstream.js');
+    const utilsDir = path.join(ROUTES_DIR, '..', 'utils');
+    const tmdb = { id, title, original_title: originalTitle, name_no_lang: originalTitle, release_date: `${year}-01-01` };
+    const upstreamTitle = `${originalTitle} - Saison ${season}`;
+    const cached = {
+      success: true, source: 'FStream', type: 'tv', tmdb,
+      search: { bestMatch: { title: originalTitle, originalTitle: upstreamTitle, seasonNumber: season } },
+      episodes: { 1: { number: 1, languages: { VF: [{ url: 'https://cached.invalid/player' }] } } },
+      total: 1,
+    };
+    await store.save(key, cached);
+    let tmdbFetches = 0;
+    const queries = [];
+    const errors = [];
+    t.mock.method(console, 'error', (...args) => errors.push(args.join(' ')));
+    t.mock.method(console, 'warn', (...args) => errors.push(args.join(' ')));
+    t.mock.method(console, 'log', () => {});
+    const restore = installModuleStubs({
+      [path.join(utilsDir, '..', 'config', 'redis.js')]: { redis: null },
+      [path.join(utilsDir, 'cacheManager.js')]: {
+        generateFStreamCacheKey: () => key,
+        getFStreamRefreshInfo: async () => {
+          const entry = await store.get(key);
+          return { entry, isFresh: store.isFresh(entry) };
+        },
+        refreshFStreamCache: store.getOrRefresh,
+        ongoingFStreamRequests: new Map(),
+        getOrCreateFStreamRequest: async (_key, request) => request(),
+      },
+      [path.join(utilsDir, 'tmdbCache.js')]: {
+        fetchTmdbDetails: async (_url, _key, _id, _type, language) => {
+          tmdbFetches++;
+          return { id, name: language === 'fr-FR' ? title : originalTitle, original_name: originalTitle, first_air_date: tmdb.release_date };
+        },
+      },
+      [path.join(utilsDir, 'axiosHelpers.js')]: {
+        configure: () => {},
+        axiosFStreamRequest: async (config) => {
+          const query = config.data.get('query');
+          queries.push(query);
+          return { status: 200, data: query === upstreamTitle
+            ? `<div class="search-item" onclick="location.href='/${pageId}-source.html'"><div class="search-title">${upstreamTitle}</div></div>`
+            : '' };
+        },
+      },
+      [path.join(utilsDir, 'proxyManager.js')]: {
+        PROXIES: ['test-proxy'], DARKINO_PROXIES: [], withFStreamProxy: (_entry, request) => request({}),
+      },
+      [require.resolve('axios')]: async (config) => {
+        assert.ok(config.url.includes(`/static/series/${pageId}.js`));
+        return { status: 200, data: { vf: { 1: { premium: 'https://source.invalid/player' } }, vostfr: {}, vo: {} } };
+      },
+    });
+    delete require.cache[require.resolve(routePath)];
+    let server;
+    try {
+      const app = express();
+      app.use('/api/fstream', require(routePath));
+      const listening = await listen(app);
+      server = listening.server;
+      const url = `${listening.url}/api/fstream/tv/${id}/season/${season}`;
+      const warm = await fetch(url);
+      assert.equal(warm.status, 200);
+      assert.deepEqual(await warm.json(), cached);
+      assert.equal(tmdbFetches, 0, 'la fiche valide reste servie sans recherche');
+      assert.deepEqual(queries, []);
+
+      await store.invalidate(key);
+      const cold = await fetch(url);
+      assert.equal(cold.status, 200);
+      const payload = await cold.json();
+      assert.equal(payload.success, true);
+      assert.equal(payload.search.bestMatch.originalTitle, upstreamTitle);
+      assert.equal(payload.search.bestMatch.seasonNumber, season);
+      assert.equal(payload.total, 1);
+      assert.ok(queries.includes(upstreamTitle), 'le résultat du secours anglais doit être publiable');
+      const disk = JSON.parse(await fs.readFile(path.join(cacheDir, `${key}.json`), 'utf8'));
+      assert.equal(disk.data.search.bestMatch.originalTitle, upstreamTitle);
+      assert.deepEqual(await (await fetch(url)).json(), payload);
+      assert.equal(tmdbFetches, 2, 'le prochain appel réutilise le cache publié');
+      assert.deepEqual(errors, []);
+    } finally {
+      if (server) await close(server);
+      delete require.cache[require.resolve(routePath)];
+      restore();
+      await fs.rm(cacheDir, { recursive: true, force: true });
+    }
+  });
+}
+
+test('FStream route rejects fresh incompatible titles/seasons and never falls back to them on error', async (t) => {
+  const { createFStreamCacheStore } = require('../../utils/fstreamCache');
+  const cacheDir = await fs.mkdtemp(path.join(os.tmpdir(), 'movix-fstream-selection-'));
+  const store = createFStreamCacheStore({ cacheDir, redis: null });
+  let tmdbFails = false;
   const routePath = path.join(ROUTES_DIR, 'fstream.js');
   const cacheManagerPath = path.join(__dirname, '..', '..', 'utils', 'cacheManager.js');
   const tmdbCachePath = path.join(__dirname, '..', '..', 'utils', 'tmdbCache.js');
@@ -626,24 +843,31 @@ test('FStream chooses the exact FROM season before parsing its VF payload', asyn
     },
     total: 1,
   };
+  await store.save('tv_124364_s1', wrongCachedResult);
 
   const restore = installModuleStubs({
+    [path.join(ROUTES_DIR, '..', 'config', 'redis.js')]: { redis: null },
     [cacheManagerPath]: {
-      CACHE_DIR: { FSTREAM: 'fstream-test-cache' },
+      CACHE_DIR: { FSTREAM: cacheDir },
       generateFStreamCacheKey: () => 'tv_124364_s1',
-      getFStreamFromCache: async () => wrongCachedResult,
-      saveFStreamToCache: async () => true,
+      getFStreamFromCache: async (key) => (await store.get(key))?.data,
+      saveFStreamToCache: store.save,
+      getFStreamRefreshInfo: async (key) => { const entry = await store.get(key); return { entry, isFresh: store.isFresh(entry) }; },
+      refreshFStreamCache: store.getOrRefresh,
       ongoingFStreamRequests: new Map(),
       getOrCreateFStreamRequest: async (_key, request) => request(),
     },
     [tmdbCachePath]: {
-      fetchTmdbDetails: async () => ({
+      fetchTmdbDetails: async () => {
+        if (tmdbFails) throw new Error('TMDB test unavailable');
+        return {
         id: 124364,
         name: 'FROM',
         original_name: 'FROM',
         first_air_date: '2022-02-20',
         overview: 'Test',
-      }),
+        };
+      },
     },
     [axiosHelpersPath]: {
       axiosFStreamRequest,
@@ -652,8 +876,7 @@ test('FStream chooses the exact FROM season before parsing its VF payload', asyn
     [proxyManagerPath]: {
       PROXIES: ['test-proxy'],
       DARKINO_PROXIES: [],
-      getProxyAgent: () => null,
-      getDarkinoHttpProxyAgent: () => null,
+      withFStreamProxy: (_entry, request) => request({}),
     },
     [axiosPath]: axiosStub,
   });
@@ -673,9 +896,30 @@ test('FStream chooses the exact FROM season before parsing its VF payload', asyn
     assert.match(payload.search.bestMatch.link, /15110779-from-saison-1/);
     assert.equal(payload.episodes['1'].languages.VF.length, 1);
     assert.equal(payload.episodes['1'].languages.VF[0].player, 'Premium');
+
+    await store.save('tv_124364_s1', {
+      ...wrongCachedResult,
+      search: { bestMatch: { ...wrongCachedResult.search.bestMatch, title: 'FROM - Saison 2', originalTitle: 'FROM - Saison 2', seasonNumber: 2 } },
+    });
+    const seasonResponse = await fetch(`${url}/api/fstream/tv/124364/season/1`);
+    assert.equal(seasonResponse.status, 200);
+    assert.equal((await seasonResponse.json()).search.bestMatch.seasonNumber, 1);
+
+    await store.save('tv_124364_s1', wrongCachedResult);
+    tmdbFails = true;
+    const errors = [];
+    t.mock.method(console, 'error', (...args) => errors.push(args.join(' ')));
+    const failedRefresh = await fetch(`${url}/api/fstream/tv/124364/season/1`);
+    assert.equal(failedRefresh.status, 500);
+    assert.equal((await failedRefresh.json()).success, false);
+    assert.equal(errors.length, 3);
+    assert.match(errors[0], /TMDB test unavailable/);
+    assert.match(errors[1], /tv_124364_s1.*Contenu TMDB non trouve/);
+    assert.match(errors[2], /124364 S1.*Aucune source FStream utilisable/);
   } finally {
     if (server) await close(server);
     delete require.cache[require.resolve(routePath)];
     restore();
+    await fs.rm(cacheDir, { recursive: true, force: true });
   }
 });

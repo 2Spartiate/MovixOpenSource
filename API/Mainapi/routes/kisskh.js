@@ -563,8 +563,10 @@ function createRuntimeDependencies(deps = {}) {
   const ttlOptions = parseRuntimeTtls(environ, config);
   const publicProxyUrl = resolvePublicProxyUrl(environ);
   if (!config.enabled) return { enabled: false, publicProxyUrl };
+  const tmdbHelpers = require('../utils/tmdbCache');
   const cache = createKisskhCache({
     redis: deps.redis,
+    providerBaseUrl: config.providerBaseUrl,
     cacheDir: deps.cacheDir || path.join(__dirname, '..', 'cache', 'kisskh'),
     matchTtlSeconds: ttlOptions.matchTtlSeconds,
     episodesTtlSeconds: ttlOptions.episodesTtlSeconds,
@@ -574,7 +576,7 @@ function createRuntimeDependencies(deps = {}) {
     bundleCheckTtlSeconds: ttlOptions.bundleCheckTtlSeconds,
     bundleStaleMaxSeconds: ttlOptions.bundleStaleMaxSeconds,
   });
-  const providerBaseUrl = environ.KISSKH_BASE_URL || 'https://kisskh.nl';
+  const providerBaseUrl = config.providerBaseUrl;
   const capabilityStore = createFallbackCapabilityStore({
     redis: deps.redis,
     providerBaseUrl,
@@ -588,13 +590,15 @@ function createRuntimeDependencies(deps = {}) {
     circuitDefaultMs: positiveInteger(environ, 'KISSKH_CIRCUIT_DEFAULT_MS', 60_000),
   });
   const bundleRegistry = createBundleRegistry({
+    providerBaseUrl,
     checkTtlSeconds: ttlOptions.bundleCheckTtlSeconds,
     staleMaxSeconds: ttlOptions.bundleStaleMaxSeconds,
-    loadCurrentMetadata: () => cache.getCurrentBundleMetadata(),
+    cache,
   });
   const kisskhClient = createKisskhClient({
+    redis: deps.redis,
     baseUrl: providerBaseUrl,
-    allowedHosts: hostList(environ.KISSKH_ALLOWED_HOSTS, ['kisskh.nl']),
+    allowedHosts: hostList(environ.KISSKH_ALLOWED_HOSTS, [new URL(providerBaseUrl).hostname]),
     proxyPolicy,
     bundleRegistry,
     request: deps.kisskhRequest,
@@ -602,14 +606,16 @@ function createRuntimeDependencies(deps = {}) {
     maxAttempts: positiveInteger(environ, 'KISSKH_METADATA_MAX_ATTEMPTS', 3),
   });
   const resolver = createKisskhResolver({
+    providerBaseUrl,
     cache,
     capabilityStore,
     bundleRegistry,
     kisskhClient,
-    fetchTmdbDetails: deps.fetchTmdbDetails,
-    fetchTmdbAlternativeTitles: deps.fetchTmdbAlternativeTitles,
-    tmdbApiUrl: deps.tmdbApiUrl,
-    tmdbApiKey: deps.tmdbApiKey,
+    // Adapter les dépendances communes de Main API sans écraser les injections explicites.
+    fetchTmdbDetails: deps.fetchTmdbDetails ?? tmdbHelpers.fetchTmdbDetails,
+    fetchTmdbAlternativeTitles: deps.fetchTmdbAlternativeTitles ?? tmdbHelpers.fetchTmdbAlternativeTitles,
+    tmdbApiUrl: deps.tmdbApiUrl ?? deps.TMDB_API_URL,
+    tmdbApiKey: deps.tmdbApiKey ?? deps.TMDB_API_KEY,
     publicProxyUrl,
   });
   return {

@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useCallback, useRef, useMemo } from 'react';
-import { getFrembedBase } from '../../utils/frembedConfig';
+import { getFrembedBase, initFrembedBase } from '../../utils/frembedConfig';
 import { useParams, useNavigate } from 'react-router-dom'; // Added useNavigate
 import { useTranslation } from 'react-i18next';
 import axios from 'axios';
@@ -8,6 +8,7 @@ import PlayerOverlayPortal from '../../components/PlayerOverlayPortal';
 import { motion, AnimatePresence } from 'framer-motion';
 import { useAdFreePopup } from '../../context/AdFreePopupContext';
 import AdFreePlayerAds from '../../components/AdFreePlayerAds';
+import AdWaitingScreen from '@/components/AdWaitingScreen';
 import { getAdPopupMode } from '../../utils/adPopupMode';
 import { extractM3u8FromEmbed, extractUqloadFile, extractVidzyM3u8, extractFsvidM3u8, registerServerResolvedSources, type M3u8Result } from '../../utils/extractM3u8';
 import type { SeekStreamingHlsSource } from '../../utils/seekStreamingCandidates';
@@ -20,6 +21,7 @@ import type { TopLevelSourceId } from '../../types/sourcePriority';
 import { getTmdbId, encodeId } from '../../utils/idEncoder';
 import { useAntiSpoilerSettings } from '../../hooks/useAntiSpoilerSettings';
 import { useWrappedTracker } from '../../hooks/useWrappedTracker';
+import { useTmdbImages, withTmdbImageSize } from '../../hooks/useTmdbImages';
 import { isUserVip, getVipHeaders } from '../../utils/authUtils';
 import { serverResolveRequest } from '../../utils/serverResolveRequest';
 import { isExtensionAvailable } from '../../utils/extensionProxy';
@@ -333,11 +335,15 @@ const checkCustomTVLink = async (showId: string, seasonNumber: number, episodeNu
 // Check Frembed Availability for Episodes
 const checkFrembedAvailability = async (showId: string, seasonNumber: number, episodeNumber: number): Promise<boolean> => {
   try {
-    const checkUrl = `${getFrembedBase()}/api/public/v1/tv/${showId}?sa=${seasonNumber}&epi=${episodeNumber}`;
-    const response = await axios.get(checkUrl, { timeout: 1000 });
+    // L'ancien domaine peut rediriger sans CORS : attendre la config avant la sonde.
+    const baseUrl = await initFrembedBase();
+    const checkUrl = `${baseUrl}/api/public/v1/tv/${showId}?sa=${seasonNumber}&epi=${episodeNumber}`;
+    const response = await axios.get(checkUrl, { timeout: 5000 });
 
     // Check status and if result has items
-    return response.data?.status === 200 && response.data?.result?.totalItems > 0;
+    const result = response.data?.result;
+    return response.data?.status === 200
+      && (result?.total ?? result?.totalItems ?? result?.items?.length ?? 0) > 0;
 
   } catch (error: any) {
     // console.error('Frembed Check Error:', error.message);
@@ -497,6 +503,12 @@ const WatchTv: React.FC = () => {
   const [backdropPath, setBackdropPath] = useState<string | null>(null);
   const [, setEpisodeStillPath] = useState<string | null>(null);
   const [showPosterPath, setShowPosterPath] = useState<string | null>(null); // Store poster for progress saving
+  // Poster localisé (langue d'interface > EN > sans langue) via l'endpoint
+  // /images — même logique que les cards, cache de session partagé.
+  const { posterUrl: localizedShowPosterUrl } = useTmdbImages('tv', id ? Number(id) : undefined);
+  const playerPoster = localizedShowPosterUrl
+    ? withTmdbImageSize(localizedShowPosterUrl, 'w500')
+    : (showPosterPath ? `https://image.tmdb.org/t/p/w500${showPosterPath}` : undefined);
 
   // Anti-spoiler settings
   const { shouldHide, getMaskedContent } = useAntiSpoilerSettings();
@@ -3652,13 +3664,15 @@ const WatchTv: React.FC = () => {
   }, []);
 
   useEffect(() => {
-    document.body.style.overflow = 'hidden';
-    document.body.style.height = '100vh';
+    const body = document.body;
+    if (!body) return;
+    body.style.overflow = 'hidden';
+    body.style.height = '100vh';
     document.documentElement.style.overflow = 'hidden';
     document.documentElement.style.height = '100vh';
     return () => {
-      document.body.style.overflow = '';
-      document.body.style.height = '';
+      body.style.overflow = '';
+      body.style.height = '';
       document.documentElement.style.overflow = '';
       document.documentElement.style.height = '';
     };
@@ -3669,7 +3683,12 @@ const WatchTv: React.FC = () => {
   // black screen). Click-anywhere falls through so the player loads behind the
   // transparent catcher, which is rendered as an overlay in the main return.
   if (showAdFreePopup && adPopupTriggered && !adPopupBypass && getAdPopupMode() !== 'click-anywhere') {
-    return <AdFreePlayerAds onClose={handlePopupClose} onAccept={handlePopupAccept} adType={adType} onAdClick={() => setHasClickedAd(true)} />;
+    return (
+      <div className="fixed inset-0 bg-black">
+        {!shouldLoadIframe && !hasClickedAd && <AdWaitingScreen />}
+        <AdFreePlayerAds onClose={handlePopupClose} onAccept={handlePopupAccept} adType={adType} onAdClick={() => setHasClickedAd(true)} />
+      </div>
+    );
   }
   if (adPopupBypass) {
     return (
@@ -3681,12 +3700,7 @@ const WatchTv: React.FC = () => {
   }
   // Si la popup doit être affichée mais n'est pas encore montrée, attendre
   if (adPopupTriggered && !shouldLoadIframe && !hasClickedAd) {
-    return (
-      <div className="flex flex-col items-center justify-center h-full bg-black">
-        <div className="text-white text-2xl font-bold mb-4">{t('watch.loading')}</div>
-        <div className="text-gray-400 text-lg">{t('watch.pleaseWait')}</div>
-      </div>
-    );
+    return <AdWaitingScreen />;
   }
 
   // Age restriction blocking screen
@@ -4349,7 +4363,7 @@ const WatchTv: React.FC = () => {
             // CORS le navigateur refuse de la suivre. Les autres sources gardent
             // `crossOrigin`, dont dépendent le booster de volume et l'égaliseur.
             disableCrossOrigin={selectedSource === 'swiftflux'}
-            poster={showPosterPath ? `https://image.tmdb.org/t/p/w500${showPosterPath}` : undefined}
+            poster={playerPoster}
             backdrop={backdropPath ? `https://image.tmdb.org/t/p/w1280${backdropPath}` : undefined}
             className="w-full h-full"
             autoPlay={true}

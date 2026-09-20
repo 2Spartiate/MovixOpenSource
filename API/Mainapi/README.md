@@ -69,6 +69,16 @@ Le fichier `API/Mainapi/.env.example` est la référence complète. En pratique,
 
 Certaines intégrations sont très spécifiques à des sources données, par exemple les cookies `DARKIWORLD_*`, `FSTREAM_LOGIN_*` ou `XTREAM_*`.
 
+## Fichiers SQLite pour Darkino / DarkiWorld
+
+La source téléchargements (`routes/darkiworld.js` et `utils/darkiworldSqlite.js`) lit des snapshots SQLite locaux : `mirror.sqlite`, `darkino.sqlite` et `links_small.sqlite`. Ces fichiers ne sont pas versionnés dans le dépôt public.
+
+1. Télécharger [l’archive des fichiers SQLite sur Pixeldrain](https://pixeldrain.com/u/n2M1s1MA).
+2. Extraire les fichiers `.sqlite` dans `API/Mainapi/darkino-backups/`.
+3. Pour utiliser un autre dossier, définir `DARKIWORLD_SQLITE_DIR` avec son chemin absolu, par exemple `/home/container/darkino-backups`.
+
+Démarrer ou redémarrer Main API après l’installation des fichiers. Sans ces snapshots, les liens absents du cache local peuvent renvoyer `sqlite_miss`. Avec `HYDRACKER_BLACKOUT=true` (valeur par défaut), aucune résolution en direct auprès d’Hydracker ou de DarkiWorld ne prend le relais.
+
 ## Points d'entrée utiles
 
 - auth et profils : `routes/authRoutes.js`, `routes/sessions.js`, `routes/profiles.js`

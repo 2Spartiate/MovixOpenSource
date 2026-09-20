@@ -1,9 +1,21 @@
 const cluster = require('cluster');
 const os = require('os');
 require('dotenv').config();
+const diagnostics = require('./utils/diagnostics');
+const resourceProbe = diagnostics.startProbe(cluster);
+const { createWorkerSlotManager } = require('./utils/workerSlots');
 
 // === CLUSTER MODE CONFIGURATION (au tout début pour éviter que le master charge tout) ===
-const NUM_WORKERS = parseInt(process.env.NUM_WORKERS) || 12; // 6 coeurs physiques sur le serveur
+const NUM_WORKERS = parseInt(process.env.NUM_WORKERS) || 12;
+const workerSlots = createWorkerSlotManager(NUM_WORKERS);
+const forkWorker = (slot) => {
+  const worker = cluster.fork({
+    ...process.env,
+    ...resourceProbe.workerEnv,
+    ...workerSlots.environmentFor(slot),
+  });
+  return workerSlots.register(worker, slot);
+};
 
 if (cluster.isPrimary ?? cluster.isMaster) {
   // === MODE MASTER — ne charge RIEN d'autre (pas de MySQL, Redis, Express, etc.) ===
@@ -11,7 +23,7 @@ if (cluster.isPrimary ?? cluster.isMaster) {
   console.log(`📊 Création de ${NUM_WORKERS} workers...`);
 
   for (let i = 0; i < NUM_WORKERS; i++) {
-    const worker = cluster.fork();
+    const worker = forkWorker(i);
     console.log(
       `✓ Worker ${worker.process.pid} créé (${i + 1}/${NUM_WORKERS})`,
     );
@@ -23,6 +35,7 @@ if (cluster.isPrimary ?? cluster.isMaster) {
   let isShuttingDown = false; // Flag pour empêcher le redémarrage des workers pendant le shutdown
 
   cluster.on('exit', (worker, code, signal) => {
+    const slot = workerSlots.release(worker);
     if (signal) {
       console.warn(`⚠️ Worker ${worker.process.pid} tué par le signal ${signal}`);
     } else if (code !== 0) {
@@ -50,18 +63,19 @@ if (cluster.isPrimary ?? cluster.isMaster) {
     }
 
     console.log(`🔄 Redémarrage d'un nouveau worker...`);
-    const newWorker = cluster.fork();
-    console.log(`✅ Nouveau worker ${newWorker.process.pid} créé`);
+    const newWorker = forkWorker(slot);
+    console.log(`✅ Nouveau worker ${newWorker.process.pid} créé pour le slot ${slot}`);
   });
 
   // Graceful shutdown master
   const shutdownMaster = () => {
     if (isShuttingDown) return; // Guard: SIGINT + SIGTERM peuvent arriver quasi-simultanement
     isShuttingDown = true;
+    const probeStopped = resourceProbe.stop('shutdown');
     console.log('\n🛑 Signal de fermeture reçu par le master...');
     console.log('📤 Envoi du signal de fermeture à tous les workers...');
     for (const id in cluster.workers) {
-      cluster.workers[id].send('shutdown');
+      try { cluster.workers[id].send('shutdown', () => {}); } catch { /* Worker déjà déconnecté. */ }
     }
     let workersAlive = Object.keys(cluster.workers).length;
     const checkInterval = setInterval(() => {
@@ -69,7 +83,7 @@ if (cluster.isPrimary ?? cluster.isMaster) {
       if (workersAlive === 0) {
         clearInterval(checkInterval);
         console.log('✅ Tous les workers sont arrêtés. Arrêt du master.');
-        process.exit(0);
+        probeStopped.finally(() => process.exit(0));
       }
     }, 100);
     setTimeout(() => {
@@ -153,7 +167,7 @@ if (cluster.isPrimary ?? cluster.isMaster) {
 // === WORKER PROCESS ONLY (below) =============================================
 // =============================================================================
 
-process.env.UV_THREADPOOL_SIZE = 8; // 8 threads libuv par worker (6 workers x 8 = 48 threads total)
+process.env.UV_THREADPOOL_SIZE = 8; // 8 threads libuv par worker
 
 const http = require('http');
 const https = require('https');
@@ -303,30 +317,52 @@ const shutdownWorker = async () => {
   isWorkerShuttingDown = true;
   setShuttingDown();
   console.log(`\n🛑 Worker ${process.pid} - Signal de fermeture reçu...`);
+  // La sonde s'arrête pendant le drainage HTTP, sans en retarder le début.
+  const probeStopped = Promise.resolve().then(() => resourceProbe.stop('shutdown')).catch(() => {});
+  // Couvre aussi une fermeture de pool ou d'un client qui ne se résout jamais.
+  const hardStop = setTimeout(() => {
+    console.warn(`⚠️ Worker ${process.pid} - Délai global d’arrêt atteint`);
+    process.exit(1);
+  }, 20000);
 
   // 1. Arrêter d'accepter de nouvelles connexions et attendre les requêtes en cours
   if (activeServer) {
     await new Promise((resolve) => {
+      let finished = false, forceClose;
+      const done = () => {
+        if (finished) return;
+        finished = true; clearTimeout(forceClose); resolve();
+      };
       // Empêcher les nouvelles connexions keep-alive de prolonger le shutdown
       activeServer.keepAliveTimeout = 1;
       activeServer.close(() => {
         console.log(`✅ Worker ${process.pid} - Serveur HTTP fermé (plus de requêtes en cours)`);
-        resolve();
+        done();
       });
+      activeServer.closeIdleConnections?.();
 
       // Force-close après 15s si des connexions trainent
-      setTimeout(() => {
+      forceClose = setTimeout(() => {
         console.warn(`⚠️ Worker ${process.pid} - Timeout 15s, fermeture forcée des connexions`);
-        activeServer.closeAllConnections();
-        resolve();
+        try { activeServer.closeAllConnections?.(); } catch { /* Le worker va sortir après le nettoyage borné. */ }
+        done();
       }, 15000);
+      if (finished) clearTimeout(forceClose);
     });
   }
 
   // 2. Cleanup des ressources
-  try { await redis.quit(); } catch { /* ignore */ }
-  try { await shutdownCycleTLS(); } catch { /* ignore */ }
-  try { const pool = getPool(); if (pool) await pool.end(); } catch { /* ignore */ }
+  let cleanupTimer;
+  await Promise.race([
+    Promise.allSettled([probeStopped,
+      Promise.resolve().then(() => redis.quit()),
+      Promise.resolve().then(() => shutdownCycleTLS()),
+      Promise.resolve().then(() => getPool()?.end()),
+    ]),
+    new Promise((resolve) => { cleanupTimer = setTimeout(resolve, 3000); }),
+  ]);
+  clearTimeout(cleanupTimer); clearTimeout(hardStop);
+  try { redis.disconnect(); } catch { /* Déconnecter même si QUIT a expiré. */ }
   process.exit(0);
 };
 

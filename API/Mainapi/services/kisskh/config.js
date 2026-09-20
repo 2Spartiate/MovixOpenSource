@@ -1,5 +1,20 @@
 const fs = require('node:fs');
 
+const DEFAULT_BASE_URL = 'https://kisskh.do';
+
+function getProviderBaseUrl(value = DEFAULT_BASE_URL) {
+  const invalid = () => new TypeError('KISSKH_BASE_URL invalide');
+  if (typeof value !== 'string' || value !== value.trim() || /[\r\n\0]/.test(value)) throw invalid();
+  let url;
+  try { url = new URL(value); } catch { throw invalid(); }
+  if (url.protocol !== 'https:' || (url.port && url.port !== '443') || url.username || url.password
+      || url.pathname !== '/' || url.search || url.hash
+      || !/^(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z]{2,63}$/.test(url.hostname)) {
+    throw invalid();
+  }
+  return url.origin;
+}
+
 const POLICY_KEYS = ['version', 'subtitleHosts', 'maxSubtitleBytes'];
 const CANONICAL_SUBTITLE_BYTES = 2 * 1024 * 1024;
 const RUNTIME_POLICY = Object.freeze({
@@ -86,6 +101,7 @@ function fromEnv(environ) {
   const bundleStaleMaxSeconds = parsePositiveInteger(environ, 'KISSKH_BUNDLE_STALE_MAX_SECONDS', 86_400);
   return Object.freeze({
     enabled,
+    providerBaseUrl: getProviderBaseUrl(environ.KISSKH_BASE_URL || undefined),
     browserFallbackEnabled: false,
     subtitleAllowedHosts: Object.freeze(subtitleAllowedHosts),
     subtitleMaxBytes: policy.maxSubtitleBytes,
@@ -94,4 +110,4 @@ function fromEnv(environ) {
   });
 }
 
-module.exports = { fromEnv, loadFallbackPolicy, validateFallbackPolicy };
+module.exports = { fromEnv, getProviderBaseUrl, loadFallbackPolicy, validateFallbackPolicy };

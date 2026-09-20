@@ -8,21 +8,20 @@ const express = require('express');
 const router = express.Router();
 const axios = require('axios');
 const cheerio = require('cheerio');
-const path = require('path');
-const fsp = require('fs').promises;
-
-const { getRedis } = require('../config/redis');
 const { fetchTmdbDetails } = require('../utils/tmdbCache');
+const { uncachedFStreamResponse } = require('../utils/fstreamCache');
 const {
-  CACHE_DIR,
   generateFStreamCacheKey,
-  getFStreamFromCache,
-  saveFStreamToCache,
+  getFStreamRefreshInfo,
+  refreshFStreamCache,
   ongoingFStreamRequests,
   getOrCreateFStreamRequest
 } = require('../utils/cacheManager');
 const axiosHelpers = require('../utils/axiosHelpers');
 const { axiosFStreamRequest } = axiosHelpers;
+const { redis } = require('../config/redis');
+const { createFStreamSearchCache } = require('../utils/fstreamSearchCache');
+const searchCache = createFStreamSearchCache({ redis });
 const { respondWithResolvedSources } = require('../utils/embedExtraction');
 
 /** Séries : résout les m3u8 de l'épisode demandé (`?episode=N`), pour un VIP. */
@@ -36,7 +35,7 @@ const respondWithMovieSources = (req, res, payload, status = 200) =>
     movieMapKey: 'players',
     label: 'FSTREAM MOVIE',
   });
-const { PROXIES, DARKINO_PROXIES, getProxyAgent, getDarkinoHttpProxyAgent } = require('../utils/proxyManager');
+const { PROXIES, DARKINO_PROXIES, withFStreamProxy } = require('../utils/proxyManager');
 
 // === FStream Configuration ===
 const TMDB_API_KEY = process.env.TMDB_API_KEY || '';
@@ -291,7 +290,12 @@ function isFStreamCachedSelectionValid(cachedData, requestedSeason) {
   const tmdbTokens = normalizedTmdbTitle.split(' ').filter(Boolean);
 
   if (tmdbTokens.length === 1) {
-    return normalizedMatchTitle === normalizedTmdbTitle;
+    // La recherche peut retenir le titre original/anglais (Mentalist -> The
+    // Mentalist, Chacal -> The Day of the Jackal). Garder une égalité stricte
+    // avec ces titres TMDB pour ne pas confondre FROM avec From Me to You.
+    return [tmdbTitle, cachedData.tmdb.original_title, cachedData.tmdb.name_no_lang]
+      .filter(Boolean)
+      .some((title) => normalizeFStreamBaseTitle(title) === normalizedMatchTitle);
   }
 
   return true;
@@ -300,19 +304,17 @@ function isFStreamCachedSelectionValid(cachedData, requestedSeason) {
 // === Search Functions ===
 async function searchFStream(query, page = 1) {
   try {
-    const formData = new URLSearchParams();
-    formData.append('query', query);
-    formData.append('page', page.toString());
-
-    const response = await axiosFStreamRequest({
-      method: 'post',
-      url: FSTREAM_SEARCH_URL,
-      data: formData,
-      headers: { 'Content-Type': 'application/x-www-form-urlencoded' }
+    return await searchCache.load(FSTREAM_SEARCH_URL, query, page, async (normalizedQuery) => {
+      const formData = new URLSearchParams({ query: normalizedQuery, page: page.toString() });
+      const response = await axiosFStreamRequest({
+        method: 'post',
+        url: FSTREAM_SEARCH_URL,
+        data: formData,
+        headers: { 'Content-Type': 'application/x-www-form-urlencoded' }
+      });
+      if (response.status !== 200) throw new Error(`Erreur HTTP: ${response.status}`);
+      return response.data;
     });
-
-    if (response.status !== 200) throw new Error(`Erreur HTTP: ${response.status}`);
-    return response.data;
   } catch (error) {
     if (error.response) {
       const status = error.response.status;
@@ -324,27 +326,7 @@ async function searchFStream(query, page = 1) {
 }
 
 async function searchFStreamDirect(query, page = 1) {
-  try {
-    const formData = new URLSearchParams();
-    formData.append('query', query);
-    formData.append('page', page.toString());
-
-    const response = await axiosFStreamRequest({
-      method: 'post',
-      url: FSTREAM_SEARCH_URL,
-      data: formData,
-      headers: { 'Content-Type': 'application/x-www-form-urlencoded' }
-    });
-
-    if (response.status !== 200) throw new Error(`Erreur HTTP: ${response.status}`);
-    return response.data;
-  } catch (error) {
-    if (error.response) {
-      const status = error.response.status;
-      if (status === 429 || status === 403 || status === 503 || status === 502) throw error;
-    }
-    throw error;
-  }
+  return searchFStream(query, page);
 }
 
 // Fallback "fuzzy" : search.php avec titre nu + filtre permissif (pas de filtre annee).
@@ -353,21 +335,23 @@ async function searchFStreamDirect(query, page = 1) {
 async function fetchFStreamSeasonSearchResults(tmdbId, serieTitle) {
   if (!serieTitle) return [];
   try {
-    const formData = new URLSearchParams();
-    formData.append('query', serieTitle);
-
-    const response = await axiosFStreamRequest({
-      method: 'post',
-      url: FSTREAM_SEARCH_URL,
-      data: formData,
-      headers: {
-        'Content-Type': 'application/x-www-form-urlencoded; charset=UTF-8',
-        'X-Requested-With': 'XMLHttpRequest'
-      },
-      timeout: 6000
+    // Ce parcours conserve sa requête AJAX sans pagination. Ne pas confondre
+    // sa réponse avec celle d'une recherche paginée, même pour le même titre.
+    const result = await searchCache.load(FSTREAM_SEARCH_URL, serieTitle, null, async (normalizedQuery) => {
+      const response = await axiosFStreamRequest({
+        method: 'post',
+        url: FSTREAM_SEARCH_URL,
+        data: new URLSearchParams({ query: normalizedQuery }),
+        headers: {
+          'Content-Type': 'application/x-www-form-urlencoded; charset=UTF-8',
+          'X-Requested-With': 'XMLHttpRequest'
+        },
+        timeout: 6000
+      });
+      if (response.status !== 200) throw new Error(`Erreur HTTP: ${response.status}`);
+      return response.data;
     });
-
-    const html = typeof response.data === 'string' ? response.data : '';
+    const html = typeof result === 'string' ? result : '';
     if (!html.trim()) return [];
 
     const $ = cheerio.load(html);
@@ -442,9 +426,8 @@ async function fetchFStreamSeasonsAjax(tmdbId, newsId, baseUrl) {
 
   for (let i = 0; i < maxAttempts; i++) {
     const entry = proxies[i];
-    const agents = getAgentForProxy(entry);
     try {
-      const response = await axios({
+      const response = await withFStreamProxy(entry, (agents) => axios({
         method: 'get',
         url: apiUrl,
         timeout: 8000,
@@ -455,8 +438,8 @@ async function fetchFStreamSeasonsAjax(tmdbId, newsId, baseUrl) {
           'X-Requested-With': 'XMLHttpRequest',
           'Cookie': buildFStreamCookieHeader()
         },
-        ...(agents ? { httpAgent: agents.httpAgent || agents, httpsAgent: agents.httpsAgent || agents, proxy: false } : {})
-      });
+        httpAgent: agents.httpAgent, httpsAgent: agents.httpsAgent, proxy: false
+      }));
 
       if (response.status === 429) continue;
       if (response.status !== 200 || !response.data) return [];
@@ -771,15 +754,6 @@ function getShuffledAllProxies() {
   return all;
 }
 
-function getAgentForProxy(entry) {
-  if (entry.type === 'socks5') {
-    const agent = getProxyAgent(entry.proxy);
-    return { httpAgent: agent, httpsAgent: agent };
-  }
-  // darkino HTTP proxy
-  return getDarkinoHttpProxyAgent(entry.proxy);
-}
-
 // Parse le payload episodes FStream (shape commune {vf,vostfr,vo,info}) en map normalisee.
 // Partage entre la source statique (<base>/static/series) et l'API dynamique (episodes_p.php).
 function parseEpisodesPayload(data) {
@@ -843,7 +817,7 @@ async function fetchEpisodesFromStaticJs(pageUrl) {
   if (!pageId) return null;
 
   const baseUrl = extractBaseUrlFromLink(pageUrl);
-  const apiUrl = `${baseUrl}/static/series/${pageId}.js?v=${Date.now()}`;
+  const apiUrl = `${baseUrl}/static/series/${pageId}.js?v=${Math.floor(Date.now() / 30000)}`;
 
   const proxies = getShuffledAllProxies();
   const maxAttempts = Math.min(proxies.length, 3);
@@ -851,10 +825,8 @@ async function fetchEpisodesFromStaticJs(pageUrl) {
 
   for (let i = 0; i < maxAttempts; i++) {
     const entry = proxies[i];
-    const agents = getAgentForProxy(entry);
-
     try {
-      const response = await axios({
+      const response = await withFStreamProxy(entry, (agents) => axios({
         method: 'get',
         url: apiUrl,
         timeout: 10000,
@@ -864,8 +836,8 @@ async function fetchEpisodesFromStaticJs(pageUrl) {
           'Accept': 'application/json, text/javascript, */*',
           'Cookie': buildFStreamCookieHeader()
         },
-        ...(agents ? { httpAgent: agents.httpAgent || agents, httpsAgent: agents.httpsAgent || agents, proxy: false } : {})
-      });
+        httpAgent: agents.httpAgent, httpsAgent: agents.httpsAgent, proxy: false
+      }));
 
       if (response.status === 429) {
         console.log(`[FStream] static series.js: 429 avec proxy ${entry.type} #${i}, retry...`);
@@ -903,10 +875,8 @@ async function fetchEpisodesFromApi(pageUrl) {
 
   for (let i = 0; i < maxAttempts; i++) {
     const entry = proxies[i];
-    const agents = getAgentForProxy(entry);
-
     try {
-      const response = await axios({
+      const response = await withFStreamProxy(entry, (agents) => axios({
         method: 'get',
         url: apiUrl,
         timeout: 10000,
@@ -916,8 +886,8 @@ async function fetchEpisodesFromApi(pageUrl) {
           'Accept': 'application/json, text/plain, */*',
           'Cookie': buildFStreamCookieHeader()
         },
-        ...(agents ? { httpAgent: agents.httpAgent || agents, httpsAgent: agents.httpsAgent || agents, proxy: false } : {})
-      });
+        httpAgent: agents.httpAgent, httpsAgent: agents.httpsAgent, proxy: false
+      }));
 
       if (response.status === 429) {
         console.log(`[FStream] API episodes_p: 429 avec proxy ${entry.type} #${i}, retry...`);
@@ -955,10 +925,8 @@ async function fetchMoviePlayersFromApi(pageUrl) {
 
   for (let i = 0; i < maxAttempts; i++) {
     const entry = proxies[i];
-    const agents = getAgentForProxy(entry);
-
     try {
-      const response = await axios({
+      const response = await withFStreamProxy(entry, (agents) => axios({
         method: 'get',
         url: apiUrl,
         timeout: 10000,
@@ -968,8 +936,8 @@ async function fetchMoviePlayersFromApi(pageUrl) {
           'Accept': 'application/json, text/plain, */*',
           'Cookie': buildFStreamCookieHeader()
         },
-        ...(agents ? { httpAgent: agents.httpAgent || agents, httpsAgent: agents.httpsAgent || agents, proxy: false } : {})
-      });
+        httpAgent: agents.httpAgent, httpsAgent: agents.httpsAgent, proxy: false
+      }));
 
       if (response.status === 429) {
         console.log(`[FStream] API film_api: 429 avec proxy ${entry.type} #${i}, retry...`);
@@ -1540,14 +1508,16 @@ router.get('/movie/:id', async (req, res) => {
   const cacheKey = generateFStreamCacheKey('movie', id);
 
   try {
-    const cachedData = await getFStreamFromCache(cacheKey);
+    const cacheState = await getFStreamRefreshInfo(cacheKey);
+    const cachedData = cacheState.entry?.data || null;
     if (cachedData) {
       await respondWithMovieSources(req, res, cachedData);
 
-      // Background update
-      setImmediate(async () => {
+      // Une entrée fraîche ne déclenche aucun scrape. Les entrées périmées sont
+      // rafraîchies en arrière-plan, avec un verrou partagé entre workers.
+      if (!cacheState.isFresh) setImmediate(async () => {
         try {
-          await getOrCreateFStreamRequest(`${cacheKey}_background`, async () => {
+          await getOrCreateFStreamRequest(`${cacheKey}_background`, async () => refreshFStreamCache(cacheKey, async () => {
             const tmdbDetails = await getFStreamTMDBDetails(id, 'movie');
             if (!tmdbDetails) return;
 
@@ -1567,17 +1537,14 @@ router.get('/movie/:id', async (req, res) => {
                       players: players.organized, total: players.total,
                       metadata: { extractedAt: new Date().toISOString(), backgroundUpdate: true, foundInRecent: true }
                     };
-                    await saveFStreamToCache(cacheKey, response);
-                    return;
+                    return response;
                   }
                 }
               } catch (recentError) {
                 console.error(`[FSTREAM BACKGROUND] Erreur lors de la recherche dans les recents: ${recentError.message}`);
               }
 
-              const errorResult = { success: false, error: 'Aucun resultat trouve', message: `Aucun contenu trouve pour "${tmdbDetails.title}" sur FStream`, search: { query: tmdbDetails.title, results: 0, checkedRecent: true }, timestamp: new Date().toISOString() };
-              await saveFStreamToCache(cacheKey, errorResult);
-              return;
+              return null;
             }
 
             let bestResult = null;
@@ -1599,25 +1566,20 @@ router.get('/movie/:id', async (req, res) => {
                         players: players.organized, total: players.total,
                         metadata: { extractedAt: new Date().toISOString(), backgroundUpdate: true, foundInRecent: true }
                       };
-                      await saveFStreamToCache(cacheKey, response);
-                      return;
+                      return response;
                     }
                   }
                 } catch (recentError) {
                   console.error(`[FSTREAM BACKGROUND] Erreur lors de la recherche dans les recents: ${recentError.message}`);
                 }
-                const errorResult = { success: false, error: 'Aucune correspondance d\'annee', message: `Aucun contenu trouve avec l'annee ${tmdbYear} pour "${tmdbDetails.title}" sur FStream`, search: { query: tmdbDetails.title, results: filteredResults.length, year: tmdbYear, checkedRecent: true }, timestamp: new Date().toISOString() };
-                await saveFStreamToCache(cacheKey, errorResult);
-                return;
+                return null;
               }
             } else {
               bestResult = filteredResults[0];
             }
 
             if (!bestResult) {
-              const errorResult = { success: false, error: 'Aucun resultat valide', message: `Aucun resultat valide trouve pour "${tmdbDetails.title}" sur FStream`, search: { query: tmdbDetails.title, results: filteredResults.length }, timestamp: new Date().toISOString() };
-              await saveFStreamToCache(cacheKey, errorResult);
-              return;
+              return null;
             }
 
             const players = await getMoviePlayersForUrl(bestResult.link);
@@ -1629,9 +1591,8 @@ router.get('/movie/:id', async (req, res) => {
               players: players.organized, total: players.total,
               metadata: { extractedAt: new Date().toISOString(), backgroundUpdate: true }
             };
-            await saveFStreamToCache(cacheKey, response);
             return response;
-          });
+          }));
         } catch (error) { /* background error, ignore */ }
       });
 
@@ -1639,7 +1600,7 @@ router.get('/movie/:id', async (req, res) => {
     }
 
     // No cache - make request with deduplication
-    const result = await getOrCreateFStreamRequest(cacheKey, async () => {
+    const result = await getOrCreateFStreamRequest(cacheKey, async () => refreshFStreamCache(cacheKey, async () => {
       const tmdbDetails = await getFStreamTMDBDetails(id, 'movie');
       if (!tmdbDetails) throw new Error('Contenu TMDB non trouve');
 
@@ -1679,7 +1640,7 @@ router.get('/movie/:id', async (req, res) => {
 
       const players = await getMoviePlayersForUrl(bestResult.link);
       if (players.total === 0) {
-        return res.status(404).json({ error: 'Aucun lecteur video trouve', searchQuery, bestResult: bestResult.title });
+        return uncachedFStreamResponse(404, { error: 'Aucun lecteur video trouve', searchQuery, bestResult: bestResult.title });
       }
 
       return {
@@ -1688,61 +1649,16 @@ router.get('/movie/:id', async (req, res) => {
         players: players.organized, total: players.total,
         metadata: { extractedAt: new Date().toISOString() }
       };
-    });
+    }));
 
-    await saveFStreamToCache(cacheKey, result);
+    if (!result) throw new Error('Aucune source FStream utilisable');
+    if (result.__fstreamResponse) return res.status(result.status).json(result.body);
     await respondWithMovieSources(req, res, result);
 
   } catch (error) {
-    console.error(`[FSTREAM MOVIE] Erreur: ${error.message}`);
+    console.error(`[FSTREAM MOVIE] Erreur pour ${id}: ${error.message}`);
     const errorResult = { success: false, error: 'Erreur lors de la recuperation des sources FStream', message: error.message, timestamp: new Date().toISOString() };
-    await saveFStreamToCache(cacheKey, errorResult);
     res.status(500).json(errorResult);
-  }
-});
-
-// GET /movie/:id/clear-cache
-router.get('/movie/:id/clear-cache', async (req, res) => {
-  const { id } = req.params;
-  const cacheKey = generateFStreamCacheKey('movie', id);
-  const cacheFilePath = path.join(CACHE_DIR.FSTREAM, `${cacheKey}.json`);
-
-  try {
-    await fsp.unlink(cacheFilePath);
-    try { const redis = getRedis(); if (redis) await redis.del(`fstream:${cacheKey}`); } catch {}
-    console.log(`[FSTREAM Cache] Cache cleared for movie ${id}`);
-    res.json({ success: true, message: `Cache cleared for movie ${id}` });
-  } catch (error) {
-    if (error.code === 'ENOENT') {
-      try { const redis = getRedis(); if (redis) await redis.del(`fstream:${cacheKey}`); } catch {}
-      res.status(404).json({ error: `No cache found for movie ${id}` });
-    } else {
-      console.error(`[FSTREAM Cache] Error clearing cache for movie ${id}:`, error.message);
-      res.status(500).json({ error: 'Failed to clear cache' });
-    }
-  }
-});
-
-// GET /tv/:id/season/:season/clear-cache
-router.get('/tv/:id/season/:season/clear-cache', async (req, res) => {
-  const { id, season } = req.params;
-  const { episode } = req.query;
-  const cacheKey = generateFStreamCacheKey('tv', id, season, episode || null);
-  const cacheFilePath = path.join(CACHE_DIR.FSTREAM, `${cacheKey}.json`);
-
-  try {
-    await fsp.unlink(cacheFilePath);
-    try { const redis = getRedis(); if (redis) await redis.del(`fstream:${cacheKey}`); } catch {}
-    console.log(`[FSTREAM Cache] Cache cleared for tv ${id} S${season}${episode ? ' E' + episode : ''}`);
-    res.json({ success: true, message: `Cache cleared for tv ${id} season ${season}${episode ? ' episode ' + episode : ''}` });
-  } catch (error) {
-    if (error.code === 'ENOENT') {
-      try { const redis = getRedis(); if (redis) await redis.del(`fstream:${cacheKey}`); } catch {}
-      res.status(404).json({ error: `No cache found for tv ${id} season ${season}` });
-    } else {
-      console.error(`[FSTREAM Cache] Error clearing cache for tv ${id}:`, error.message);
-      res.status(500).json({ error: 'Failed to clear cache' });
-    }
   }
 });
 
@@ -1753,15 +1669,16 @@ router.get('/tv/:id/season/:season', async (req, res) => {
   const cacheKey = generateFStreamCacheKey('tv', id, season, episode);
 
   try {
-    const cachedData = await getFStreamFromCache(cacheKey);
+    const cacheState = await getFStreamRefreshInfo(cacheKey);
+    const cachedData = cacheState.entry?.data || null;
     const cachedSelectionIsValid = isFStreamCachedSelectionValid(cachedData, season);
     if (cachedData && cachedSelectionIsValid) {
       await respondWithEpisodeSources(req, res, cachedData);
 
-      // Background update
-      setImmediate(async () => {
+      // Pas de scrape tant que le cache partagé est frais.
+      if (!cacheState.isFresh) setImmediate(async () => {
         try {
-          await getOrCreateFStreamRequest(`${cacheKey}_background`, async () => {
+          await getOrCreateFStreamRequest(`${cacheKey}_background`, async () => refreshFStreamCache(cacheKey, async () => {
             const tmdbDetails = await getFStreamTMDBDetails(id, 'tv');
             if (!tmdbDetails) return;
 
@@ -1828,8 +1745,7 @@ router.get('/tv/:id/season/:season', async (req, res) => {
                             episodes: players.episodes, total: players.total,
                             metadata: { season: parseInt(season), episode: episode ? parseInt(episode) : null, extractedAt: new Date().toISOString(), backgroundUpdate: true, foundInRecent: true }
                           };
-                          await saveFStreamToCache(cacheKey, response);
-                          return;
+                          return response;
                         }
                       }
                     } catch (recentError) {
@@ -1925,9 +1841,8 @@ router.get('/tv/:id/season/:season', async (req, res) => {
               episodes: isAvailable ? players.episodes : {}, total: isAvailable ? players.total : 0,
               metadata: { season: parseInt(season), episode: episode ? parseInt(episode) : null, extractedAt: new Date().toISOString(), backgroundUpdate: true, fstreamReleaseDate: players.fstreamReleaseDate, dateValidation: { fstreamYear: players.fstreamReleaseDate, tmdbYear: tmdbDetails.release_date?.split('-')[0], isAvailable } }
             };
-            await saveFStreamToCache(cacheKey, response);
             return response;
-          });
+          }, (data) => isFStreamCachedSelectionValid(data, season)));
         } catch (error) { /* background error, ignore */ }
       });
 
@@ -1938,7 +1853,7 @@ router.get('/tv/:id/season/:season', async (req, res) => {
     }
 
     // No cache
-    const result = await getOrCreateFStreamRequest(cacheKey, async () => {
+    const result = await getOrCreateFStreamRequest(cacheKey, async () => refreshFStreamCache(cacheKey, async () => {
       const tmdbDetails = await getFStreamTMDBDetails(id, 'tv');
       if (!tmdbDetails) throw new Error('Contenu TMDB non trouve');
 
@@ -2080,21 +1995,22 @@ router.get('/tv/:id/season/:season', async (req, res) => {
         }
       }
 
-      return {
+      const response = {
         success: isAvailable, source: 'FStream', type: 'tv', tmdb: tmdbDetails,
         search: { query: searchQuery, results: filteredResults.length, bestMatch: bestResult },
         episodes: isAvailable ? players.episodes : {}, total: isAvailable ? players.total : 0,
         metadata: { season: parseInt(season), episode: episode ? parseInt(episode) : null, extractedAt: new Date().toISOString(), fstreamReleaseDate: players.fstreamReleaseDate, dateValidation: { fstreamYear: players.fstreamReleaseDate, tmdbYear: tmdbDetails.release_date?.split('-')[0], isAvailable } }
       };
-    });
+      return isAvailable ? response : uncachedFStreamResponse(200, response);
+    }, (data) => isFStreamCachedSelectionValid(data, season)));
 
-    await saveFStreamToCache(cacheKey, result);
+    if (!result) throw new Error('Aucune source FStream utilisable');
+    if (result.__fstreamResponse) return res.status(result.status).json(result.body);
     await respondWithEpisodeSources(req, res, result);
 
   } catch (error) {
-    console.error(`[FSTREAM TV] Erreur: ${error.message}`);
+    console.error(`[FSTREAM TV] Erreur pour ${id} S${season}: ${error.message}`);
     const errorResult = { success: false, error: 'Erreur lors de la recuperation des sources FStream', message: error.message, timestamp: new Date().toISOString() };
-    await saveFStreamToCache(cacheKey, errorResult);
     res.status(500).json(errorResult);
   }
 });

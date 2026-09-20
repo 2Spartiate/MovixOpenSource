@@ -8,6 +8,7 @@ import PlayerOverlayPortal from '../../components/PlayerOverlayPortal';
 import { motion, AnimatePresence } from 'framer-motion';
 import { useAdFreePopup } from '../../context/AdFreePopupContext';
 import AdFreePlayerAds from '../../components/AdFreePlayerAds';
+import AdWaitingScreen from '@/components/AdWaitingScreen';
 import { extractM3u8FromEmbed, extractUqloadFile, extractVidzyM3u8, extractFsvidM3u8, extractDoodStreamFile, isDoodStreamExtractionEnabled, registerServerResolvedSources, type M3u8Result } from '../../utils/extractM3u8';
 import type { SeekStreamingHlsSource } from '../../utils/seekStreamingCandidates';
 import { runExtractionPass } from '../../utils/runExtractionPass';
@@ -18,6 +19,7 @@ import { detectHoster } from '../../utils/hosterRegistry';
 import { setLastPlayer } from '../../utils/lastPlayerPref';
 import { getTmdbId } from '../../utils/idEncoder';
 import { useWrappedTracker } from '../../hooks/useWrappedTracker';
+import { useTmdbImages, withTmdbImageSize } from '../../hooks/useTmdbImages';
 import { isUserVip, getVipHeaders } from '../../utils/authUtils';
 import { serverResolveRequest } from '../../utils/serverResolveRequest';
 import { isExtensionAvailable } from '../../utils/extensionProxy';
@@ -297,7 +299,9 @@ const checkMovieAvailability = async (movieId: string) => {
     try {
       const frembedResponse = await axios.get(`${getFrembedBase()}/api/public/v1/movies/${movieId}`, { timeout: 1000 });
       console.log(`Checking Frembed for ID ${movieId}:`, frembedResponse.data);
-      const isFrembedAvailable = frembedResponse.data.status === 200 && frembedResponse.data.result?.totalItems > 0;
+      const result = frembedResponse.data?.result;
+      const isFrembedAvailable = frembedResponse.data?.status === 200
+        && (result?.total ?? result?.totalItems ?? result?.items?.length ?? 0) > 0;
 
       return {
         isAvailable: true,
@@ -365,6 +369,13 @@ const WatchMovie: React.FC = () => {
   const [movieTitle, setMovieTitle] = useState<string>('');
   const [backdropPath, setBackdropPath] = useState<string | null>(null);
   const [posterPath, setPosterPath] = useState<string | null>(null);
+  // Poster localisé (langue d'interface > EN > sans langue) via l'endpoint
+  // /images — le poster_path des détails TMDB retombe sur le poster par
+  // défaut (souvent VO) quand la langue demandée n'a pas de poster.
+  const { posterUrl: localizedPosterUrl } = useTmdbImages('movie', id ? Number(id) : undefined);
+  const playerPoster = localizedPosterUrl
+    ? withTmdbImageSize(localizedPosterUrl, 'w500')
+    : (posterPath ? `https://image.tmdb.org/t/p/w500${posterPath}` : undefined);
   const [contentCert, setContentCert] = useState<string>('');
   const [isBlocked, setIsBlocked] = useState(false);
 
@@ -2653,13 +2664,15 @@ const WatchMovie: React.FC = () => {
   }, []);
 
   useEffect(() => {
-    document.body.style.overflow = 'hidden';
-    document.body.style.height = '100vh';
+    const body = document.body;
+    if (!body) return;
+    body.style.overflow = 'hidden';
+    body.style.height = '100vh';
     document.documentElement.style.overflow = 'hidden';
     document.documentElement.style.height = '100vh';
     return () => {
-      document.body.style.overflow = '';
-      document.body.style.height = '';
+      body.style.overflow = '';
+      body.style.height = '';
       document.documentElement.style.overflow = '';
       document.documentElement.style.height = '';
     };
@@ -2840,10 +2853,7 @@ const WatchMovie: React.FC = () => {
           <div className="text-gray-400 text-lg">{t('watch.reloadToRetry')}</div>
         </div>
       ) : adPopupTriggered && !shouldLoadIframe && !hasClickedAd ? (
-        <div className="flex flex-col items-center justify-center h-full bg-black">
-          <div className="text-white text-2xl font-bold mb-4">{t('watch.loading')}</div>
-          <div className="text-gray-400 text-lg">{t('watch.pleaseWait')}</div>
-        </div>
+        <AdWaitingScreen />
       ) : onlyVostfrAvailable ? (
         <div className="h-full bg-black text-white flex flex-col items-center justify-center p-4">
           <div className="max-w-2xl w-full bg-gray-900/95 rounded-xl p-8 text-center shadow-2xl border border-gray-800 relative">
@@ -3116,7 +3126,7 @@ const WatchMovie: React.FC = () => {
             }}
             nextMovie={nextMovie}
             onNextMovie={handleNextMovie}
-            poster={posterPath ? `https://image.tmdb.org/t/p/w500${posterPath}` : undefined}
+            poster={playerPoster}
             backdrop={backdropPath ? `https://image.tmdb.org/t/p/w1280${backdropPath}` : undefined}
             movieId={id || undefined}
             controls={true}
@@ -3234,7 +3244,7 @@ const WatchMovie: React.FC = () => {
             }}
             nextMovie={nextMovie}
             onNextMovie={handleNextMovie}
-            poster={posterPath ? `https://image.tmdb.org/t/p/w500${posterPath}` : undefined}
+            poster={playerPoster}
             backdrop={backdropPath ? `https://image.tmdb.org/t/p/w1280${backdropPath}` : undefined}
             movieId={id || undefined}
             controls={true}
@@ -3346,7 +3356,7 @@ const WatchMovie: React.FC = () => {
             }}
             nextMovie={nextMovie}
             onNextMovie={handleNextMovie}
-            poster={posterPath ? `https://image.tmdb.org/t/p/w500${posterPath}` : undefined}
+            poster={playerPoster}
             backdrop={backdropPath ? `https://image.tmdb.org/t/p/w1280${backdropPath}` : undefined}
             movieId={id || undefined}
             controls={true}
@@ -3460,7 +3470,7 @@ const WatchMovie: React.FC = () => {
             }}
             nextMovie={nextMovie}
             onNextMovie={handleNextMovie}
-            poster={posterPath ? `https://image.tmdb.org/t/p/w500${posterPath}` : undefined}
+            poster={playerPoster}
             backdrop={backdropPath ? `https://image.tmdb.org/t/p/w1280${backdropPath}` : undefined}
             movieId={id || undefined}
             controls={true}
@@ -3577,7 +3587,7 @@ const WatchMovie: React.FC = () => {
             }}
             nextMovie={nextMovie}
             onNextMovie={handleNextMovie}
-            poster={posterPath ? `https://image.tmdb.org/t/p/w500${posterPath}` : undefined}
+            poster={playerPoster}
             backdrop={backdropPath ? `https://image.tmdb.org/t/p/w1280${backdropPath}` : undefined}
             movieId={id || undefined}
             controls={true}
@@ -3698,7 +3708,7 @@ const WatchMovie: React.FC = () => {
             }}
             nextMovie={nextMovie}
             onNextMovie={handleNextMovie}
-            poster={posterPath ? `https://image.tmdb.org/t/p/w500${posterPath}` : undefined}
+            poster={playerPoster}
             backdrop={backdropPath ? `https://image.tmdb.org/t/p/w1280${backdropPath}` : undefined}
             movieId={id || undefined}
             controls={true}

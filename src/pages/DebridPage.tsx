@@ -31,6 +31,9 @@ import AnimatedBorderCard from '../components/ui/animated-border-card';
 import { Button } from '../components/ui/button';
 import { BESTDEBRID_API_BASE, MAIN_API } from '../config/runtime';
 import { getVipHeaders } from '../utils/vipUtils';
+import { getDebridProviders, unlockDebridLink } from '@/services/debridService';
+import { isDebridProvider, selectAvailableDebridProvider } from '@/utils/debridProviders';
+import type { DebridProvider, DebridResult } from '@/types/debrid';
 
 // Hébergeurs non supportés
 const unsupportedHosts = [
@@ -195,16 +198,6 @@ const getBestDebridCandidate = (payload: unknown): Record<string, unknown> | nul
   return payload;
 };
 
-interface DebridResult {
-  link: string;
-  filename: string;
-  filesize: number;
-  host: string;
-  provider: DebridProvider;
-}
-
-type DebridProvider = 'deepbrid' | 'realdebrid' | 'bestdebrid' | 'debridr';
-
 interface DebridHistoryItem {
   originalLink: string;
   debridedLink: string;
@@ -218,9 +211,6 @@ interface DebridHistoryItem {
 const HISTORY_KEY = 'debrid_history';
 const MAX_HISTORY = 50;
 const DEFAULT_PROVIDER: DebridProvider = 'deepbrid';
-
-const isDebridProvider = (value: string | null | undefined): value is DebridProvider =>
-  value === 'deepbrid' || value === 'realdebrid' || value === 'bestdebrid' || value === 'debridr';
 
 const normalizeDebridedLink = (link: string, provider: DebridProvider): string => {
   const trimmed = link.trim();
@@ -275,6 +265,9 @@ const DebridPage: React.FC = () => {
   const [searchParams, setSearchParams] = useSearchParams();
   const [url, setUrl] = useState('');
   const [provider, setProvider] = useState<DebridProvider>(DEFAULT_PROVIDER);
+  const [providerOptions, setProviderOptions] = useState<DebridProvider[]>([]);
+  const [isLoadingProviders, setIsLoadingProviders] = useState(true);
+  const [providersLoadFailed, setProvidersLoadFailed] = useState(false);
   const [isLoading, setIsLoading] = useState(false);
   const [result, setResult] = useState<DebridResult | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -283,8 +276,29 @@ const DebridPage: React.FC = () => {
   const isVip = localStorage.getItem('is_vip') === 'true';
   const hasAutoDebrided = useRef(false);
 
-  const providerOptions: DebridProvider[] = ['deepbrid', 'realdebrid', 'bestdebrid', 'debridr'];
-  const isSubmitDisabled = isLoading || !url.trim();
+  const isSubmitDisabled = isLoading || isLoadingProviders || !providerOptions.includes(provider) || !url.trim();
+
+  useEffect(() => {
+    if (!isVip) return;
+    const controller = new AbortController();
+    setIsLoadingProviders(true);
+    setProvidersLoadFailed(false);
+    getDebridProviders(controller.signal)
+      .then((available) => {
+        if (controller.signal.aborted) return;
+        setProviderOptions(available);
+        setProvider((current) => selectAvailableDebridProvider(current, available) ?? DEFAULT_PROVIDER);
+      })
+      .catch(() => {
+        if (controller.signal.aborted) return;
+        setProviderOptions([]);
+        setProvidersLoadFailed(true);
+      })
+      .finally(() => {
+        if (!controller.signal.aborted) setIsLoadingProviders(false);
+      });
+    return () => controller.abort();
+  }, [isVip]);
 
   const fetchBestDebridApiKey = useCallback(async (): Promise<string> => {
     let payload: unknown = null;
@@ -377,7 +391,11 @@ const DebridPage: React.FC = () => {
   const handleDebrid = useCallback(async (linkToDebrid?: string, providerOverride?: DebridProvider) => {
     const targetUrl = (linkToDebrid || url).trim();
     const activeProvider = providerOverride || provider;
-    if (!targetUrl) return;
+    if (!targetUrl || isLoading || isLoadingProviders) return;
+    if (!providerOptions.includes(activeProvider)) {
+      setError(t('debrid.providerUnavailable'));
+      return;
+    }
 
     setIsLoading(true);
     setError(null);
@@ -386,28 +404,7 @@ const DebridPage: React.FC = () => {
     try {
       const newResult = activeProvider === 'bestdebrid'
         ? await unlockWithBestDebrid(targetUrl)
-        : await (async (): Promise<DebridResult> => {
-          // Le débridage passe par mainapi : proxiesembed n'accepte plus
-          // d'appel direct depuis le navigateur.
-          const response = await fetch(`${MAIN_API}/api/media/debrid/unlock`, {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json', ...getVipHeaders() },
-            body: JSON.stringify({ link: targetUrl, provider: activeProvider }),
-          });
-          const data: unknown = await response.json().catch(() => null);
-
-          if (isRecord(data) && data.status === 'success' && isRecord(data.data)) {
-            return {
-              link: getStringValue(data.data.link),
-              filename: getStringValue(data.data.filename),
-              filesize: getNumberValue(data.data.filesize),
-              host: getStringValue(data.data.host),
-              provider: activeProvider,
-            };
-          }
-
-          throw new Error(extractDebridErrorMessage(data) || t('debrid.error'));
-        })();
+        : await unlockDebridLink(targetUrl, activeProvider);
 
       const normalizedResult: DebridResult = {
         ...newResult,
@@ -437,15 +434,15 @@ const DebridPage: React.FC = () => {
     } finally {
       setIsLoading(false);
     }
-  }, [provider, t, unlockWithBestDebrid, url]);
+  }, [isLoading, isLoadingProviders, provider, providerOptions, t, unlockWithBestDebrid, url]);
 
   // Read ?link= param on mount and auto-debrid
   useEffect(() => {
     const linkParam = searchParams.get('link');
     const providerParam = searchParams.get('provider');
-    const initialProvider = isDebridProvider(providerParam) ? providerParam : DEFAULT_PROVIDER;
+    const initialProvider = selectAvailableDebridProvider(providerParam, providerOptions);
 
-    if (linkParam && !hasAutoDebrided.current && isVip) {
+    if (linkParam && initialProvider && !isLoadingProviders && !hasAutoDebrided.current && isVip) {
       hasAutoDebrided.current = true;
       setUrl(linkParam);
       setProvider(initialProvider);
@@ -453,7 +450,7 @@ const DebridPage: React.FC = () => {
       setSearchParams({}, { replace: true });
       handleDebrid(linkParam, initialProvider);
     }
-  }, [searchParams, isVip, handleDebrid, setSearchParams]);
+  }, [searchParams, isVip, isLoadingProviders, providerOptions, handleDebrid, setSearchParams]);
 
   const copyToClipboard = (text: string) => {
     navigator.clipboard.writeText(text).then(() => {
@@ -553,6 +550,12 @@ const DebridPage: React.FC = () => {
                   <h2 className="text-lg font-semibold text-white">{t('debrid.enterLink')}</h2>
                 </div>
                 <div className="flex flex-col gap-3">
+                  {isLoadingProviders && <p role="status" className="text-sm text-white/50">{t('debrid.providersLoading')}</p>}
+                  {!isLoadingProviders && providerOptions.length === 0 && (
+                    <p role="status" className="text-sm text-white/50">
+                      {t(providersLoadFailed ? 'debrid.providersLoadFailed' : 'debrid.noProviders')}
+                    </p>
+                  )}
                   <div className="grid grid-cols-1 gap-2 sm:grid-cols-3">
                     {providerOptions.map((option) => {
                       const isActive = provider === option;
@@ -561,6 +564,7 @@ const DebridPage: React.FC = () => {
                         <button
                           key={option}
                           type="button"
+                          disabled={isLoading}
                           onClick={() => setProvider(option)}
                           className={`rounded-xl border px-4 py-3 text-left transition-colors ${
                             isActive
@@ -740,13 +744,14 @@ const DebridPage: React.FC = () => {
                                     <Copy className="w-4 h-4 opacity-30 group-hover/btn:opacity-70 transition-opacity" />
                                   </button>
                                   <button
+                                    disabled={isLoading || isLoadingProviders || !providerOptions.includes(item.provider)}
                                     onClick={() => {
                                       setProvider(item.provider);
                                       setUrl(item.originalLink);
                                       handleDebrid(item.originalLink, item.provider);
                                     }}
-                                    className="group/btn p-1.5 text-yellow-400 hover:bg-yellow-400/10 rounded-lg transition-colors"
-                                    title={t('debrid.reDebrid')}
+                                    className="group/btn p-1.5 text-yellow-400 hover:bg-yellow-400/10 rounded-lg transition-colors disabled:opacity-30 disabled:cursor-not-allowed"
+                                    title={t(providerOptions.includes(item.provider) ? 'debrid.reDebrid' : 'debrid.providerUnavailable')}
                                   >
                                     <CleanUnlock className="w-4 h-4 opacity-40 group-hover/btn:opacity-100 transition-opacity" />
                                   </button>

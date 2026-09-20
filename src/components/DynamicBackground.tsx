@@ -1,4 +1,5 @@
 import React, { useEffect, useRef } from 'react';
+import { useLightMode } from '@/context/LightModeContext';
 
 interface DynamicBackgroundProps {
   color?: 'red' | 'blue' | 'purple';
@@ -23,6 +24,7 @@ const DynamicBackground: React.FC<DynamicBackgroundProps> = ({
   speed = 'medium',
   particleCount = 50
 }) => {
+  const { effectivePrefs } = useLightMode();
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const animationRef = useRef<number>(0);
   const particlesRef = useRef<Particle[]>([]);
@@ -63,6 +65,7 @@ const DynamicBackground: React.FC<DynamicBackgroundProps> = ({
 
   // Initialize particles
   useEffect(() => {
+    if (!effectivePrefs.bgAnimations) return;
     isRunningRef.current = true;
     
     const generateParticles = () => {
@@ -180,11 +183,15 @@ const DynamicBackground: React.FC<DynamicBackgroundProps> = ({
       isRunningRef.current = false;
       window.removeEventListener('resize', handleResize);
       cancelAnimationFrame(animationRef.current);
+      animationRef.current = 0;
+      particlesRef.current = [];
     };
-  }, [color, intensity, speed, particleCount]);
+  }, [color, intensity, speed, particleCount, effectivePrefs.bgAnimations]);
 
+  if (!effectivePrefs.bgAnimations) return null;
   return (
     <canvas 
+      data-decorative-animation
       ref={canvasRef}
       className="fixed inset-0 pointer-events-none z-[-1]"
       style={{ opacity: getIntensityValue() * 2 }}
@@ -192,4 +199,4 @@ const DynamicBackground: React.FC<DynamicBackgroundProps> = ({
   );
 };
 
-export default DynamicBackground; 
+export default DynamicBackground;

@@ -2,6 +2,7 @@ import React from 'react';
 import RLSSkeleton from 'react-loading-skeleton';
 import 'react-loading-skeleton/dist/skeleton.css';
 import { cn } from '@/lib/utils';
+import { useLightMode } from '@/context/LightModeContext';
 
 type Variant = 'default' | 'poster' | 'text' | 'circle' | 'pill' | 'button';
 
@@ -52,8 +53,34 @@ export const Skeleton: React.FC<SkeletonProps> = ({
   inline,
   baseColor = DARK_BASE,
   highlightColor = DARK_HIGHLIGHT,
-}) => (
-  <RLSSkeleton
+}) => {
+  const { isLightMode, effectivePrefs } = useLightMode();
+  if (isLightMode) {
+    const total = Math.max(0, count ?? 1);
+    const blocks = Array.from({ length: Math.ceil(total) }, (_, index) => {
+      const fraction = Math.min(1, total - index);
+      const fullWidth = width ?? '100%';
+      return (
+        <span
+          key={index}
+          aria-hidden="true"
+          data-static-skeleton
+          className={className}
+          style={{
+            ...variantStyle[variant],
+            display: inline ? 'inline-block' : 'block',
+            width: fraction === 1 ? fullWidth : typeof fullWidth === 'number' ? fullWidth * fraction : `calc(${fullWidth} * ${fraction})`,
+            height: height ?? (variant === 'poster' ? undefined : '1em'),
+            borderRadius: variantBorderRadius[variant] ?? '0.25rem',
+            backgroundColor: baseColor,
+          }}
+        />
+      );
+    });
+    if (blocks.length === 1 && !containerClassName) return blocks[0];
+    return <span aria-hidden="true" className={containerClassName}>{blocks}</span>;
+  }
+  return <RLSSkeleton
     width={width}
     height={height}
     count={count}
@@ -64,7 +91,8 @@ export const Skeleton: React.FC<SkeletonProps> = ({
     style={variantStyle[variant]}
     baseColor={baseColor}
     highlightColor={highlightColor}
-  />
-);
+    enableAnimation={effectivePrefs.loadingAnimations}
+  />;
+};
 
 export default Skeleton;

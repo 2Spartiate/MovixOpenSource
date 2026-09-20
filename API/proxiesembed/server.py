@@ -77,10 +77,20 @@ from hoster_decoders import (
     veev_lzw_decode,
 )
 from fsvid_vidzy_sandbox import execute_player_scripts
+from debrid_providers import DEBRID_PROVIDERS, get_enabled_debrid_providers
 
 # Load local .env from proxiesembed folder — must run BEFORE media_signing is
 # imported, since that module reads its secrets at import time.
 load_dotenv(os.path.join(os.path.dirname(os.path.abspath(__file__)), '.env'))
+
+KISSKH_BASE_URL = os.getenv('KISSKH_BASE_URL', 'https://kisskh.do').rstrip('/')
+_kisskh_base = urlparse(KISSKH_BASE_URL)
+if (_kisskh_base.scheme != 'https' or not _kisskh_base.hostname
+        or _kisskh_base.port not in (None, 443) or _kisskh_base.username or _kisskh_base.password
+        or _kisskh_base.path or _kisskh_base.query or _kisskh_base.fragment
+        or any(character.isspace() for character in KISSKH_BASE_URL)):
+    raise ValueError('KISSKH_BASE_URL invalide')
+KISSKH_BASE_URL = f'https://{_kisskh_base.hostname}'
 
 from media_signing import (
     DRM_BASE_ROUTE,
@@ -95,6 +105,7 @@ from media_signing import (
     signing_configured,
     verify_request,
 )
+from streamed_proxy import StreamedProxy, StreamedSocksConnector
 
 
 def _undo_truststore_ssl_injection() -> None:
@@ -704,7 +715,7 @@ DEBRIDR_ACCOUNT_KEY = os.environ.get('DEBRIDR_ACCOUNT_KEY', '').strip()
 DEBRIDR_REQUEST_TIMEOUT = 45
 DEBRIDR_MAX_POW_ATTEMPTS = 250_000
 
-DEBRID_PROVIDERS = frozenset({'deepbrid', 'realdebrid', 'debridr'})
+DEBRID_ENABLED_PROVIDERS = get_enabled_debrid_providers(os.environ.get('DEBRID_ENABLED_PROVIDERS'))
 
 VIDMOLY_PROXY = PROXIES[1] if len(PROXIES) > 1 else (PROXIES[0] if len(PROXIES) > 0 else None)
 
@@ -1348,6 +1359,8 @@ class ProxyServer:
         
         # Sessions container
         self.sessions = {}
+        self.streamed_proxy = StreamedProxy(self.sessions, CORS_HEADERS)
+        self.app.on_cleanup.append(self.streamed_proxy.close)
 
         # MySQL pool (initialized async in start_server)
         self.mysql_pool = None
@@ -1440,6 +1453,14 @@ class ProxyServer:
                     timeout=ClientTimeout(total=None),
                     read_bufsize=SOCKET_READ_BUFFER,
                 )
+                streamed_proxy_url = _build_aiohttp_socks_proxy_url(proxy)
+                if urlparse(streamed_proxy_url).scheme == 'socks5':
+                    self.sessions[f'streamed_{i}'] = aiohttp.ClientSession(
+                        connector=StreamedSocksConnector(streamed_proxy_url),
+                        timeout=ClientTimeout(total=20),
+                        cookie_jar=aiohttp.DummyCookieJar(),
+                        read_bufsize=SOCKET_READ_BUFFER,
+                    )
 
         # Sibnet n'a pas de session dédiée : ses jetons de flux ne sont pas liés
         # à l'IP, et une sortie figée finit par tomber sur un nœud CDN que ce
@@ -1798,6 +1819,7 @@ class ProxyServer:
         # Global proxy (fallback)
         self.app.router.add_get('/proxy', self.proxy_handler)
         self.app.router.add_get('/proxy/{path:.*}', self.proxy_handler)
+        self.app.router.add_get('/streamed-proxy', self.streamed_proxy_handler)
         
         # Extraction endpoints
         self.app.router.add_get('/api/voe/m3u8', self.voe_m3u8_handler)
@@ -1835,6 +1857,7 @@ class ProxyServer:
         self.app.router.add_get('/drm/b/{base_b64}/{subpath:.*}', self.drm_base_resource_handler)
         
         # Debrid routes
+        self.app.router.add_get('/api/debrid/providers', self.debrid_providers_handler)
         self.app.router.add_post('/api/debrid/unlock', self.debrid_unlock_handler)
 
         # System
@@ -2332,6 +2355,17 @@ class ProxyServer:
             }
         })
 
+    async def debrid_providers_handler(self, request: Request) -> Response:
+        internal_error = self._require_internal(request)
+        if internal_error is not None:
+            return internal_error
+        if not await self._check_vip(request):
+            return self._vip_denied_response()
+        return web.json_response(
+            {'status': 'success', 'providers': DEBRID_ENABLED_PROVIDERS},
+            headers={'Cache-Control': 'no-store'},
+        )
+
     async def debrid_unlock_handler(self, request: Request) -> Response:
         """Unlock a link via the selected debrid provider."""
         internal_error = self._require_internal(request)
@@ -2355,6 +2389,12 @@ class ProxyServer:
 
             if provider not in DEBRID_PROVIDERS:
                 return web.json_response({'status': 'error', 'error': 'Provider de debridage invalide'}, status=400)
+
+            if provider not in DEBRID_ENABLED_PROVIDERS:
+                return web.json_response({'status': 'error', 'error': 'Ce débrideur est désactivé.'}, status=403)
+
+            if provider == 'bestdebrid':
+                return web.json_response({'status': 'error', 'error': 'BestDebrid doit être appelé depuis le navigateur.'}, status=400)
 
             if provider == 'realdebrid':
                 return await self._unlock_with_realdebrid(link, password)
@@ -5894,6 +5934,9 @@ class ProxyServer:
         )
     
     # --- Service proxy thin wrappers ---
+
+    async def streamed_proxy_handler(self, request: Request) -> Response:
+        return await self.streamed_proxy.handler(request)
     
     async def voe_proxy_handler(self, request: Request) -> Response:
         """VOE / bandwidth CDN proxy"""
@@ -5944,8 +5987,8 @@ class ProxyServer:
 
         headers = {
             'Accept': 'application/vnd.apple.mpegurl,*/*',
-            'Origin': 'https://kisskh.nl',
-            'Referer': 'https://kisskh.nl/',
+            'Origin': KISSKH_BASE_URL,
+            'Referer': f'{KISSKH_BASE_URL}/',
             'User-Agent': 'Mozilla/5.0 Chrome/139.0.0.0',
         }
         started_at = time.monotonic()
@@ -6685,6 +6728,7 @@ async def main():
     finally:
         # Cleanup sessions
         logger.info("Closing sessions...")
+        await server.streamed_proxy.close(server.app)
         cleanup_tasks = []
         for name, session in server.sessions.items():
             if not session.closed:

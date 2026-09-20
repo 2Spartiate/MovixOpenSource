@@ -12,13 +12,13 @@ import {
   TouchableOpacity,
   Linking,
   Modal,
-  Share,
 } from 'react-native';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { CONFIG } from '../config';
 import { useBrowserUIPrefs } from '../hooks/useBrowserUIPrefs';
 import { useAddress } from '../context/AddressContext';
 import { getLocalVersionName } from '../services/apkInstaller';
+import { copyDiagnostics, shareDiagnostics } from '../services/diagnostics';
 import {
   clearNetworkJournal,
   getNetworkJournal,
@@ -56,6 +56,7 @@ export default function SettingsScreen() {
   const [journalEnabled, setJournalEnabled] = useState(false);
   const [journalEntries, setJournalEntries] = useState<string[]>([]);
   const [journalVisible, setJournalVisible] = useState(false);
+  const [exportingJournal, setExportingJournal] = useState(false);
 
   useEffect(() => {
     loadNetworkJournalPreference()
@@ -76,17 +77,23 @@ export default function SettingsScreen() {
   }, []);
 
   const shareJournal = useCallback(async () => {
-    const entries = await getNetworkJournal();
-    if (!entries.length) {
-      Alert.alert('Journal réseau', 'Aucune requête enregistrée pour le moment.');
-      return;
-    }
-    // Le journal contient des URLs signées et des jetons de lecture : c'est ce
-    // qui le rend utile, et c'est pourquoi on ne le partage que sur demande.
+    if (exportingJournal) return;
+    setExportingJournal(true);
     try {
-      await Share.share({ message: entries.join('\n') });
+      await shareDiagnostics();
     } catch {
-      Alert.alert('Journal réseau', 'Partage impossible.');
+      Alert.alert('Journal réseau', 'Impossible de partager le fichier. Tu peux utiliser « Copier les logs ».');
+    } finally {
+      setExportingJournal(false);
+    }
+  }, [exportingJournal]);
+
+  const copyJournal = useCallback(async (includeNetwork = true) => {
+    try {
+      await copyDiagnostics(includeNetwork);
+      Alert.alert('Diagnostic Movix', 'Les logs sont copiés dans le presse-papiers.');
+    } catch {
+      Alert.alert('Diagnostic Movix', 'Copie impossible. Essaie de partager le fichier .txt.');
     }
   }, []);
 
@@ -376,6 +383,16 @@ export default function SettingsScreen() {
         <Text style={styles.sectionTitle}>Débogage</Text>
 
         <View style={styles.card}>
+          <Text style={styles.rowTitle}>Diagnostic Cast</Text>
+          <Text style={styles.rowSubtitle}>
+            Les dernières étapes et erreurs de diffusion sont conservées pendant cette session, sur Android et iOS.
+          </Text>
+          <TouchableOpacity style={[styles.linkButton, { marginTop: 12 }]} onPress={() => copyJournal(false)} accessibilityRole="button">
+            <Text style={styles.linkText}>Copier les logs Cast</Text>
+          </TouchableOpacity>
+        </View>
+
+        <View style={styles.card}>
           <View style={styles.row}>
             <View style={{ flex: 1, paddingRight: 12 }}>
               <Text style={styles.rowTitle}>Journal réseau</Text>
@@ -399,8 +416,16 @@ export default function SettingsScreen() {
               </TouchableOpacity>
               <TouchableOpacity
                 style={[styles.linkButton, { marginTop: 8 }]}
-                onPress={shareJournal}>
-                <Text style={styles.linkText}>Partager le journal</Text>
+                onPress={shareJournal}
+                disabled={exportingJournal}
+                accessibilityRole="button">
+                <Text style={styles.linkText}>{exportingJournal ? 'Préparation du partage…' : 'Partager le fichier .txt'}</Text>
+              </TouchableOpacity>
+              <TouchableOpacity
+                style={[styles.linkButton, { marginTop: 8 }]}
+                onPress={() => copyJournal()}
+                accessibilityRole="button">
+                <Text style={styles.linkText}>Copier les logs</Text>
               </TouchableOpacity>
               <TouchableOpacity
                 style={[styles.linkButton, { marginTop: 8 }]}
@@ -415,10 +440,11 @@ export default function SettingsScreen() {
         </View>
 
         <Text style={styles.hint}>
-          Tout reste en mémoire sur l'appareil, rien n'est envoyé : le journal
-          disparaît en coupant l'interrupteur ou en fermant l'app. Il contient
-          des URLs signées et des jetons de lecture — à ne partager qu'avec
-          quelqu'un qui doit diagnostiquer.
+          Active le journal, recharge la page et reproduis le problème. La capture
+          réseau est effacée en coupant l'interrupteur ou en fermant l'app.
+          L'export crée un fichier temporaire .txt ; la copie garde les dernières
+          lignes si le journal est volumineux. Les données sensibles reconnues
+          sont masquées dans les exports. Rien n'est envoyé automatiquement.
         </Text>
       </View>
 
@@ -433,6 +459,14 @@ export default function SettingsScreen() {
             </Text>
             <TouchableOpacity onPress={() => setJournalVisible(false)}>
               <Text style={styles.linkText}>Fermer</Text>
+            </TouchableOpacity>
+          </View>
+          <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: 8, paddingHorizontal: 20 }}>
+            <TouchableOpacity style={styles.linkButton} onPress={() => copyJournal()} accessibilityRole="button">
+              <Text style={styles.linkText}>Copier les logs</Text>
+            </TouchableOpacity>
+            <TouchableOpacity style={styles.linkButton} onPress={shareJournal} disabled={exportingJournal} accessibilityRole="button">
+              <Text style={styles.linkText}>{exportingJournal ? 'Préparation…' : 'Partager le fichier .txt'}</Text>
             </TouchableOpacity>
           </View>
           <ScrollView contentContainerStyle={styles.content} horizontal={false}>

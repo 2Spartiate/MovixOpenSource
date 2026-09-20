@@ -1,4 +1,5 @@
 const mysql = require('mysql2/promise');
+const diagnostics = require('./utils/diagnostics');
 require('dotenv').config();
 
 // Configuration de la connexion MySQL — credentials from environment variables
@@ -11,7 +12,7 @@ const dbConfig = {
   waitForConnections: true,
   // Overridables via .env sans toucher au code. Attention : connectionLimit × nb
   // workers doit rester sous le max_connections de MySQL (défaut serveur: 151).
-  connectionLimit: parseInt(process.env.DB_POOL_CONNECTION_LIMIT || '20'), // 20 × 6 workers = 120 connexions max
+  connectionLimit: parseInt(process.env.DB_POOL_CONNECTION_LIMIT || '20'),
   maxIdle: 5,                // Libère les connexions inactives au-delà de 5
   idleTimeout: 60000,        // Ferme les connexions idle après 60s
   queueLimit: parseInt(process.env.DB_POOL_QUEUE_LIMIT || '500'), // File d'attente par worker (0 = illimité, risque OOM)
@@ -38,7 +39,7 @@ const initPool = async () => {
   }
   poolInitializing = true;
   try {
-    pool = mysql.createPool(dbConfig);
+    pool = diagnostics.instrumentMysqlPool(mysql.createPool(dbConfig));
     console.log('✅ MySQL connection pool created successfully');
 
     // Test de connexion
@@ -57,7 +58,7 @@ const initPool = async () => {
 const getPool = () => {
   if (!pool) {
     console.warn('⚠️ MySQL pool not initialized yet, initializing synchronously...');
-    pool = mysql.createPool(dbConfig);
+    pool = diagnostics.instrumentMysqlPool(mysql.createPool(dbConfig));
   }
   return pool;
 };

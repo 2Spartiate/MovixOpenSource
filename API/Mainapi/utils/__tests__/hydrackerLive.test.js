@@ -6,6 +6,10 @@
 const { test, mock } = require('node:test');
 const assert = require('node:assert/strict');
 
+// Ces tests couvrent le chemin live lui-même : on lève explicitement le
+// blackout, sinon chaque fetch court-circuite avant l'appel réseau simulé.
+process.env.HYDRACKER_BLACKOUT = 'false';
+
 const {
   createHydrackerLive,
   _fetchHydrackerLien,

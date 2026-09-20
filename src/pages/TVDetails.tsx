@@ -46,6 +46,10 @@ import { getTmdbLanguage } from '../i18n';
 import i18n from '../i18n';
 import { useProfile } from '../context/ProfileContext';
 import { getClassificationLabel as getClassificationLabelUtil, isContentAllowed } from '../utils/certificationUtils';
+import { useTvAiringSchedule } from '@/hooks/useTvAiringSchedule';
+import { formatAiringDate, getAiringLabel, getEpisodeTimeline, resolveEpisodeAiring, resolveShowAiring } from '@/utils/tvAiring';
+import type { TvEpisodeDate, TvExternalIds } from '@/types/tvAiring';
+import { Dialog, DialogContent, DialogDescription, DialogTitle } from '@/components/ui/dialog';
 
 const MAIN_API = import.meta.env.VITE_MAIN_API;
 const TMDB_API_KEY = import.meta.env.VITE_TMDB_API_KEY || '';
@@ -57,6 +61,7 @@ interface TVShow {
   poster_path: string;
   backdrop_path: string;
   first_air_date: string;
+  external_ids?: TvExternalIds;
   vote_average: number;
   genres: { id: number; name: string }[];
   number_of_seasons?: number;
@@ -897,6 +902,9 @@ const TVDetails: React.FC = () => {
   });
   const [searchParams] = useSearchParams();
   const [tvShow, setTVShow] = useState<TVShow | null>(null);
+  const { schedule: airingSchedule, now: airingNow } = useTvAiringSchedule(
+    id, String(tvShow?.id) === id ? tvShow?.external_ids : undefined,
+  );
   const [movixVoteStats, setMovixVoteStats] = useState<LikeDislikeStats>({ likes: 0, dislikes: 0 });
   const [showMovixRatingInfo, setShowMovixRatingInfo] = useState(false);
   const [loading, setLoading] = useState(true);
@@ -911,7 +919,6 @@ const TVDetails: React.FC = () => {
   }, [id]);
 
   const movixRating = calculateLikeDislikeRating(movixVoteStats);
-  const [availableEpisodes, setAvailableEpisodes] = useState<Episode[]>([]);
   const [selectedSeason, setSelectedSeason] = useState<number | null>(null);
   const [selectedEpisode, setSelectedEpisode] = useState<number | null>(null);
   // const [_trailerVideoId, _setTrailerVideoId] = useState<string | null>(null);
@@ -984,7 +991,7 @@ const TVDetails: React.FC = () => {
   const [showAddToList, setShowAddToList] = useState(false);
   const [, setIsAvailable] = useState<boolean>(true);
   const [recommendations, setRecommendations] = useState<(TVShow & { isAvailable?: boolean })[]>([]);
-  const [, setShowSimilarModal] = useState(false);
+  const [showSimilarModal, setShowSimilarModal] = useState(false);
   const [loadingSimilar, setLoadingSimilar] = useState(false);
   const [recommendationsLoaded, setRecommendationsLoaded] = useState<boolean>(false);
   const [animeMode, setAnimeMode] = useState<boolean>(false);
@@ -1003,12 +1010,17 @@ const TVDetails: React.FC = () => {
   const [selectedPlayer, setSelectedPlayer] = useState<string | null>(null);
   // Ajout de l'état pour stocker les détails complets des saisons et épisodes
   const [seasonsDetails, setSeasonsDetails] = useState<Record<number, any>>({});
+  const availableEpisodes = useMemo<Episode[]>(() => Object.entries(seasonsDetails).flatMap(([season, details]) =>
+    (details.episodes ?? []).filter((episode: { episode_number: number; air_date?: string | null }) =>
+      resolveEpisodeAiring({ ...episode, season_number: Number(season) }, airingSchedule, airingNow).kind === 'aired',
+    ).map((episode: { episode_number: number }) => ({ sa: Number(season), epi: episode.episode_number })),
+  ).sort((a, b) => Number(a.sa) - Number(b.sa) || Number(a.epi) - Number(b.epi)), [seasonsDetails, airingSchedule, airingNow]);
   // Ajoute ce state dans le composant principal, avant le return :
   // const [_collapsed, _setCollapsed] = useState(true);
   // Ajoute un état pour la gestion du popup "à venir"
-  const [showUpcomingModal, setShowUpcomingModal] = useState(false);
-  const [pendingEpisode, setPendingEpisode] = useState<number | null>(null);
-  const [forceShowUpcoming, setForceShowUpcoming] = useState(false);
+  const [pendingEpisode, setPendingEpisode] = useState<{ season: number; episode: number } | null>(null);
+  // Radix garde le contenu monté pendant la fermeture : conserver l'épisode affiché.
+  const [isEpisodeWarningOpen, setEpisodeWarningOpen] = useState(false);
   // Ajoute les états pour les tabs et le scroll des tabs comme dans MovieDetails
   const [activeTab, setActiveTab] = useState<'overview' | 'details' | 'videos' | 'images' | 'cast' | 'characters' | 'crew'>('overview');
   const [isTabsScrollable, setIsTabsScrollable] = useState(false);
@@ -1203,9 +1215,6 @@ const TVDetails: React.FC = () => {
       }
 
       const numberOfSeasons = tmdbResponse.data.number_of_seasons;
-      const allEpisodes: Episode[] = [];
-      const today = new Date();
-      today.setHours(0, 0, 0, 0);
       const newSeasonsDetails: Record<number, any> = {};
       const newSeasonVideos: Record<number, any[]> = {}; // Temporary storage for season videos
 
@@ -1242,16 +1251,6 @@ const TVDetails: React.FC = () => {
               const seasonData = await fetchSeasonDetails(id, season);
               if (seasonData) {
                 newSeasonsDetails[season] = seasonData;
-                for (const episodeData of seasonData.episodes) {
-                  const airDate = episodeData.air_date ? new Date(episodeData.air_date) : null;
-                  if (airDate) airDate.setHours(0, 0, 0, 0);
-                  if (!airDate || airDate <= today) {
-                    allEpisodes.push({
-                      sa: season,
-                      epi: episodeData.episode_number
-                    });
-                  }
-                }
               }
 
               // Fetch season videos
@@ -1302,12 +1301,6 @@ const TVDetails: React.FC = () => {
       }
       await Promise.all(seasonPromises); // Wait for all season fetches
 
-      allEpisodes.sort((a, b) => {
-        if (Number(a.sa) !== Number(b.sa)) return Number(a.sa) - Number(b.sa);
-        return Number(a.epi) - Number(b.epi);
-      });
-
-      setAvailableEpisodes(allEpisodes);
       setSeasonsDetails(newSeasonsDetails);
       setSeasonVideos(newSeasonVideos); // Update season videos state
       setIsAvailable(true);
@@ -1341,6 +1334,9 @@ const TVDetails: React.FC = () => {
       // Reset state when ID changes
       setSelectedSeason(null);
       setSelectedEpisode(null);
+      setSeasonsDetails({});
+      setEpisodeWarningOpen(false);
+      setPendingEpisode(null);
       setAnimeMode(false);
       setAnimeData(null);
       setSelectedAnimeEpisode(null);
@@ -1465,17 +1461,22 @@ const TVDetails: React.FC = () => {
     }, 100);
   };
 
-  const handleEpisodeChange = (episodeNumber: number | string) => {
+  const getEpisodeAiring = (season: number, episode: number, now = airingNow) => {
+    const data = seasonsDetails[season]?.episodes?.find((item: { episode_number: number }) => item.episode_number === episode);
+    return resolveEpisodeAiring({
+      season_number: season, episode_number: episode, air_date: data?.air_date,
+    }, airingSchedule, now);
+  };
+
+  const handleEpisodeChange = (episodeNumber: number | string, season = selectedSeason) => {
+    if (!id || season === null) return;
     const epNumber = Number(episodeNumber);
-    const ep = seasonsDetails[selectedSeason!]?.episodes?.find((e: any) => e.episode_number === epNumber);
-    const today = new Date();
-    const airDate = ep?.air_date ? new Date(ep.air_date) : null;
-    if (airDate && airDate > today && !forceShowUpcoming) {
-      setPendingEpisode(epNumber);
-      setShowUpcomingModal(true);
+    if (getEpisodeAiring(season, epNumber, Date.now()).needsWarning) {
+      setPendingEpisode({ season, episode: epNumber });
+      setEpisodeWarningOpen(true);
       return;
     }
-    navigate(`/watch/tv/${encodeId(id || '')}/s/${selectedSeason}/e/${epNumber}`);
+    navigate(`/watch/tv/${encodeId(id)}/s/${season}/e/${epNumber}`);
   };
   const _scrollLeft = (elementId: string) => {
     const element = document.getElementById(elementId);
@@ -1835,7 +1836,7 @@ const TVDetails: React.FC = () => {
         navigate(`/watch/anime/${encodeId(id)}/season/${seasonToWatch}/episode/${episodeToWatch}`);
       } else {
         // Navigate to the dedicated TV watch page
-        navigate(`/watch/tv/${encodeId(id)}/s/${seasonToWatch}/e/${episodeToWatch}`);
+        handleEpisodeChange(episodeToWatch, seasonToWatch);
       }
       return;
     }
@@ -2521,15 +2522,7 @@ const TVDetails: React.FC = () => {
     // Déterminer le mode par défaut basé sur le nombre d'épisodes
     const defaultDropdownMode = nonEmptyEpisodes.length > 15;
 
-    const selectableEpisodes = nonEmptyEpisodes.filter((ep: any) => {
-      if (type === 'anime') return true;
-      const today = new Date();
-      const airDate = ep.air_date ? new Date(ep.air_date) : null;
-      const isFuture = airDate && airDate > today;
-      return !isFuture;
-    });
-
-    const dropdownOptions = selectableEpisodes.map((ep: any) => {
+    const dropdownOptions = nonEmptyEpisodes.map((ep: any) => {
       if (type === 'anime') {
         const allLanguages = ep.streaming_links.map((link: any) => {
           return getAnimeLanguageLabel(link.language, t);
@@ -2539,11 +2532,14 @@ const TVDetails: React.FC = () => {
           label: `${ep.index}. ${ep.name} ${allLanguages ? `(${allLanguages})` : ''}`,
         };
       } else {
+        const airing = getEpisodeAiring(selectedSeason!, ep.episode_number);
+        const name = shouldHide('episodeNames')
+          ? getMaskedContent(ep.name, 'episodeNames', undefined, ep.episode_number)
+          : `${ep.episode_number}. ${ep.name}`;
         return {
           value: ep.episode_number.toString(),
-          label: shouldHide('episodeNames') 
-            ? getMaskedContent(ep.name, 'episodeNames', undefined, ep.episode_number) 
-            : `${ep.episode_number}. ${ep.name}`,
+          label: airing.kind !== 'aired' && (airing.date || airing.timestamp !== null)
+            ? `${name} — ${getAiringLabel(airing, t, i18n.language, airingNow)}` : name,
         };
       }
     });
@@ -2679,6 +2675,7 @@ const TVDetails: React.FC = () => {
                 } else {
                   const episodeKey = `s${selectedSeason}e${ep.episode_number}`;
                   const isSelected = selectedEpisode === ep.episode_number;
+                  const airing = getEpisodeAiring(selectedSeason!, ep.episode_number);
 
                   // Compute per-episode progress from localStorage if present
                   let progressPercentage = 0;
@@ -2765,16 +2762,11 @@ const TVDetails: React.FC = () => {
                                 )}
                               </div>
                             )}
-                            {(() => {
-                              const today = new Date();
-                              const airDate = ep.air_date ? new Date(ep.air_date) : null;
-                              if (airDate && airDate > today) {
-                                return <div className="absolute top-2 left-2 bg-yellow-600 text-white text-xs px-2 py-1 rounded-full">{t('details.upcomingBadge')}</div>;
-                              } else if (airDate) {
-                                return <div className="absolute top-2 left-2 bg-green-600 text-white text-xs px-2 py-1 rounded-full">{t('details.releasedBadge')}</div>;
-                              }
-                              return null;
-                            })()}
+                            {airing.kind !== 'unconfirmed' && (
+                              <div className={`absolute top-2 left-2 max-w-[calc(100%-1rem)] text-xs px-2 py-1 rounded-full ${airing.kind === 'aired' ? 'bg-green-700 text-white' : 'bg-yellow-800 text-yellow-50'}`}>
+                                {t(`details.airing.${airing.kind}`)}
+                              </div>
+                            )}
 
                             {/* Progress badges */}
                             {((isEpisodeWatched) || (hasProgress && displayProgress >= 95)) ? (
@@ -2818,11 +2810,13 @@ const TVDetails: React.FC = () => {
                                 <h4 className="text-lg font-medium group-hover:text-red-500 transition-colors">
                                   {shouldHide('episodeNames') ? getMaskedContent(ep.name, 'episodeNames', undefined, ep.episode_number) : `${ep.episode_number}. ${ep.name}`}
                                 </h4>
-                                <div className="flex items-center gap-3 mt-1 text-sm text-white/60">
-                                  <div className="flex items-center gap-1.5">
-                                    <Calendar className="h-3.5 w-3.5 text-red-400 opacity-70" />
-                                    <span>{ep.air_date ? new Date(ep.air_date).toLocaleDateString(i18n.language, { year: 'numeric', month: 'long', day: 'numeric' }) : t('details.dateUnknown')}</span>
-                                  </div>
+                                <div className="flex flex-wrap items-center gap-3 mt-1 text-sm text-white/60">
+                                  {(airing.date || airing.timestamp !== null) && (
+                                    <div className="flex items-start gap-1.5">
+                                      <Calendar className="h-3.5 w-3.5 shrink-0 mt-1 text-red-400 opacity-70" />
+                                      <span>{airing.kind === 'aired' ? formatAiringDate(airing, i18n.language) : getAiringLabel(airing, t, i18n.language, airingNow)}</span>
+                                    </div>
+                                  )}
                                   {ep.runtime && (
                                     <div className="flex items-center gap-1.5">
                                       <svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className="lucide lucide-clock h-3.5 w-3.5 text-red-400 opacity-70"><circle cx="12" cy="12" r="10"></circle><polyline points="12 6 12 12 16 14"></polyline></svg>
@@ -2901,10 +2895,9 @@ const TVDetails: React.FC = () => {
                                 <Check className="w-4 h-4" />
                               </button>
                               {(() => {
-                                const today = new Date();
-                                const airDate = ep.air_date ? new Date(ep.air_date) : null;
-                                // Only show AlertButton for upcoming episodes
-                                if (airDate && airDate > today && id && tvShow?.name) {
+                                const reminderAt = airing.timestamp ?? (airing.date ? Date.parse(`${airing.date}T00:00:00Z`) : NaN);
+                                // Ne pas proposer un rappel dont l'instant est déjà passé.
+                                if (reminderAt > airingNow && airing.date && id && tvShow?.name) {
                                   return (
                                     <AlertButton
                                       showId={id}
@@ -2912,7 +2905,7 @@ const TVDetails: React.FC = () => {
                                       season={selectedSeason!}
                                       episode={ep.episode_number}
                                       episodeName={ep.name}
-                                      airDate={ep.air_date}
+                                      airDate={airing.timestamp !== null ? new Date(airing.timestamp).toISOString() : airing.date}
                                     />
                                   );
                                 }
@@ -2933,8 +2926,18 @@ const TVDetails: React.FC = () => {
     );
   };
   const tvYear = tvShow.first_air_date && !isNaN(new Date(tvShow.first_air_date).getTime())
-    ? new Date(tvShow.first_air_date).getFullYear()
+    ? Number(tvShow.first_air_date.slice(0, 4))
     : null;
+  const showAiring = resolveShowAiring(tvShow.first_air_date, airingSchedule, airingNow);
+  const pendingAiring = pendingEpisode ? getEpisodeAiring(pendingEpisode.season, pendingEpisode.episode) : null;
+  const timelineEpisodes: Array<TvEpisodeDate & { name: string }> = Object.entries(seasonsDetails).flatMap(([season, details]) =>
+    (details.episodes ?? []).map((episode: TvEpisodeDate & { name: string }) => ({ ...episode, season_number: Number(season) })),
+  );
+  if (tvShow.last_episode_to_air) timelineEpisodes.push(tvShow.last_episode_to_air);
+  if (tvShow.next_episode_to_air) timelineEpisodes.push(tvShow.next_episode_to_air);
+  const { last: lastBroadcastEpisode, next: nextBroadcastEpisode } = getEpisodeTimeline(timelineEpisodes, airingSchedule, airingNow);
+  const lastBroadcastAiring = lastBroadcastEpisode ? resolveEpisodeAiring(lastBroadcastEpisode, airingSchedule, airingNow) : null;
+  const nextBroadcastAiring = nextBroadcastEpisode ? resolveEpisodeAiring(nextBroadcastEpisode, airingSchedule, airingNow) : null;
   const tvTitle = tvYear ? `${tvShow.name} (${tvYear}) - Movix` : `${tvShow.name} - Movix`;
   const tvCanonicalUrl = buildSiteUrl(`/tv/${encodedId || id}`);
   const tvSocialImage = tvShow.backdrop_path || tvShow.poster_path
@@ -3134,18 +3137,23 @@ const TVDetails: React.FC = () => {
           className="mb-8"
         >
           <h1 className="section-title text-4xl md:text-5xl font-bold">
-            {tvShow.name} {tvShow.first_air_date && !isNaN(new Date(tvShow.first_air_date).getTime()) ? (
-              <>({new Date(tvShow.first_air_date).getFullYear()}){' '}
-                {new Date(tvShow.first_air_date) > new Date() ? (
-                  <span className="ml-2 text-sm font-medium bg-yellow-600 text-white px-2 py-1 rounded-md">{t('details.upcomingBadge')}</span>
-                ) : (
-                  <span className="ml-2 text-sm font-medium bg-green-600 text-white px-2 py-1 rounded-md">{t('details.releasedBadge')}</span>
-                )}
-              </>
-            ) : (
-              <span className="ml-2 text-sm font-medium bg-yellow-600 text-white px-2 py-1 rounded-md">{t('details.notReleasedBadge')}</span>
-            )}
+            {tvShow.name} {tvYear && <>({tvYear})</>}
           </h1>
+          {(showAiring.kind !== 'unconfirmed' || showAiring.date) && (
+            <p className="mt-3">
+              <span className={`inline-block max-w-full text-sm font-medium ${showAiring.kind === 'unconfirmed' ? 'text-gray-300' : `px-2 py-1 rounded-md ${showAiring.kind === 'aired' ? 'bg-green-700 text-white' : 'bg-yellow-800 text-yellow-50'}`}`}>
+                {getAiringLabel(showAiring, t, i18n.language, airingNow)}
+              </span>
+            </p>
+          )}
+          {airingSchedule && (
+            <p className="mt-2 text-xs text-gray-400">
+              {t('details.airing.source')}{' '}
+              <a href={airingSchedule.sourceUrl} target="_blank" rel="noopener noreferrer" className="underline underline-offset-2 hover:text-white focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2">
+                TVmaze
+              </a>
+            </p>
+          )}
         </motion.div>
         {/* Contenu principal - poster à gauche, infos à droite */}
         <div className="grid grid-cols-1 md:grid-cols-3 gap-8">
@@ -3979,14 +3987,7 @@ const TVDetails: React.FC = () => {
                         transition: { duration: 0.2 }
                       }}
                     >
-                      {tvShow.first_air_date && !isNaN(new Date(tvShow.first_air_date).getTime())
-                        ? new Date(tvShow.first_air_date).toLocaleDateString(i18n.language, {
-                          day: 'numeric',
-                          month: 'long',
-                          year: 'numeric'
-                        })
-                        : t('details.dateNotAvailable')
-                      }
+                      {formatAiringDate(showAiring, i18n.language) ?? t('details.dateNotAvailable')}
                     </motion.div>
                   </motion.div>
 
@@ -4099,7 +4100,7 @@ const TVDetails: React.FC = () => {
                       )}
 
                       {/* Dernière diffusion */}
-                      {tvShow.last_air_date && (
+                      {lastBroadcastEpisode && lastBroadcastAiring && (
                         <motion.div
                           className="bg-gray-800 p-3 rounded-lg border border-gray-700 col-span-1 md:col-span-2"
                           whileHover={{
@@ -4109,32 +4110,24 @@ const TVDetails: React.FC = () => {
                             transition: { duration: 0.2 }
                           }}
                         >
-                          <h4 className="text-gray-400 text-sm mb-1">{t('details.lastEpisodeAired')}</h4>
+                          <h4 className="text-gray-400 text-sm mb-1">{t(lastBroadcastAiring.kind === 'aired' ? 'details.lastEpisodeAired' : 'details.airing.lastAnnouncedEpisode')}</h4>
                           <p className="text-gray-200 font-semibold">
                             {shouldHide('episodeNames') ? (
                               getMaskedContent(t('details.maskedInfo'), 'episodeNames')
                             ) : (
-                              tvShow.last_episode_to_air ? (
-                                <>
-                                  S{tvShow.last_episode_to_air.season_number} E{tvShow.last_episode_to_air.episode_number} - {shouldHide('episodeNames') ? getMaskedContent(tvShow.last_episode_to_air.name, 'episodeNames', undefined, tvShow.last_episode_to_air.episode_number) : tvShow.last_episode_to_air.name}
-                                  <span className="ml-2 text-gray-400 text-sm">
-                                    ({new Date(tvShow.last_episode_to_air.air_date).toLocaleDateString(i18n.language)})
-                                  </span>
-                                </>
-                              ) : (
-                                new Date(tvShow.last_air_date).toLocaleDateString(i18n.language, {
-                                  day: 'numeric',
-                                  month: 'long',
-                                  year: 'numeric'
-                                })
-                              )
+                              <>
+                                S{lastBroadcastEpisode.season_number} E{lastBroadcastEpisode.episode_number} - {lastBroadcastEpisode.name}
+                                <span className="ml-2 text-gray-400 text-sm">
+                                  ({formatAiringDate(lastBroadcastAiring, i18n.language)})
+                                </span>
+                              </>
                             )}
                           </p>
                         </motion.div>
                       )}
 
                       {/* Prochain épisode */}
-                      {tvShow.next_episode_to_air && (
+                      {nextBroadcastEpisode && nextBroadcastAiring && (
                         <motion.div
                           className="bg-gray-800 p-3 rounded-lg border border-gray-700 col-span-1 md:col-span-2"
                           whileHover={{
@@ -4150,9 +4143,9 @@ const TVDetails: React.FC = () => {
                               getMaskedContent(t('details.maskedInfo'), 'episodeNames')
                             ) : (
                               <>
-                                S{tvShow.next_episode_to_air.season_number} E{tvShow.next_episode_to_air.episode_number} - {shouldHide('episodeNames') ? getMaskedContent(tvShow.next_episode_to_air.name, 'episodeNames', undefined, tvShow.next_episode_to_air.episode_number) : tvShow.next_episode_to_air.name}
+                                S{nextBroadcastEpisode.season_number} E{nextBroadcastEpisode.episode_number} - {nextBroadcastEpisode.name}
                                 <span className="ml-2 text-gray-400 text-sm">
-                                  ({new Date(tvShow.next_episode_to_air.air_date).toLocaleDateString(i18n.language)})
+                                  ({getAiringLabel(nextBroadcastAiring, t, i18n.language, airingNow)})
                                 </span>
                               </>
                             )}
@@ -5368,7 +5361,7 @@ const TVDetails: React.FC = () => {
         </LazySection>
       </div>
 
-      {showUpcomingModal && (
+      {showSimilarModal && (
         <div className="fixed inset-0 bg-black/80 flex items-center justify-center z-50 p-4">
           <div className="bg-black rounded-xl w-full max-w-4xl max-h-[90vh] overflow-y-auto p-6">
             <div className="flex justify-between items-center mb-6">
@@ -5440,18 +5433,25 @@ const TVDetails: React.FC = () => {
 
 
 
-      {showUpcomingModal && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/80">
-          <div className="bg-gray-900 rounded-lg p-8 max-w-md w-full flex flex-col items-center">
+      <Dialog open={isEpisodeWarningOpen && pendingAiring?.needsWarning === true} onOpenChange={setEpisodeWarningOpen}>
+          <DialogContent className="max-w-md w-[calc(100%-2rem)] max-h-[90dvh] overflow-y-auto flex flex-col items-center gap-0">
             <svg xmlns="http://www.w3.org/2000/svg" width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className="lucide lucide-tv h-12 w-12 text-yellow-500 mb-4"><rect width="20" height="15" x="2" y="7" rx="2" ry="2"></rect><polyline points="17 2 12 7 7 2"></polyline></svg>
-            <h3 className="text-2xl font-bold text-white mb-2">{t('details.episodeNotYetReleased')}</h3>
-            <p className="text-gray-300 text-center max-w-md mb-6">{t('details.episodeNotYetReleasedDesc')}</p>
-            <div className="flex gap-4 mt-2">
+            <DialogTitle className="text-2xl text-center mb-2">
+              {t(pendingAiring?.kind === 'aired' ? 'details.airing.aired' : 'details.airing.warningTitle')}
+            </DialogTitle>
+            {pendingAiring && (
+              <p className="text-yellow-200 text-center mb-3">
+                {getAiringLabel(pendingAiring, t, i18n.language, airingNow)}
+              </p>
+            )}
+            <DialogDescription className="text-gray-300 text-center mb-6">
+              {t(pendingAiring?.kind === 'aired' ? 'details.airing.availabilityNote' : 'details.airing.warningDescription')}
+            </DialogDescription>
+            <div className="flex flex-wrap justify-center gap-4 mt-2">
               <button
                 className="px-6 py-3 bg-gray-700 text-white rounded-lg font-medium hover:bg-gray-600 transition-colors"
                 onClick={() => {
-                  setShowUpcomingModal(false);
-                  setPendingEpisode(null);
+                  setEpisodeWarningOpen(false);
                 }}
               >
                 {t('details.cancel')}
@@ -5459,28 +5459,17 @@ const TVDetails: React.FC = () => {
               <button
                 className="px-6 py-3 bg-red-600 text-white rounded-lg font-medium hover:bg-red-700 transition-colors"
                 onClick={() => {
-                  setShowUpcomingModal(false);
-                  setForceShowUpcoming(true);
-                  if (pendingEpisode) {
-                    if (cinemaMode && id && selectedSeason) {
-                      // En mode cinéma, naviguer vers la page de visionnage dédiée
-                      if (animeMode) {
-                        navigate(`/watch/anime/${encodeId(id)}/season/${selectedSeason}/episode/${pendingEpisode}`);
-                      } else {
-                        navigate(`/watch/tv/${encodeId(id)}/s/${selectedSeason}/e/${pendingEpisode}`);
-                      }
-                      return;
-                    }
+                  setEpisodeWarningOpen(false);
+                  if (pendingEpisode && id) {
+                    navigate(`/watch/tv/${encodeId(id)}/s/${pendingEpisode.season}/e/${pendingEpisode.episode}`);
                   }
-                  setPendingEpisode(null);
                 }}
               >
                 {t('details.continueAnyway')}
               </button>
             </div>
-          </div>
-        </div>
-      )}
+          </DialogContent>
+      </Dialog>
 
       {/* Popup de la bande-annonce */}
       {showTrailerPopup && trailerVideo && (

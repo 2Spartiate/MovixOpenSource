@@ -54,6 +54,7 @@ function buildTmdbTitleCandidates({ localized, original, alternatives } = {}) {
   const inputs = [
     { value: firstTitle(localized, ['name', 'title']), source: 'localized' },
     { value: firstTitle(original, ['original_name', 'original_title', 'name', 'title']), source: 'original' },
+    { value: firstTitle(original, ['name', 'title']), source: 'alternative' },
     ...(Array.isArray(alternatives?.results) ? alternatives.results : [])
       .map((entry) => ({ value: firstTitle(entry, ['title', 'name']), source: 'alternative' })),
   ];
@@ -314,6 +315,40 @@ function rankKisskhCandidates(criteria = {}, candidates = []) {
   return ranked.map(({ index: _index, base: _base, segment: _segment, ...entry }) => entry);
 }
 
+// L'index appartient a un snapshot immuable, remplace lors de sa publication.
+function createKisskhCatalogIndex(candidates) {
+  const byTitle = new Map();
+  for (let index = 0; index < candidates.length; index += 1) {
+    const candidate = candidates[index];
+    if (!candidate || typeof candidate !== 'object') continue;
+    const keys = new Set(candidateTitleAnalyses(candidate)
+      .map(({ analyzed }) => withoutLeadingEnglishArticle(analyzed.base)));
+    for (const key of keys) {
+      let bucket = byTitle.get(key);
+      if (!bucket) {
+        bucket = [];
+        byTitle.set(key, bucket);
+      }
+      bucket.push(index);
+    }
+  }
+
+  return Object.freeze({
+    rank(criteria = {}) {
+      const selected = new Set();
+      for (const title of normalizedTitleEntries(criteria.titles)) {
+        const bucket = byTitle.get(withoutLeadingEnglishArticle(title.normalized));
+        if (bucket) for (const index of bucket) selected.add(index);
+      }
+      // Garder l'ordre initial pour les egalites et laisser le score, les saisons
+      // et les ambiguites au matcher commun, y compris pour les titres doubles.
+      const matching = [...selected].sort((left, right) => left - right)
+        .map((index) => candidates[index]);
+      return rankKisskhCandidates(criteria, matching);
+    },
+  });
+}
+
 function episodeCountForCandidate(candidate) {
   const count = candidate?.episodesCount ?? candidate?.episodes_count;
   return Number.isSafeInteger(count) && count > 0 ? count : null;
@@ -417,6 +452,7 @@ module.exports = {
   MAX_TITLE_CANDIDATES,
   buildSeasonAwareQueries,
   buildTmdbTitleCandidates,
+  createKisskhCatalogIndex,
   analyzeSeasonTitle,
   normalizeTitle,
   regularEpisodeCount,

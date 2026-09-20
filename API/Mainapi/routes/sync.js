@@ -15,8 +15,11 @@ const { v4: uuidv4 } = require('uuid');
 const router = express.Router();
 
 const { getAuthIfValid } = require('../middleware/auth');
+const { createSyncBodyParsers, rejectOversizedSync, getParsedBodyBytes } = require('../middleware/bodyParsing');
+const { jsonParseErrorHandler } = require('../middleware/security');
 const { getPool, withMysqlAdvisoryLock } = require('../mysqlPool');
-const { safeWriteJsonFile } = require('../utils/safeFile');
+const { safeWriteFile, safeWriteJsonFile } = require('../utils/safeFile');
+const { readAccountData } = require('../utils/accountDataCache');
 const { logSyncErrorToDiscord } = require('../utils/discord');
 const { createRedisRateLimitStore } = require('../utils/redisRateLimitStore');
 const {
@@ -378,8 +381,9 @@ async function readUserData(userType, userId) {
   const filePath = getUserDataFilePath({ usersDir: USERS_DIR, guestsDir: GUESTS_DIR }, userType, userId);
 
   try {
-    const fileContent = await fsp.readFile(filePath, 'utf8');
-    const data = JSON.parse(fileContent);
+    // La validation d'authentification utilise le même cache, dont la version
+    // du fichier est revérifiée à chaque lecture. Les mutations restent locales.
+    const data = structuredClone(await readAccountData(filePath));
     return normalizeStoredProfiles(data && typeof data === 'object' ? data : {});
   } catch (error) {
     if (error.code === 'ENOENT') return {};
@@ -411,46 +415,54 @@ async function writeUserData(userType, userId, data) {
   }
 }
 
-async function readProfileData(userType, userId, profileId) {
+async function readProfileSnapshot(userType, userId, profileId) {
   const profilePath = getProfileFilePath(USERS_DIR, userType, userId, profileId);
 
   try {
     const fileContent = await fsp.readFile(profilePath, 'utf8');
     const parsed = JSON.parse(fileContent);
-    const { data, changed } = sanitizeProfileData(parsed);
-
-    if (changed) {
-      safeWriteJsonFile(profilePath, data).catch((writeError) => {
-        console.error(`Erreur lors du nettoyage du profil ${profileId}:`, writeError.message);
-      });
-    }
-
-    return data;
+    return sanitizeProfileData(parsed);
   } catch (error) {
-    if (error.code === 'ENOENT') return {};
+    if (error.code === 'ENOENT') return sanitizeProfileData({});
     if (error instanceof SyncPolicyError) throw error;
 
     console.error(`Erreur lors de la lecture des donnees de profil ${userType}:${userId}:${profileId}:`, error.message);
-    return {};
+    return sanitizeProfileData({});
   }
+}
+
+function scheduleProfileCleanup(userType, userId, profileId) {
+  // Recharger sous le verrou : un nettoyage issu d'un GET ne doit jamais
+  // réécrire une ancienne version par-dessus une synchronisation plus récente.
+  withProfileSyncLock(userType, userId, profileId, async () => {
+    const latest = await readProfileSnapshot(userType, userId, profileId);
+    if (latest.changed) await writeProfileSnapshot(userType, userId, profileId, latest);
+  }).catch(error => {
+    console.error(`Erreur lors du nettoyage du profil ${profileId}:`, error.message);
+  });
+}
+
+async function readProfileData(userType, userId, profileId) {
+  const snapshot = await readProfileSnapshot(userType, userId, profileId);
+  if (snapshot.changed) scheduleProfileCleanup(userType, userId, profileId);
+  return snapshot.data;
+}
+
+// Privé : seuls les résultats de sanitizeProfileData sont transmis ici.
+async function writeProfileSnapshot(userType, userId, profileId, snapshot) {
+  const profilePath = getProfileFilePath(USERS_DIR, userType, userId, profileId);
+  const success = await safeWriteFile(profilePath, snapshot.serialized);
+  if (!success) console.error(`Erreur de sauvegarde atomique pour le profil ${profileId}`);
+  return success;
 }
 
 async function writeProfileData(userType, userId, profileId, data) {
   try {
-    const profilePath = getProfileFilePath(USERS_DIR, userType, userId, profileId);
-
     if (!data || typeof data !== 'object' || Array.isArray(data)) {
       throw new SyncPolicyError('Donnees de profil invalides', 400, 'INVALID_PROFILE_DATA');
     }
 
-    const { data: sanitizedData } = sanitizeProfileData(data);
-    const success = await safeWriteJsonFile(profilePath, sanitizedData);
-
-    if (!success) {
-      console.error(`Erreur de sauvegarde atomique pour le profil ${profileId}`);
-    }
-
-    return success;
+    return await writeProfileSnapshot(userType, userId, profileId, sanitizeProfileData(data));
   } catch (error) {
     console.error(`Erreur de sauvegarde du profil ${profileId}:`, error.message);
     return false;
@@ -460,7 +472,17 @@ async function writeProfileData(userType, userId, profileId, data) {
 // === Routes ===
 
 // POST /sync
-router.post('/sync', syncRateLimit, async (req, res) => {
+async function authorizeSyncWrite(req, res, next) {
+  try {
+    const auth = await getAuthIfValid(req);
+    if (!auth || !ALLOWED_SYNC_USER_TYPES.includes(auth.userType)) {
+      return res.status(401).json({ error: 'Unauthorized' });
+    }
+    next();
+  } catch (error) { next(error); }
+}
+
+router.post('/sync', syncRateLimit, rejectOversizedSync, authorizeSyncWrite, ...createSyncBodyParsers(), async (req, res) => {
   let operationStarted = false;
   const syncContext = {
     userType: null,
@@ -480,7 +502,8 @@ router.post('/sync', syncRateLimit, async (req, res) => {
       return res.status(413).json({ success: false, error: 'Requete de synchronisation trop volumineuse' });
     }
 
-    syncContext.requestBytes = getUtf8ByteLength(req.body || {});
+    // Le parseur connaît déjà les octets décompressés ; éviter un stringify du corps complet.
+    syncContext.requestBytes = getParsedBodyBytes(req) ?? getUtf8ByteLength(req.body || {});
     if (syncContext.requestBytes > SYNC_LIMITS.maxRequestBytes) {
       return res.status(413).json({ success: false, error: 'Requete de synchronisation trop volumineuse' });
     }
@@ -512,13 +535,17 @@ router.post('/sync', syncRateLimit, async (req, res) => {
       const userData = await readUserData(userType, finalUserId);
       getOwnedProfile(userData, profileId);
 
-      const serverData = await readProfileData(userType, finalUserId, profileId);
+      const snapshot = await readProfileSnapshot(userType, finalUserId, profileId);
+      const serverData = snapshot.data;
+      const previousValues = new Map(ops.map(op => [op.key, serverData[op.key]]));
       ops.forEach((op) => applySyncOperation(serverData, op));
+      // Le stockage synchronisé ne contient que des chaînes : undefined
+      // distingue donc une clé absente sans comparer/sérialiser tout le profil.
+      const changed = [...previousValues].some(([key, value]) => serverData[key] !== value);
+      const nextSnapshot = changed ? sanitizeProfileData(serverData) : snapshot;
 
-      const { data: nextProfileData, stats: profileStats } = sanitizeProfileData(serverData);
-
-      if (ops.length > 0) {
-        const writeSuccess = await writeProfileData(userType, finalUserId, profileId, nextProfileData);
+      if (changed || snapshot.changed) {
+        const writeSuccess = await writeProfileSnapshot(userType, finalUserId, profileId, nextSnapshot);
         if (!writeSuccess) {
           console.error(`[SYNC] Echec de l'ecriture pour ${userType}:${finalUserId}:${profileId}`);
           await logSyncErrorToDiscord('Echec de l\'ecriture des donnees de sync', buildSyncLogContext(syncContext));
@@ -526,7 +553,7 @@ router.post('/sync', syncRateLimit, async (req, res) => {
         }
       }
 
-      return profileStats;
+      return nextSnapshot.stats;
     });
 
     return res.status(200).json({
@@ -576,8 +603,9 @@ router.get('/sync/stats/:profileId', statsRateLimit, async (req, res) => {
     const userData = await readUserData(userType, userId);
     getOwnedProfile(userData, profileId);
 
-    const profileData = await readProfileData(userType, userId, profileId);
-    const profileStats = sanitizeProfileData(profileData).stats;
+    const profileSnapshot = await readProfileSnapshot(userType, userId, profileId);
+    if (profileSnapshot.changed) scheduleProfileCleanup(userType, userId, profileId);
+    const profileStats = profileSnapshot.stats;
     const legacyStats = sanitizeLegacySyncData(userData).stats;
 
     return res.status(200).json({
@@ -665,6 +693,8 @@ router.get('/guest/uuid', (req, res) => {
   const uuid = uuidv4();
   res.status(200).json({ uuid });
 });
+
+router.use(jsonParseErrorHandler);
 
 module.exports = router;
 module.exports.isShuttingDown = () => isShuttingDown;

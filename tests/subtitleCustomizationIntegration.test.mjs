@@ -2,6 +2,11 @@ import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import test from 'node:test';
 
+const readControls = () => [
+  'src/components/subtitles/SubtitleStyleControls.tsx',
+  'src/components/ui/SmoothRange.tsx',
+].map(path => readFileSync(path, 'utf8')).join('\n');
+
 test('subtitle preview exposes fullscreen, sample text and bounded drag interactions', () => {
   const preview = readFileSync('src/components/subtitles/SubtitlePreview.tsx', 'utf8');
   assert.match(preview, /requestFullscreen\(\)/);
@@ -16,7 +21,7 @@ test('subtitle preview exposes fullscreen, sample text and bounded drag interact
 });
 
 test('shared subtitle controls expose every approved appearance field', () => {
-  const controls = readFileSync('src/components/subtitles/SubtitleStyleControls.tsx', 'utf8');
+  const controls = readControls();
   for (const field of [
     'fontSizePx', 'fontSizeMode', 'bottomOffsetPx', 'positionXPercent',
     'maxWidthPercent', 'maxWidthMode',
@@ -28,7 +33,7 @@ test('shared subtitle controls expose every approved appearance field', () => {
 });
 
 test('subtitle color picker expands shorthand hex before persisting it', () => {
-  const controls = readFileSync('src/components/subtitles/SubtitleStyleControls.tsx', 'utf8');
+  const controls = readControls();
   assert.match(controls, /expandShortHexColor\(color\)/);
   assert.match(controls, /match\s*\?\s*`#\$\{match\[1\]\}\$\{match\[1\]\}\$\{match\[2\]\}\$\{match\[2\]\}\$\{match\[3\]\}\$\{match\[3\]\}`/);
 });
@@ -86,7 +91,7 @@ test('subtitle preview matches HLS cue weights, crisp outline and touch dragging
 });
 
 test('subtitle controls announce resets and label preset colors for each locale', () => {
-  const controls = readFileSync('src/components/subtitles/SubtitleStyleControls.tsx', 'utf8');
+  const controls = readControls();
 
   assert.match(controls, /role="status"/);
   assert.match(controls, /aria-live="polite"/);
@@ -116,7 +121,7 @@ test('subtitle controls announce resets and label preset colors for each locale'
 
 test('subtitle interactions render on animation frames and persist after the gesture', () => {
   const preview = readFileSync('src/components/subtitles/SubtitlePreview.tsx', 'utf8');
-  const controls = readFileSync('src/components/subtitles/SubtitleStyleControls.tsx', 'utf8');
+  const controls = readControls();
   const picker = readFileSync('src/components/Settings/BgColorPickerPanel.tsx', 'utf8');
 
   assert.match(preview, /requestAnimationFrame\(applyPendingDrag\)/);
@@ -137,7 +142,7 @@ test('subtitle interactions render on animation frames and persist after the ges
 
 test('subtitle live previews bypass page rerenders and controls fade smoothly', () => {
   const preview = readFileSync('src/components/subtitles/SubtitlePreview.tsx', 'utf8');
-  const controls = readFileSync('src/components/subtitles/SubtitleStyleControls.tsx', 'utf8');
+  const controls = readControls();
   const hook = readFileSync('src/hooks/useSubtitlePreferences.ts', 'utf8');
   const player = readFileSync('src/components/HLSPlayer.tsx', 'utf8');
 
@@ -151,7 +156,7 @@ test('subtitle live previews bypass page rerenders and controls fade smoothly', 
 });
 
 test('subtitle controls expose live values, edge customization and weight size', () => {
-  const controls = readFileSync('src/components/subtitles/SubtitleStyleControls.tsx', 'utf8');
+  const controls = readControls();
   const preview = readFileSync('src/components/subtitles/SubtitlePreview.tsx', 'utf8');
 
   assert.match(controls, /outputRef/);
@@ -171,7 +176,7 @@ test('subtitle controls expose live values, edge customization and weight size',
 });
 
 test('pixel outputs can be edited directly with keyboard confirmation and cancellation', () => {
-  const controls = readFileSync('src/components/subtitles/SubtitleStyleControls.tsx', 'utf8');
+  const controls = readControls();
 
   assert.equal((controls.match(/<EditablePixelValue/g) ?? []).length, 3);
   assert.match(controls, /onKeyDown=.*Enter/s);
@@ -183,7 +188,7 @@ test('pixel outputs can be edited directly with keyboard confirmation and cancel
 });
 
 test('subtitle background controls retract like an accordion when disabled', () => {
-  const controls = readFileSync('src/components/subtitles/SubtitleStyleControls.tsx', 'utf8');
+  const controls = readControls();
 
   assert.match(controls, /grid-rows-\[1fr\]/);
   assert.match(controls, /grid-rows-\[0fr\]/);
@@ -192,7 +197,7 @@ test('subtitle background controls retract like an accordion when disabled', () 
 });
 
 test('conditional subtitle controls share accordion and selected-state motion', () => {
-  const controls = readFileSync('src/components/subtitles/SubtitleStyleControls.tsx', 'utf8');
+  const controls = readControls();
   const preview = readFileSync('src/components/subtitles/SubtitlePreview.tsx', 'utf8');
 
   assert.match(controls, /preferences\.edgeStyle !== 'none' \? 'grid-rows-\[1fr\] opacity-100'/);
@@ -202,7 +207,7 @@ test('conditional subtitle controls share accordion and selected-state motion', 
 });
 
 test('rapid minus and plus clicks preview immediately and commit once after the burst', () => {
-  const controls = readFileSync('src/components/subtitles/SubtitleStyleControls.tsx', 'utf8');
+  const controls = readControls();
 
   assert.match(controls, /useImperativeHandle/);
   assert.match(controls, /\.animateTo\(next\)/);
@@ -265,7 +270,7 @@ test('subtitle search and HLS style panel expose only the intended clear and set
 });
 
 test('subtitle controls expose the extended readable font collection', () => {
-  const controls = readFileSync('src/components/subtitles/SubtitleStyleControls.tsx', 'utf8');
+  const controls = readControls();
   const preferences = readFileSync('src/utils/subtitlePreferences.ts', 'utf8');
 
   for (const font of ['atkinson', 'lexend', 'opendyslexic', 'arial', 'verdana', 'trebuchet', 'tahoma']) {

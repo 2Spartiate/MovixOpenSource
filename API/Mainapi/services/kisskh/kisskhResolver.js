@@ -3,29 +3,29 @@ const {
   analyzeSeasonTitle,
   buildSeasonAwareQueries,
   buildTmdbTitleCandidates,
+  createKisskhCatalogIndex,
   regularEpisodeCount,
   rankKisskhCandidates,
   selectEpisodeSegment,
   selectConfirmedDrama,
 } = require('./kisskhMatcher');
-const { assertMediaType } = require('./kisskhCache');
+const { assertMediaType, CATALOG_PARTIAL_REFRESH_MS } = require('./kisskhCache');
+const { getProviderBaseUrl } = require('./config');
 const { appendSignature, signingConfigured } = require('../../utils/mediaSigning');
+const diagnostics = require('../../utils/diagnostics');
 
 const SAFE_CODES = new Set([
   'episode_missing', 'invalid_input', 'not_found', 'provider_changed',
   'provider_rate_limited', 'provider_security', 'provider_unavailable',
   'proxy_unavailable', 'upstream_unavailable',
 ]);
-const KISSKH_ORIGIN = 'https://kisskh.nl';
-const KISSKH_REQUIRED_HEADERS = Object.freeze({
-  Referer: `${KISSKH_ORIGIN}/`,
-  Origin: KISSKH_ORIGIN,
-});
-// Retour instantane au parcours Search historique : passer cette constante a false.
+// Le parcours normal utilise le catalogue ; false conserve le mode historique explicite.
 const USE_ENHANCED_CATALOG_MATCHING = true;
 const CATALOG_PAGE_SIZE = 100;
 const CATALOG_MAX_ENTRIES = 20_000;
 const CATALOG_PAGE_CONCURRENCY = 6;
+const CATALOG_PARTIAL_MAX_PAGES = 3;
+const CATALOG_RETRY_DELAY_MS = 60_000;
 const MAX_ENRICHED_CANDIDATES = 4;
 const EPISODE_ASSET_TIMEOUT_MS = 45_000;
 
@@ -168,6 +168,14 @@ function compatibleDetailedType(mediaNamespace, value) {
   return type !== 'movie';
 }
 
+function normalizeMovieEpisode(mediaNamespace, drama) {
+  // Certains films (Interstellar, notamment) ont une unique vidéo numérotée 0.
+  // Seul ce cas correspond à l'épisode public 1 ; conserver les bonus des séries.
+  if (mediaNamespace !== 'movie' || !Array.isArray(drama?.episodes)
+      || drama.episodes.length !== 1 || drama.episodes[0]?.number !== 0) return drama;
+  return { ...drama, episodes: [{ ...drama.episodes[0], number: 1 }] };
+}
+
 function distinctSegments(ranked) {
   const seen = new Set();
   return ranked.filter((entry) => {
@@ -180,10 +188,32 @@ function distinctSegments(ranked) {
 }
 
 function createKisskhResolver(deps = {}) {
+  const providerBaseUrl = getProviderBaseUrl(deps.providerBaseUrl);
+  const providerHostname = new URL(providerBaseUrl).hostname;
+  const requiredProviderHeaders = Object.freeze({ Referer: `${providerBaseUrl}/`, Origin: providerBaseUrl });
+
+  function normalizeSubtitleUrl(value) {
+    const url = new URL(validateUpstreamUrl(value));
+    // Ne remplacer que le domaine KissKH, jamais une occurrence dans un chemin,
+    // un paramètre ou un domaine tiers tel que kisskh.do.attacker.example.
+    const kisskhHost = url.hostname.match(/^((?:[a-z0-9-]+\.)*)kisskh\.[a-z]{2,63}$/);
+    if (kisskhHost) {
+      url.protocol = 'https:';
+      if (url.hostname !== providerHostname && !url.hostname.endsWith(`.${providerHostname}`)) {
+        url.host = kisskhHost[1]
+          ? `${kisskhHost[1]}${providerHostname.replace(/^www\./, '')}` : providerHostname;
+      }
+      url.port = '';
+    }
+    return url.href;
+  }
   const cache = deps.cache;
   const capabilityStore = deps.capabilityStore;
   const bundleRegistry = deps.bundleRegistry;
   const now = deps.now || Date.now;
+  let catalogRetryAt = 0;
+  let catalogRefreshError = null;
+  let catalogIndex = null;
   const assetTimeoutMs = deps.assetTimeoutMs === undefined
     ? EPISODE_ASSET_TIMEOUT_MS : deps.assetTimeoutMs;
   const publicOrigin = validatePublicProxyOrigin(deps.publicProxyUrl);
@@ -247,15 +277,14 @@ function createKisskhResolver(deps = {}) {
     }
 
     const mediaUrl = validateUpstreamUrl(provider.mediaUrl);
-    const requiredHeaders = provider.requiredHeaders || KISSKH_REQUIRED_HEADERS;
+    const requiredHeaders = requiredProviderHeaders;
     const algorithm = await bundleRegistry.resolveApprovedAlgorithm();
-    await cache.recordBundleMetadata(algorithm);
     if (!Array.isArray(provider.subtitles) || provider.subtitles.length > 128) throw safeError('provider_security');
     const subtitles = [];
     for (let index = 0; index < provider.subtitles.length; index += 1) {
       const track = provider.subtitles[index];
       if (!track || typeof track !== 'object' || Array.isArray(track)) throw safeError('provider_security');
-      const sourceUrl = validateUpstreamUrl(track.src ?? track.url);
+      const sourceUrl = normalizeSubtitleUrl(track.src ?? track.url);
       const format = subtitleFormat(sourceUrl);
       const rawLang = typeof (track.land ?? track.lang) === 'string' ? String(track.land ?? track.lang).toLowerCase() : 'und';
       const lang = /^[a-z]{2,8}(?:-[a-z0-9]{1,8})*$/.test(rawLang) ? rawLang : 'und';
@@ -354,7 +383,7 @@ function createKisskhResolver(deps = {}) {
       match,
       episodeOffset: request.episode - episodeEntry.number,
       mediaUrl: episodePayload?.Video,
-      requiredHeaders: KISSKH_REQUIRED_HEADERS,
+      requiredHeaders: requiredProviderHeaders,
       subtitles,
     }, request, 'tv');
   }
@@ -411,6 +440,7 @@ function createKisskhResolver(deps = {}) {
         : localized.origin_country;
       let selectedResult = null;
       let lastCompatibilityError = null;
+      let hasSearchResults = false;
 
       for (let category = 0; category <= 4 && !selectedResult; category += 1) {
         const candidates = [];
@@ -421,6 +451,7 @@ function createKisskhResolver(deps = {}) {
         );
         for (const results of searchResults) {
           if (!Array.isArray(results)) throw safeError('provider_unavailable');
+          if (results.length) hasSearchResults = true;
           for (const candidate of results) {
             if (Number.isSafeInteger(candidate?.id) && candidate.id > 0 && !seen.has(candidate.id)) {
               seen.add(candidate.id);
@@ -444,7 +475,7 @@ function createKisskhResolver(deps = {}) {
             && Number(seasonCount) <= 1 && ranked.length > 1) {
           const detailedCandidates = await Promise.all(
             ranked.slice(0, MAX_ENRICHED_CANDIDATES).map(async (entry) => {
-              const drama = await kisskhClient.getDrama(entry.candidate.id);
+              const drama = normalizeMovieEpisode(mediaNamespace, await kisskhClient.getDrama(entry.candidate.id));
               if (!drama || typeof drama !== 'object') throw safeError('provider_unavailable');
               detailedDramaById.set(entry.candidate.id, drama);
               return {
@@ -469,7 +500,8 @@ function createKisskhResolver(deps = {}) {
         const top = segment.ranked;
         const dramaId = top.candidate.id;
         trace?.('drama_details_started', { dramaId });
-        const drama = detailedDramaById.get(dramaId) || await kisskhClient.getDrama(dramaId);
+        const drama = detailedDramaById.get(dramaId)
+          || normalizeMovieEpisode(mediaNamespace, await kisskhClient.getDrama(dramaId));
         if (!drama || typeof drama !== 'object') throw safeError('provider_unavailable');
         trace?.('drama_details_resolved', {
           dramaId,
@@ -509,7 +541,14 @@ function createKisskhResolver(deps = {}) {
           lastCompatibilityError = error.code;
         }
       }
-      if (!selectedResult) throw safeError(lastCompatibilityError || 'not_found');
+      if (!selectedResult) {
+        if (options.allowTitleNotFound === true && queries.length && !hasSearchResults && !cachedMatch) {
+          throw new KisskhError('not_found', 'Correspondance KissKH introuvable', {
+            details: { reason: 'title_not_found' },
+          });
+        }
+        throw safeError(lastCompatibilityError || 'not_found');
+      }
 
       const { selected, top, dramaId, localEpisodeNumber } = selectedResult;
       episodes = selected.drama.episodes.filter(
@@ -528,6 +567,11 @@ function createKisskhResolver(deps = {}) {
       trace?.('match_resolved', { dramaId, episodeCount: episodes.length });
     }
 
+    return resolveEpisodeAssets(mediaNamespace, request, cachedMatch, episodeEntry, trace);
+  }
+
+  async function resolveEpisodeAssets(mediaNamespace, request, cachedMatch, episodeEntry, trace) {
+    const { kisskhClient } = deps;
     if (!episodeEntry) throw safeError('episode_missing');
     const match = {
       tmdbId: request.tmdbId,
@@ -535,7 +579,7 @@ function createKisskhResolver(deps = {}) {
       episodeId: episodeEntry.id,
       season: request.season,
       episode: request.episode,
-      evidence,
+      evidence: cachedMatch.evidence,
     };
     const cachedEpisode = await cache.getSensitive('episode', episodeEntry.id);
     const cachedSub = await cache.getSensitive('sub', episodeEntry.id);
@@ -595,21 +639,31 @@ function createKisskhResolver(deps = {}) {
       match,
       episodeOffset: request.episode - episodeEntry.number,
       mediaUrl: episodePayload?.Video,
-      requiredHeaders: KISSKH_REQUIRED_HEADERS,
+      requiredHeaders: requiredProviderHeaders,
       subtitles,
     }, request, mediaNamespace);
   }
 
-  async function refreshCatalog(kisskhClient, lease, trace) {
+  function refreshCatalog(kisskhClient, lease, trace, previous = null) {
+    return diagnostics.traceTask(previous === null ? 'KissKH catalogue complet' : 'KissKH catalogue partiel',
+      () => refreshCatalogPages(kisskhClient, lease, trace, previous));
+  }
+
+  async function refreshCatalogPages(kisskhClient, lease, trace, previous) {
+    const partial = previous !== null;
+    const loadPage = (page) => partial
+      ? kisskhClient.list(page, CATALOG_PAGE_SIZE, 0, 2)
+      : kisskhClient.list(page, CATALOG_PAGE_SIZE, 0);
     if (typeof cache.setCatalogProgress === 'function') {
       await cache.setCatalogProgress({ phase: 'starting', completed: 0, total: null, percent: null });
     }
     logCatalogPhase(trace, 'catalog_page_started', { page: 1, pageSize: CATALOG_PAGE_SIZE });
     const first = normalizeCatalogPage(
-      await kisskhClient.list(1, CATALOG_PAGE_SIZE, 0),
+      await loadPage(1),
       1,
     );
-    const pages = Math.ceil(first.totalCount / CATALOG_PAGE_SIZE);
+    const allPages = Math.ceil(first.totalCount / CATALOG_PAGE_SIZE);
+    const pages = partial ? Math.min(allPages, CATALOG_PARTIAL_MAX_PAGES) : allPages;
     logCatalogPhase(trace, 'catalog_page_resolved', {
       page: 1, pages, itemCount: first.data.length, totalCount: first.totalCount,
     });
@@ -636,10 +690,11 @@ function createKisskhResolver(deps = {}) {
         { length: Math.min(CATALOG_PAGE_CONCURRENCY, pages - start + 1) },
         (_unused, index) => start + index,
       );
-      const payloads = await Promise.all(pageNumbers.map(async (page) => {
+      // Garder le verrou jusqu'a la fin du lot, meme si une page echoue vite.
+      const results = await Promise.allSettled(pageNumbers.map(async (page) => {
         logCatalogPhase(trace, 'catalog_page_started', { page, pageSize: CATALOG_PAGE_SIZE, pages });
         const payload = normalizeCatalogPage(
-          await kisskhClient.list(page, CATALOG_PAGE_SIZE, 0),
+          await loadPage(page),
           page,
         );
         logCatalogPhase(trace, 'catalog_page_resolved', {
@@ -647,29 +702,47 @@ function createKisskhResolver(deps = {}) {
         });
         return payload;
       }));
-      for (const payload of payloads) {
+      const failed = results.find((result) => result.status === 'rejected');
+      if (failed) throw failed.reason;
+      for (const { value: payload } of results) {
         if (payload.totalCount !== first.totalCount) throw safeError('provider_unavailable');
         items.push(...payload.data);
         completed += 1;
         await reportProgress();
       }
     }
-    if (items.length !== first.totalCount) throw safeError('provider_unavailable');
+    const expectedCount = Math.min(first.totalCount, pages * CATALOG_PAGE_SIZE);
+    if (items.length !== expectedCount || new Set(items.map((item) => item?.id)).size !== items.length) {
+      throw safeError('provider_unavailable');
+    }
+    // Une absence dans trois pages ne prouve pas une suppression. Seul un
+    // parcours complet remplace toutes les entrees et renouvelle refreshedAt.
+    const merged = partial ? new Map(previous.items.map((item) => [item.id, item])) : null;
+    if (merged) for (const item of items) merged.set(item.id, item);
     await reportProgress('finalizing');
     await lease.assertOwned();
-    const snapshot = await cache.setCatalogSnapshot(items);
-    if (typeof cache.clearCatalogProgress === 'function') await cache.clearCatalogProgress();
-    logCatalogPhase(trace, 'catalog_refresh_completed', { itemCount: items.length, pages });
+    const snapshot = await cache.setCatalogSnapshot(
+      merged ? [...merged.values()] : items,
+      partial ? { refreshedAt: previous.refreshedAt } : {},
+    );
+    logCatalogPhase(trace, 'catalog_refresh_completed', { itemCount: items.length, pages, partial });
     return snapshot;
   }
 
-  async function catalogItems(kisskhClient, trace) {
+  async function catalogItems(kisskhClient, trace, discovery) {
     const fresh = await cache.getCatalogSnapshot();
-    if (fresh) {
+    if (fresh && now() - fresh.updatedAt < CATALOG_PARTIAL_REFRESH_MS) {
+      if (discovery) discovery.catalogFresh = true;
       logCatalogPhase(trace, 'catalog_cache_hit', { itemCount: fresh.items.length, stale: false });
       return fresh.items;
     }
-    const stale = await cache.getCatalogSnapshot({ allowStale: true });
+    const stale = fresh || await cache.getCatalogSnapshot({ allowStale: true });
+    if (now() < catalogRetryAt) {
+      if (['provider_rate_limited', 'provider_security'].includes(catalogRefreshError?.code)) {
+        throw catalogRefreshError;
+      }
+      return stale?.items || null;
+    }
     logCatalogPhase(trace, 'catalog_refresh_waiting', {
       staleAvailable: Boolean(stale),
       staleItemCount: stale?.items?.length || 0,
@@ -677,11 +750,25 @@ function createKisskhResolver(deps = {}) {
     try {
       const refreshed = await cache.singleFlight(
         'kisskh:lock:catalog-refresh:v1',
-        (lease) => refreshCatalog(kisskhClient, lease, trace),
+        async (lease) => {
+          // Le precedent proprietaire a pu publier entre la lecture et le verrou.
+          const published = await cache.getCatalogSnapshot({ revalidate: true });
+          if (published && now() - published.updatedAt < CATALOG_PARTIAL_REFRESH_MS) return published;
+          try {
+            return await refreshCatalog(kisskhClient, lease, trace, published);
+          } finally {
+            if (typeof cache.clearCatalogProgress === 'function') await cache.clearCatalogProgress();
+          }
+        },
         { lockMs: 60_000, renewEveryMs: 20_000 },
       );
+      catalogRetryAt = 0;
+      catalogRefreshError = null;
+      if (discovery) discovery.catalogFresh = true;
       return refreshed.items;
     } catch (error) {
+      catalogRefreshError = error;
+      catalogRetryAt = now() + (error?.details?.reason === 'lock_contended' ? 1_000 : CATALOG_RETRY_DELAY_MS);
       logCatalogPhase(trace, 'catalog_refresh_failed', {
         code: SAFE_CODES.has(error?.code) ? error.code : 'provider_unavailable',
         staleAvailable: Boolean(stale),
@@ -694,7 +781,7 @@ function createKisskhResolver(deps = {}) {
     }
   }
 
-  async function discoverCatalogMatch(mediaNamespace, request, trace) {
+  async function discoverCatalogMatch(mediaNamespace, request, trace, discovery) {
     const { fetchTmdbDetails, fetchTmdbAlternativeTitles, kisskhClient } = deps;
     if (typeof kisskhClient?.list !== 'function'
         || typeof fetchTmdbDetails !== 'function' || typeof fetchTmdbAlternativeTitles !== 'function') return null;
@@ -703,7 +790,7 @@ function createKisskhResolver(deps = {}) {
       fetchTmdbDetails(deps.tmdbApiUrl, deps.tmdbApiKey, request.tmdbId, mediaNamespace, 'fr-FR'),
       fetchTmdbDetails(deps.tmdbApiUrl, deps.tmdbApiKey, request.tmdbId, mediaNamespace, 'en-US'),
       fetchTmdbAlternativeTitles(deps.tmdbApiUrl, deps.tmdbApiKey, request.tmdbId, mediaNamespace),
-      catalogItems(kisskhClient, trace),
+      catalogItems(kisskhClient, trace, discovery),
     ]);
     if (!localized || !original || !alternativePayload || !items) return null;
     const alternatives = mediaNamespace === 'movie'
@@ -727,13 +814,15 @@ function createKisskhResolver(deps = {}) {
       seasonCount,
       expectedEpisodeCount,
     };
-    const preliminary = rankKisskhCandidates(
-      { ...criteria, retainAmbiguous: true },
-      items,
-    );
+    if (catalogIndex?.items !== items) {
+      catalogIndex = { items, matcher: createKisskhCatalogIndex(items) };
+    }
+    const preliminary = catalogIndex.matcher.rank({ ...criteria, retainAmbiguous: true });
+    discovery.catalogChecked = true;
+    discovery.catalogHasCandidates = preliminary.length > 0;
     if (!preliminary.length) return null;
     const enriched = await Promise.all(preliminary.slice(0, MAX_ENRICHED_CANDIDATES).map(async (entry) => {
-      const drama = await kisskhClient.getDrama(entry.candidate.id);
+      const drama = normalizeMovieEpisode(mediaNamespace, await kisskhClient.getDrama(entry.candidate.id));
       if (!drama || typeof drama !== 'object' || !compatibleDetailedType(mediaNamespace, drama.type)) return null;
       const count = regularEpisodeCount(drama.episodes);
       return {
@@ -745,12 +834,22 @@ function createKisskhResolver(deps = {}) {
     }));
     const ranked = distinctSegments(rankKisskhCandidates(criteria, enriched.filter(Boolean)));
     if (!ranked.length) return null;
-    const segment = selectEpisodeSegment(ranked, {
+    let segment = selectEpisodeSegment(ranked, {
       seasonNumber: request.season,
       episodeNumber: request.episode,
       seasonCount: mediaNamespace === 'tv' && request.season === 1 ? 1 : seasonCount,
       tmdbSeasons,
     });
+    if (!segment && ranked.length === 1) {
+      const candidate = ranked[0].candidate;
+      const markers = analyzeSeasonTitle(candidate.title).markers;
+      const directSeason = markers.length === 0 || (markers.length === 1 && markers[0] === request.season);
+      // Une liste avec des trous peut contenir E3 sans contenir E1/E2.
+      // Accepter son numero explicite, sans deviner l'offset d'un autre segment.
+      if (directSeason && candidate.episodes.some((entry) => entry.number === request.episode)) {
+        segment = { ranked: ranked[0], localEpisodeNumber: request.episode };
+      }
+    }
     if (!segment) return null;
     const top = segment.ranked;
     const drama = top.candidate;
@@ -768,7 +867,7 @@ function createKisskhResolver(deps = {}) {
       (entry) => Number.isSafeInteger(entry?.number) && entry.number > 0,
     );
     const evidence = { score: top.score, titleSource: top.titleSource };
-    await cache.setMatch(mediaNamespace, request.tmdbId, request.season, {
+    const cachedMatch = await cache.setMatch(mediaNamespace, request.tmdbId, request.season, {
       tmdbId: request.tmdbId,
       kisskhDramaId: drama.id,
       season: request.season,
@@ -781,39 +880,39 @@ function createKisskhResolver(deps = {}) {
       episodeCount: episodes.length,
       localEpisodeNumber: segment.localEpisodeNumber,
     });
-    return true;
+    return { cachedMatch, episodeEntry: selected.episode };
   }
 
   async function discoverMediaWithProductionClients(mediaNamespace, request, trace) {
     if (!useEnhancedCatalogMatching) {
-      return discoverMediaWithProductionClientsLegacy(mediaNamespace, request, { trace });
+      return discoverMediaWithProductionClientsLegacy(mediaNamespace, request, { trace, allowTitleNotFound: true });
     }
     const cachedMatch = await cache.getMatch(mediaNamespace, request.tmdbId, request.season);
     const cachedEpisodes = cachedMatch ? await cache.getEpisodes(cachedMatch.kisskhDramaId) : null;
     const cachedNumber = cachedMatch ? request.episode - cachedMatch.episodeOffset : request.episode;
-    const alreadyCached = cachedEpisodes?.some((entry) => entry.number === cachedNumber);
-    if (!alreadyCached) {
-      let matched = false;
-      try {
-        matched = await discoverCatalogMatch(mediaNamespace, request, trace) === true;
-      } catch (error) {
-        if (error?.code === 'provider_rate_limited' || error?.code === 'provider_security') throw error;
-        trace?.('enhanced_catalog_fallback', {
-          code: SAFE_CODES.has(error?.code) ? error.code : 'provider_unavailable',
-        });
-      }
-      if (!matched) {
-        return discoverMediaWithProductionClientsLegacy(mediaNamespace, request, {
-          regularizeAbsoluteSegments: true,
-          trace,
-        });
-      }
+    const cachedEpisode = cachedEpisodes?.find((entry) => entry.number === cachedNumber);
+    if (cachedEpisode) {
+      return resolveEpisodeAssets(mediaNamespace, request, cachedMatch, cachedEpisode, trace);
     }
-    return discoverMediaWithProductionClientsLegacy(mediaNamespace, request, { trace });
+
+    const discovery = { catalogChecked: false, catalogFresh: false, catalogHasCandidates: false };
+    const matched = await discoverCatalogMatch(mediaNamespace, request, trace, discovery);
+    if (!matched) {
+      // Une panne ou un ancien catalogue ne prouve pas qu'un titre est absent.
+      if (!discovery.catalogChecked || !discovery.catalogFresh) throw safeError('provider_unavailable');
+      if (!discovery.catalogHasCandidates) {
+        throw new KisskhError('not_found', 'Correspondance KissKH introuvable', {
+          details: { reason: 'title_not_found' },
+        });
+      }
+      throw safeError('not_found');
+    }
+    return resolveEpisodeAssets(mediaNamespace, request, matched.cachedMatch, matched.episodeEntry, trace);
   }
 
   async function prepare(mediaNamespace, request, trace) {
     trace('prepare_started');
+    if (await cache.getTitleNotFound?.(mediaNamespace, request.tmdbId, request.season)) throw safeError('not_found');
     const cachedCode = await cache.getNotFound(mediaNamespace, request.tmdbId, request.season, request.episode);
     if (cachedCode) throw safeError(cachedCode);
     try {
@@ -835,7 +934,10 @@ function createKisskhResolver(deps = {}) {
         code,
         reason: error?.safeMessage || 'KissKH indisponible',
       });
-      if (['not_found', 'episode_missing'].includes(code)) {
+      if (code === 'not_found' && error?.details?.reason === 'title_not_found'
+          && typeof cache.setTitleNotFound === 'function') {
+        await cache.setTitleNotFound(mediaNamespace, request.tmdbId, request.season);
+      } else if (['not_found', 'episode_missing'].includes(code)) {
         await cache.setNotFound(mediaNamespace, request.tmdbId, request.season, request.episode, code);
       }
       throw safeError(code);
@@ -857,7 +959,8 @@ function createKisskhResolver(deps = {}) {
   async function makePublicResolution(provider, request, options = {}) {
     const fallbackToken = await capabilityStore.create({
       url: provider.mediaUrl,
-      requiredHeaders: provider.requiredHeaders,
+      // Le cache disque peut encore contenir les en-têtes de l'ancien domaine.
+      requiredHeaders: requiredProviderHeaders,
     });
     const proxyMedia = options.proxyMedia === true;
     const mediaUrl = proxyMedia ? proxyUrl(publicOrigin, provider.mediaUrl) : provider.mediaUrl;
@@ -883,10 +986,10 @@ function createKisskhResolver(deps = {}) {
         url: mediaUrl,
         fallbackToken,
       }],
-      subtitles: subtitles.map((track) => ({
-        ...track,
-        proxyUrl: proxyMedia ? proxyUrl(publicOrigin, track.sourceUrl) : track.sourceUrl,
-      })),
+      subtitles: subtitles.map((track) => {
+        const sourceUrl = normalizeSubtitleUrl(track.sourceUrl);
+        return { ...track, sourceUrl, proxyUrl: proxyMedia ? proxyUrl(publicOrigin, sourceUrl) : sourceUrl };
+      }),
     };
   }
 
@@ -905,6 +1008,7 @@ function createKisskhResolver(deps = {}) {
       const provider = await cache.getResolution(
         'tv', request.tmdbId, request.season, request.episode, { allowStale: true },
       );
+      if (!provider && await cache.getTitleNotFound?.('tv', request.tmdbId, request.season)) throw safeError('not_found');
       return provider ? makePublicResolution(provider, request, options) : null;
     },
     async warmTv(request, options = {}) {
@@ -925,6 +1029,7 @@ function createKisskhResolver(deps = {}) {
       const provider = await cache.getResolution(
         'movie', request.tmdbId, request.season, request.episode, { allowStale: true },
       );
+      if (!provider && await cache.getTitleNotFound?.('movie', request.tmdbId, request.season)) throw safeError('not_found');
       return provider ? makePublicResolution(provider, request, options) : null;
     },
     async warmMovie(request, options = {}) {
