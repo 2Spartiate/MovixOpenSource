@@ -94,6 +94,76 @@ ${domDiscoveryRuntime}
     };
   };
 
+  const pageFocusIsEmpty = () => {
+    const active = document.activeElement;
+    return !active || active === document.body || active === document.documentElement;
+  };
+
+  const focusKeyFor = (element) => {
+    if (!(element instanceof HTMLElement)) return null;
+    const explicit = element.getAttribute('data-tv-focus-id');
+    if (explicit) return `focus:${explicit}`;
+    if (element.id) return `id:${element.id}`;
+    const primary = element.getAttribute('data-tv-primary-focus');
+    if (primary) return `primary:${primary}`;
+    if (element instanceof HTMLAnchorElement) {
+      const href = element.getAttribute('href');
+      if (href) return `href:${href}`;
+    }
+    return null;
+  };
+
+  const focusWithoutJank = (element, scroll = true) => {
+    if (!(element instanceof HTMLElement)) return false;
+    try {
+      element.focus({ preventScroll: true });
+    } catch {
+      element.focus();
+    }
+    if (document.activeElement !== element) return false;
+    if (scroll) {
+      try {
+        element.scrollIntoView({
+          behavior: 'auto',
+          block: 'nearest',
+          inline: element.closest('[data-tv-carousel-row]') ? 'center' : 'nearest',
+        });
+      } catch {
+        element.scrollIntoView();
+      }
+    }
+    return true;
+  };
+
+  api.restoreLastFocus = () => {
+    if (!pageFocusIsEmpty() || !api.lastFocusKey) return false;
+    const match = api.getTVFocusableElements()
+      .find(element => focusKeyFor(element) === api.lastFocusKey);
+    return match ? focusWithoutJank(match) : false;
+  };
+
+  api.ensureInitialFocus = () => {
+    if (!pageFocusIsEmpty()) return false;
+
+    // A dialog that explicitly owns autofocus gets first refusal.
+    const managedDialog = document.querySelector(
+      '[role="dialog"][aria-modal="true"] [autofocus], ' +
+      '[role="dialog"][aria-modal="true"][data-tv-manage-autofocus]'
+    );
+    if (managedDialog) return false;
+
+    if (api.restoreLastFocus()) return true;
+
+    const elements = api.getTVFocusableElements();
+    const target =
+      elements.find(element => element.hasAttribute('data-tv-autofocus')) ||
+      elements.find(element => element.hasAttribute('data-tv-primary-focus')) ||
+      elements.find(element => element.hasAttribute('data-tv-card')) ||
+      elements[0];
+
+    return target ? focusWithoutJank(target) : false;
+  };
+
   api.moveFocus = (direction) => {
     const current = document.activeElement;
     if (!(current instanceof HTMLElement)) return false;
@@ -147,14 +217,72 @@ ${domDiscoveryRuntime}
 
   api.handleDpadKeydown = handleDpadKeydown;
   api.keydownHandler = handleDpadKeydown;
+
+  if (typeof api.focusinHandler === 'function') {
+    document.removeEventListener('focusin', api.focusinHandler, true);
+  }
+  if (api.focusObserver && typeof api.focusObserver.disconnect === 'function') {
+    api.focusObserver.disconnect();
+  }
+  if (api.focusRecoveryRaf) {
+    cancelAnimationFrame(api.focusRecoveryRaf);
+    api.focusRecoveryRaf = null;
+  }
+
+  const handleFocusIn = (event) => {
+    const target = event.target;
+    if (!(target instanceof HTMLElement)) return;
+    const key = focusKeyFor(target);
+    if (key) api.lastFocusKey = key;
+  };
+  api.focusinHandler = handleFocusIn;
+
+  const scheduleFocusRecovery = () => {
+    if (!pageFocusIsEmpty() || api.focusRecoveryRaf) return;
+    api.focusRecoveryRaf = requestAnimationFrame(() => {
+      api.focusRecoveryRaf = null;
+      if (!pageFocusIsEmpty()) return;
+      if (!api.restoreLastFocus()) api.ensureInitialFocus();
+    });
+  };
+
+  const setupFocusLifecycle = () => {
+    if (typeof MutationObserver === 'function' && document.body) {
+      api.focusObserver = new MutationObserver(scheduleFocusRecovery);
+      api.focusObserver.observe(document.body, { childList: true, subtree: true });
+    }
+    requestAnimationFrame(() => {
+      if (pageFocusIsEmpty()) api.ensureInitialFocus();
+    });
+  };
+
   api.destroyDpadRuntime = () => {
     if (api.keydownHandler === handleDpadKeydown) {
       document.removeEventListener('keydown', handleDpadKeydown, true);
       api.keydownHandler = null;
     }
+    if (api.focusinHandler === handleFocusIn) {
+      document.removeEventListener('focusin', handleFocusIn, true);
+      api.focusinHandler = null;
+    }
+    if (api.focusObserver && typeof api.focusObserver.disconnect === 'function') {
+      api.focusObserver.disconnect();
+      api.focusObserver = null;
+    }
+    if (api.focusRecoveryRaf) {
+      cancelAnimationFrame(api.focusRecoveryRaf);
+      api.focusRecoveryRaf = null;
+    }
   };
 
   document.addEventListener('keydown', handleDpadKeydown, true);
+  document.addEventListener('focusin', handleFocusIn, true);
+
+  if (document.readyState === 'loading') {
+    document.addEventListener('DOMContentLoaded', setupFocusLifecycle, { once: true });
+  } else {
+    setupFocusLifecycle();
+  }
 })();
 `;
 }
