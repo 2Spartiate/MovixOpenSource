@@ -41,10 +41,12 @@ export const ContentRow: React.FC<ContentRowProps> = ({ title, items, mediaType:
   }
 
   return (
-    <div className="mb-8">
+    <div className="mb-8" data-tv-focus-group="carousel-row" data-tv-carousel-row>
       <h2 className="text-2xl font-bold mb-4">{title}</h2>
       <div className="relative">
         <button 
+          data-tv-ignore-focus
+          data-tv-carousel-arrow
           className="absolute left-0 top-0 bottom-0 z-10 hidden md:flex items-center justify-center w-16 
           bg-gradient-to-r from-black/50 to-transparent hover:from-black/80 transition-all duration-300 group"
           onClick={() => onLoadMore('left')}
@@ -57,6 +59,8 @@ export const ContentRow: React.FC<ContentRowProps> = ({ title, items, mediaType:
             <Link 
               key={item.id}
               to={`/${item.media_type}/${encodeId(item.id)}`}
+              data-tv-focus
+              data-tv-card
               className={`flex-none w-[150px] hover:scale-105 transition-transform duration-300 ${index === 9 ? "ml-7" : ""}`}
             >
               {item.poster_path ? (
@@ -87,6 +91,8 @@ export const ContentRow: React.FC<ContentRowProps> = ({ title, items, mediaType:
         </div>
         
         <button 
+          data-tv-ignore-focus
+          data-tv-carousel-arrow
           className="absolute right-0 top-0 bottom-0 z-10 hidden md:flex items-center justify-center w-16 
           bg-gradient-to-l from-black/50 to-transparent hover:from-black/80 transition-all duration-300 group"
           onClick={() => onLoadMore('right')}
