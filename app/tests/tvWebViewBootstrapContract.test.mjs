@@ -28,6 +28,8 @@ test('TV bootstrap is idempotent and only establishes the TV contract', async ()
   assert.match(script, /__MOVIX_TV_BOOTSTRAP_READY/);
   assert.match(script, /movix-tv-bootstrap-style/);
   assert.match(script, /:focus-visible/);
+  assert.match(script, /\.movix-tv \[data-tv-header-telegram\]/);
+  assert.match(script, /display:\s*none\s*!important/);
   assert.match(script, /DOMContentLoaded/);
 
   assert.doesNotMatch(script, /MutationObserver|ArrowLeft|ArrowRight|ArrowUp|ArrowDown|scrollIntoView/);
@@ -50,4 +52,20 @@ test('WebView injection cache is partitioned by journal and TV runtime', async (
   assert.match(webView, /injectedJavaScriptFor\(journalConsole, isTV\)/);
   assert.match(webView, /\[journalConsole, isTV\]/);
   assert.match(webView, /injectedJavaScriptBeforeContentLoadedForMainFrameOnly=\{true\}/);
+});
+
+
+test('TV hides only the URL bar while handheld keeps the saved preference', async () => {
+  const browserScreen = await text('src/screens/BrowserScreen.tsx');
+
+  assert.match(
+    browserScreen,
+    /const effectiveShowUrlBar = isTV \? false : uiPrefs\.showUrlBar/,
+  );
+  assert.match(
+    browserScreen,
+    /const toolbarHidden = !effectiveShowUrlBar && !uiPrefs\.showNavBar/,
+  );
+  assert.match(browserScreen, /showUrlBar=\{effectiveShowUrlBar\}/);
+  assert.match(browserScreen, /showNavBar=\{uiPrefs\.showNavBar\}/);
 });

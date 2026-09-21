@@ -22,7 +22,8 @@ export function buildTvBootstrap(): string {
         }
 
         .movix-tv [data-tv-carousel-arrow],
-        .movix-tv [data-tv-favorite-overlay] {
+        .movix-tv [data-tv-favorite-overlay],
+        .movix-tv [data-tv-header-telegram] {
           display: none !important;
         }
       \`;

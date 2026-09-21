@@ -35,8 +35,9 @@ export default function BrowserScreen() {
   const { config, isLoading, refresh } = useAddress();
   const isTV = useMemo(() => isAndroidTvRuntime(), []);
 
+  const effectiveShowUrlBar = isTV ? false : uiPrefs.showUrlBar;
   const navBarHidden = !uiPrefs.showNavBar;
-  const toolbarHidden = !uiPrefs.showUrlBar && !uiPrefs.showNavBar;
+  const toolbarHidden = !effectiveShowUrlBar && !uiPrefs.showNavBar;
 
   const urlChain = useMemo(() => {
     if (!config) return [];
@@ -174,7 +175,7 @@ export default function BrowserScreen() {
               loading={loading}
               currentUrl={currentUrl}
               dnsEnabled={dnsEnabled}
-              showUrlBar={uiPrefs.showUrlBar}
+              showUrlBar={effectiveShowUrlBar}
               showNavBar={uiPrefs.showNavBar}
               onGoBack={() => webViewRef.current?.goBack()}
               onGoForward={() => webViewRef.current?.goForward()}
@@ -189,7 +190,7 @@ export default function BrowserScreen() {
               loading={loading}
               currentUrl={currentUrl}
               dnsEnabled={dnsEnabled}
-              showUrlBar={uiPrefs.showUrlBar}
+              showUrlBar={effectiveShowUrlBar}
               showNavBar={uiPrefs.showNavBar}
               onGoBack={() => webViewRef.current?.goBack()}
               onGoForward={() => webViewRef.current?.goForward()}
