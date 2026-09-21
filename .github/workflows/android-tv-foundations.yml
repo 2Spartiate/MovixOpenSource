@@ -61,6 +61,7 @@ jobs:
             tests/tvHlsControlsFocusContract.test.mjs \
             tests/tvHlsDpadShortcutContract.test.mjs \
             tests/tvHlsRemoteNavigationContract.test.mjs \
+            tests/tvHls4kContract.test.mjs \
             tests/tvPlayerMenusContract.test.mjs \
             tests/tvLivePlayerDpadContract.test.mjs \
             tests/tvFrancePlayerDpadContract.test.mjs \
