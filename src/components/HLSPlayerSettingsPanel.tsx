@@ -31,6 +31,7 @@ import type {
 } from '../types/sourcePriority';
 import type { KisskhSource, KisskhSubtitleTrack } from '../types/kisskh';
 import type { SubtitlePreferencePatch, SubtitlePreferences } from '../utils/subtitlePreferences';
+import { isMovixTvRuntime } from '../utils/tvRuntime';
 import {
   AUTOPLAY_SECONDS_MAX,
   PERCENTAGE_MAX,
@@ -257,6 +258,52 @@ const HLSPlayerSettingsPanel = (props: HLSPlayerSettingsPanelProps) => {
     setVideoAspectRatio,
     priorityCategory,
   } = props;
+
+  const handleTvMenuKeyDownCapture = useCallback((event: React.KeyboardEvent<HTMLDivElement>) => {
+    if (!isMovixTvRuntime()) return;
+
+    if (event.key === 'Escape') {
+      event.preventDefault();
+      event.stopPropagation();
+      setShowSettings(false);
+      return;
+    }
+
+    if (event.key !== 'ArrowUp' && event.key !== 'ArrowDown') return;
+    const target = event.target;
+    if (!(target instanceof HTMLElement)) return;
+    if (target.matches('input, textarea, select, [role="slider"], [data-tv-dpad-scope="native"]')) {
+      return;
+    }
+
+    const menu = settingsMenuRef.current;
+    if (!menu) return;
+    const focusables = Array.from(menu.querySelectorAll<HTMLElement>(
+      'button:not([disabled]), a[href], input:not([disabled]), select:not([disabled]), [tabindex]:not([tabindex="-1"])'
+    )).filter((element) => {
+      if (element.getAttribute('aria-hidden') === 'true') return false;
+      const style = window.getComputedStyle(element);
+      const rect = element.getBoundingClientRect();
+      return style.display !== 'none'
+        && style.visibility !== 'hidden'
+        && rect.width > 0
+        && rect.height > 0;
+    });
+    if (!focusables.length) return;
+
+    const current = focusables.indexOf(target);
+    const delta = event.key === 'ArrowDown' ? 1 : -1;
+    const nextIndex = current < 0
+      ? 0
+      : Math.min(focusables.length - 1, Math.max(0, current + delta));
+    const next = focusables[nextIndex];
+    if (!next || next === target) return;
+
+    event.preventDefault();
+    event.stopPropagation();
+    next.focus();
+    next.scrollIntoView({ block: 'nearest', inline: 'nearest' });
+  }, [setShowSettings, settingsMenuRef]);
 
   const category: PriorityCategory = priorityCategory === 'anime' ? 'anime' : 'moviesTv';
 
@@ -515,7 +562,12 @@ const HLSPlayerSettingsPanel = (props: HLSPlayerSettingsPanelProps) => {
         bottom: 0,
         maxWidth: '90vw'
       }}
-      className="bg-black/95 z-[10002] flex flex-col border-l border-gray-800 shadow-xl"
+      className="bg-black/95 z-[10002] flex flex-col border-l border-gray-800 shadow-xl settings-menu"
+      role={isMovixTvRuntime() ? 'dialog' : undefined}
+      aria-label={isMovixTvRuntime() ? t('watch.settingsTitle') : undefined}
+      data-player-menu="settings"
+      data-tv-dpad-scope={isMovixTvRuntime() ? 'native' : undefined}
+      onKeyDownCapture={handleTvMenuKeyDownCapture}
     >
             <div className="flex flex-col border-b border-gray-800 mb-4">
               <div className="flex justify-between items-center mb-3 px-4 pt-4">
@@ -555,6 +607,8 @@ const HLSPlayerSettingsPanel = (props: HLSPlayerSettingsPanelProps) => {
                   {!(isAnime && tvShowId && src.includes('.m3u8')) && (
                     <motion.button
                       onClick={() => setSettingsTab('quality')}
+                      data-tv-settings-tab="quality"
+                      aria-pressed={settingsTab === 'quality'}
                       className={`relative py-2 px-3 text-sm font-medium rounded-t-md transition-colors duration-200 ease-out flex-shrink-0 min-w-max ${settingsTab === 'quality' ? 'text-white' : 'text-gray-400 hover:text-gray-200'
                         }`}
                       whileTap={tapProp({ scale: 0.97 })}
@@ -565,6 +619,8 @@ const HLSPlayerSettingsPanel = (props: HLSPlayerSettingsPanelProps) => {
                   )}
                   <motion.button
                     onClick={() => setSettingsTab('format')}
+                      data-tv-settings-tab="format"
+                      aria-pressed={settingsTab === 'format'}
                     className={`relative py-2 px-3 text-sm font-medium rounded-t-md transition-colors duration-200 ease-out flex-shrink-0 min-w-max ${settingsTab === 'format' ? 'text-white' : 'text-gray-400 hover:text-gray-200'
                       }`}
                     whileTap={tapProp({ scale: 0.97 })}
@@ -574,6 +630,8 @@ const HLSPlayerSettingsPanel = (props: HLSPlayerSettingsPanelProps) => {
                   </motion.button>
                   <motion.button
                     onClick={() => setSettingsTab('speed')}
+                      data-tv-settings-tab="speed"
+                      aria-pressed={settingsTab === 'speed'}
                     className={`relative py-2 px-3 text-sm font-medium rounded-t-md transition-colors duration-200 ease-out flex-shrink-0 min-w-max ${settingsTab === 'speed' ? 'text-white' : 'text-gray-400 hover:text-gray-200'
                       }`}
                     whileTap={tapProp({ scale: 0.97 })}
@@ -585,6 +643,8 @@ const HLSPlayerSettingsPanel = (props: HLSPlayerSettingsPanelProps) => {
                   {audioTracks.length > 0 && (
                     <motion.button
                       onClick={() => setSettingsTab('audio')}
+                      data-tv-settings-tab="audio"
+                      aria-pressed={settingsTab === 'audio'}
                       className={`relative py-2 px-3 text-sm font-medium rounded-t-md transition-colors duration-200 ease-out flex-shrink-0 min-w-max ${settingsTab === 'audio' ? 'text-white' : 'text-gray-400 hover:text-gray-200'
                         }`}
                       whileTap={tapProp({ scale: 0.97 })}
@@ -596,6 +656,8 @@ const HLSPlayerSettingsPanel = (props: HLSPlayerSettingsPanelProps) => {
                   {/* Show subtitles tab for all content - it provides external subtitle search and style options */}
                   <motion.button
                     onClick={() => setSettingsTab('subtitles')}
+                      data-tv-settings-tab="subtitles"
+                      aria-pressed={settingsTab === 'subtitles'}
                     className={`relative py-2 px-3 text-sm font-medium rounded-t-md transition-colors duration-200 ease-out flex-shrink-0 min-w-max ${settingsTab === 'subtitles' ? 'text-white' : 'text-gray-400 hover:text-gray-200'
                       }`}
                     whileTap={tapProp({ scale: 0.97 })}
@@ -606,6 +668,8 @@ const HLSPlayerSettingsPanel = (props: HLSPlayerSettingsPanelProps) => {
                   {/* Style tab for subtitle appearance - always visible as it can be useful for future subtitles */}
                   <motion.button
                     onClick={() => setSettingsTab('style')}
+                      data-tv-settings-tab="style"
+                      aria-pressed={settingsTab === 'style'}
                     className={`relative py-2 px-3 text-sm font-medium rounded-t-md transition-colors duration-200 ease-out flex-shrink-0 min-w-max ${settingsTab === 'style' ? 'text-white' : 'text-gray-400 hover:text-gray-200'
                       }`}
                     whileTap={tapProp({ scale: 0.97 })}
@@ -616,6 +680,8 @@ const HLSPlayerSettingsPanel = (props: HLSPlayerSettingsPanelProps) => {
                   {/* Add the Progression Tab button */}
                   <motion.button
                     onClick={() => setSettingsTab('progression')}
+                      data-tv-settings-tab="progression"
+                      aria-pressed={settingsTab === 'progression'}
                     className={`relative py-2 px-3 text-sm font-medium rounded-t-md transition-colors duration-200 ease-out flex-shrink-0 min-w-max ${settingsTab === 'progression' ? 'text-white' : 'text-gray-400 hover:text-gray-200'
                       }`}
                     whileTap={tapProp({ scale: 0.97 })}
@@ -626,6 +692,8 @@ const HLSPlayerSettingsPanel = (props: HLSPlayerSettingsPanelProps) => {
                   {/* Audio Enhancer Tab */}
                   <motion.button
                     onClick={() => setSettingsTab('enhancer')}
+                      data-tv-settings-tab="enhancer"
+                      aria-pressed={settingsTab === 'enhancer'}
                     className={`relative py-2 px-3 text-sm font-medium rounded-t-md transition-colors duration-200 ease-out flex-shrink-0 min-w-max ${settingsTab === 'enhancer' ? 'text-white' : 'text-gray-400 hover:text-gray-200'
                       }`}
                     whileTap={tapProp({ scale: 0.97 })}
@@ -636,6 +704,8 @@ const HLSPlayerSettingsPanel = (props: HLSPlayerSettingsPanelProps) => {
                   {/* Video OLED Tab */}
                   <motion.button
                     onClick={() => setSettingsTab('oled')}
+                      data-tv-settings-tab="oled"
+                      aria-pressed={settingsTab === 'oled'}
                     className={`relative py-2 px-3 text-sm font-medium rounded-t-md transition-colors duration-200 ease-out flex-shrink-0 min-w-max ${settingsTab === 'oled' ? 'text-white' : 'text-gray-400 hover:text-gray-200'
                       }`}
                     whileTap={tapProp({ scale: 0.97 })}

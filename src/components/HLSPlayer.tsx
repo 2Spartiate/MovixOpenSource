@@ -1715,6 +1715,8 @@ const HLSPlayer = forwardRef<HLSPlayerRef, HLSPlayerProps>(({
   // Nouvel état pour la largeur du menu paramètres
   const [settingsMenuWidth, setSettingsMenuWidth] = useState(0);
   const settingsMenuRef = useRef<HTMLDivElement>(null);
+  const settingsButtonRef = useRef<HTMLButtonElement>(null);
+  const settingsWasOpenRef = useRef(false);
   const tabsContainerRef = useRef<HTMLDivElement>(null);
   const sourceMenuRef = useRef<HTMLDivElement>(null);
 
@@ -2928,6 +2930,28 @@ const HLSPlayer = forwardRef<HLSPlayerRef, HLSPlayerProps>(({
 
     return () => window.cancelAnimationFrame(frame);
   }, [onlyQualityMenu, showSettings, settingsTab, scrollSourceMenuTargetIntoView]);
+
+  useEffect(() => {
+    if (!isMovixTvRuntime()) return;
+
+    if (showSettings) {
+      settingsWasOpenRef.current = true;
+      const frame = window.requestAnimationFrame(() => {
+        const menu = settingsMenuRef.current;
+        if (!menu) return;
+        const activeTab = menu.querySelector<HTMLElement>(
+          `[data-tv-settings-tab="${settingsTab}"]`
+        );
+        activeTab?.focus();
+      });
+      return () => window.cancelAnimationFrame(frame);
+    }
+
+    if (!settingsWasOpenRef.current) return;
+    settingsWasOpenRef.current = false;
+    const frame = window.requestAnimationFrame(() => settingsButtonRef.current?.focus());
+    return () => window.cancelAnimationFrame(frame);
+  }, [showSettings]);
 
   useEffect(() => {
     const isSourceMenuVisible = onlyQualityMenu || (showSettings && settingsTab === 'quality');
@@ -12558,6 +12582,7 @@ const HLSPlayer = forwardRef<HLSPlayerRef, HLSPlayerProps>(({
               </button>
               <div className="relative flex items-center h-[24px]">
                 <button
+                  ref={settingsButtonRef}
                   onClick={() => setShowSettings(!showSettings)}
                   className="text-white hover:text-red-600 transition-colors flex items-center justify-center"
                   aria-label={t('watch.settingsTitle')}

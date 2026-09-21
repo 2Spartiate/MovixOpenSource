@@ -61,6 +61,7 @@ jobs:
             tests/tvHlsControlsFocusContract.test.mjs \
             tests/tvHlsDpadShortcutContract.test.mjs \
             tests/tvHlsRemoteNavigationContract.test.mjs \
+            tests/tvPlayerMenusContract.test.mjs \
             tests/tvCarouselContract.test.mjs \
             tests/tvFocusRestoration.test.mjs
           npx tsc --noEmit
