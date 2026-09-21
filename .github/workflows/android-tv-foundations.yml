@@ -21,7 +21,7 @@ permissions:
 
 jobs:
   validate:
-    name: Contracts, frontend and Android debug build
+    name: Contracts, frontend and standalone Android build
     runs-on: ubuntu-latest
     timeout-minutes: 45
 
@@ -77,13 +77,13 @@ jobs:
           VITE_SITE_URL: https://movix.example
         run: npm run build
 
-      - name: Validate Android manifest and debug build
+      - name: Build standalone Android APK
         working-directory: app/android
         run: |
           chmod +x gradlew
           ./gradlew \
-            :app:processDebugMainManifest \
-            :app:assembleDebug \
+            :app:processReleaseMainManifest \
+            :app:assembleRelease \
             -Dorg.gradle.jvmargs="-Xmx4096m -XX:MaxMetaspaceSize=1024m" \
             --stacktrace
 
@@ -92,7 +92,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          MERGED="$(find app/build/intermediates -type f -name AndroidManifest.xml -path '*debug*' | head -n 1)"
+          MERGED="$(find app/build/intermediates -type f -name AndroidManifest.xml -path '*release*' | head -n 1)"
           test -n "$MERGED"
           echo "Merged manifest: $MERGED"
           grep -q 'android.software.leanback' "$MERGED"
@@ -103,11 +103,21 @@ jobs:
           grep -q 'android.support.v4.content.FileProvider\|androidx.core.content.FileProvider' "$MERGED"
           grep -q 'com.movix.app.cast.CastOptionsProvider' "$MERGED"
 
-      - name: Upload Google TV debug APK
+      - name: Assert standalone JS bundle is packaged
+        working-directory: app/android
+        shell: bash
+        run: |
+          set -euo pipefail
+          APK="app/build/outputs/apk/release/app-release.apk"
+          test -f "$APK"
+          unzip -l "$APK" | grep -q 'assets/index.android.bundle'
+          echo "Standalone React Native bundle is packaged in $APK"
+
+      - name: Upload Google TV standalone APK
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
-          name: movix-google-tv-debug-apk
-          path: app/android/app/build/outputs/apk/debug/app-debug.apk
+          name: movix-google-tv-standalone-apk
+          path: app/android/app/build/outputs/apk/release/app-release.apk
           if-no-files-found: error
           compression-level: 0
           retention-days: 7
