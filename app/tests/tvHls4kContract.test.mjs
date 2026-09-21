@@ -19,7 +19,7 @@ async function importTypeScript(relativePath) {
 
 test('HLS quality helpers can select 2160p and step down 2160 -> 1080 -> 720', async () => {
   const { selectLevelForPreference, selectLowerLevelIndex } =
-    await importTypeScript('../../src/utils/hlsQuality.ts');
+    await importTypeScript('../src/utils/hlsQuality.ts');
 
   const options = [
     { index: 3, height: 2160, width: 3840, bitrate: 16000000, label: '2160p' },
@@ -33,7 +33,7 @@ test('HLS quality helpers can select 2160p and step down 2160 -> 1080 -> 720', a
 });
 
 test('TV HLS defaults to uncapped Auto while non-TV retains the 1080 cap', async () => {
-  const player = await text('../../src/components/HLSPlayer.tsx');
+  const player = await text('../src/components/HLSPlayer.tsx');
 
   assert.match(
     player,
