@@ -35,7 +35,9 @@ export default function BrowserScreen() {
   const { config, isLoading, refresh } = useAddress();
   const isTV = useMemo(() => isAndroidTvRuntime(), []);
 
-  const effectiveShowUrlBar = isTV ? false : uiPrefs.showUrlBar;
+  // The embedded browser address bar is intentionally hidden on every device.
+  // Navigation controls may remain enabled independently through showNavBar.
+  const effectiveShowUrlBar = false;
   const navBarHidden = !uiPrefs.showNavBar;
   const toolbarHidden = !effectiveShowUrlBar && !uiPrefs.showNavBar;
 
