@@ -32,3 +32,20 @@ test('TV-only bootstrap hides redundant carousel arrows and favorite overlays', 
   assert.match(source, /\.movix-tv \[data-tv-favorite-overlay\]/);
   assert.match(source, /display: none !important/);
 });
+
+
+test('Embla follows focused TV cards through its own scroll API', async () => {
+  const source = await text('../src/components/EmblaCarousel.tsx');
+  assert.match(source, /onFocus=\{\(\) => onTVFocus\?\.\(index\)\}/);
+  assert.match(source, /const handleTVCardFocus = useCallback/);
+  assert.match(source, /MOVIX_TV/);
+  assert.match(source, /emblaApi\.scrollTo\(index/);
+  assert.match(source, /onTVFocus=\{handleTVCardFocus\}/);
+});
+
+test('spatial runtime centers horizontal carousel targets', async () => {
+  const source = await text('src/injection/tv-dpad-runtime.ts');
+  assert.match(source, /horizontalMove = direction === 'left' \|\| direction === 'right'/);
+  assert.match(source, /closest\('\[data-tv-carousel-row\]'\)/);
+  assert.match(source, /inline: horizontalMove && carouselRow \? 'center' : 'nearest'/);
+});
