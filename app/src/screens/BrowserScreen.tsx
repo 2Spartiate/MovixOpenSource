@@ -25,6 +25,7 @@ import { setLocalPlaybackAwake } from '../services/playbackAwake';
 import { setPictureInPicturePlaybackActive } from '../services/pictureInPicture';
 import { useBrowserUIPrefs } from '../hooks/useBrowserUIPrefs';
 import { useAddress } from '../context/AddressContext';
+import { isAndroidTvRuntime } from '../platform/tvRuntime';
 import SettingsScreen from './SettingsScreen';
 
 export default function BrowserScreen() {
@@ -32,6 +33,7 @@ export default function BrowserScreen() {
   const webViewRef = useRef<WebViewBrowserRef>(null);
   const { prefs: uiPrefs } = useBrowserUIPrefs();
   const { config, isLoading, refresh } = useAddress();
+  const isTV = useMemo(() => isAndroidTvRuntime(), []);
 
   const navBarHidden = !uiPrefs.showNavBar;
   const toolbarHidden = !uiPrefs.showUrlBar && !uiPrefs.showNavBar;
@@ -156,6 +158,7 @@ export default function BrowserScreen() {
           key={activeUrl}
           ref={webViewRef}
           url={activeUrl}
+          isTV={isTV}
           onNavigationStateChange={onNavigationStateChange}
           onError={onWebViewError}
           onPictureInPictureModeChange={onPictureInPictureModeChange}

@@ -45,6 +45,7 @@ export interface WebViewBrowserRef {
 
 interface WebViewBrowserProps {
   url: string;
+  isTV: boolean;
   onNavigationStateChange?: (state: WebViewNavigation) => void;
   onError?: (error: string) => void;
   onPictureInPictureModeChange?: (active: boolean) => void;
@@ -117,7 +118,7 @@ function isSameOrigin(a: string, b: string): boolean {
 }
 
 const WebViewBrowser = forwardRef<WebViewBrowserRef, WebViewBrowserProps>(
-  ({ url, onNavigationStateChange, onError, onPictureInPictureModeChange }, ref) => {
+  ({ url, isTV: _isTV, onNavigationStateChange, onError, onPictureInPictureModeChange }, ref) => {
     const webViewRef = useRef<WebView>(null);
     const topLevelUrlRef = useRef(url);
     const navigationGenerationRef = useRef(0);
