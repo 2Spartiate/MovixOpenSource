@@ -49,6 +49,8 @@ import StreamedSourceSelector from '@/components/StreamedSourceSelector';
 import { useTranslation } from 'react-i18next';
 import { toast } from 'sonner';
 import { getVipHeaders, isUserVip } from '../utils/vipUtils';
+import { isMovixTvRuntime } from '../utils/tvRuntime';
+import { isPlayerControlInteractionTarget } from '../utils/playerControlInteraction';
 import {
     initializeCastApi,
     requestCastSession,
@@ -385,6 +387,8 @@ const LiveTVPlayer: React.FC<LiveTVPlayerProps> = ({
     // ... (refs and state)
     const videoRef = useRef<HTMLVideoElement>(null);
     const containerRef = useRef<HTMLDivElement>(null);
+    const settingsButtonRef = useRef<HTMLButtonElement>(null);
+    const settingsWasOpenRef = useRef(false);
     const hlsRef = useRef<HlsType | null>(null);
     const dashRef = useRef<any>(null);
     const mpegtsRef = useRef<any>(null); // Ref for mpegts player
@@ -466,6 +470,13 @@ const LiveTVPlayer: React.FC<LiveTVPlayerProps> = ({
     const MAX_458_RETRIES = 30;
     const RETRY_458_INTERVAL_MS = 500;
     const wait = (ms: number) => new Promise(resolve => setTimeout(resolve, ms));
+
+    const playerControlHasFocus = useCallback(() => {
+        const active = document.activeElement;
+        return active instanceof HTMLElement
+            && !!containerRef.current?.contains(active)
+            && isPlayerControlInteractionTarget(active);
+    }, []);
 
     const clearControlsTimeout = useCallback(() => {
         if (controlsTimeoutRef.current) {
@@ -1838,11 +1849,11 @@ const LiveTVPlayer: React.FC<LiveTVPlayerProps> = ({
 
         const hideDelay = isFullscreen ? 2500 : 3000;
         controlsTimeoutRef.current = setTimeout(() => {
-            if (isPlaying && !showSettings && !userPausedRef.current) {
+            if (isPlaying && !showSettings && !userPausedRef.current && !playerControlHasFocus()) {
                 setShowControls(false);
             }
         }, hideDelay);
-    }, [clearControlsTimeout, isFullscreen, isPlaying, showSettings]);
+    }, [clearControlsTimeout, isFullscreen, isPlaying, showSettings, playerControlHasFocus]);
 
     useEffect(() => {
         if (showControls) {
@@ -1855,6 +1866,18 @@ const LiveTVPlayer: React.FC<LiveTVPlayerProps> = ({
             clearControlsTimeout();
         };
     }, [clearControlsTimeout, hideControlsTimeout, isFullscreen, isPlaying, isUserPaused, showControls, showSettings]);
+
+    const handleControlsFocusCapture = useCallback((event: React.FocusEvent) => {
+        if (!isPlayerControlInteractionTarget(event.target)) return;
+        setShowControls(true);
+        clearControlsTimeout();
+    }, [clearControlsTimeout]);
+
+    const handleControlsBlurCapture = useCallback((event: React.FocusEvent) => {
+        if (!isPlayerControlInteractionTarget(event.target)) return;
+        if (isPlayerControlInteractionTarget(event.relatedTarget)) return;
+        hideControlsTimeout();
+    }, [hideControlsTimeout]);
 
     const handleMouseMove = useCallback((e?: Event | React.MouseEvent | PointerEvent) => {
         if (e && 'pointerType' in e && (e as PointerEvent).pointerType === 'touch') return;
@@ -2073,6 +2096,15 @@ const LiveTVPlayer: React.FC<LiveTVPlayerProps> = ({
         const handleKeyDown = (e: KeyboardEvent) => {
             if (e.target instanceof HTMLInputElement || e.target instanceof HTMLTextAreaElement) return;
 
+            const keyboardTarget = e.target instanceof HTMLElement ? e.target : document.activeElement;
+            if (
+                isMovixTvRuntime()
+                && e.code.startsWith('Arrow')
+                && isPlayerControlInteractionTarget(keyboardTarget)
+            ) {
+                return;
+            }
+
             switch (e.code) {
                 case 'Space':
                     e.preventDefault();
@@ -2121,6 +2153,59 @@ const LiveTVPlayer: React.FC<LiveTVPlayerProps> = ({
         return () => window.removeEventListener('keydown', handleKeyDown);
     }, [volume, onClose, showSettings, handleMouseMove]);
 
+    useEffect(() => {
+        if (!isMovixTvRuntime()) return;
+
+        if (showSettings) {
+            settingsWasOpenRef.current = true;
+            const frame = window.requestAnimationFrame(() => {
+                const panel = containerRef.current?.querySelector<HTMLElement>('[data-live-tv-settings-panel]');
+                const firstServer = panel?.querySelector<HTMLElement>(
+                    '[data-live-tv-server-active="true"], button:not([disabled]):not([data-live-tv-settings-close])'
+                );
+                firstServer?.focus();
+            });
+            return () => window.cancelAnimationFrame(frame);
+        }
+
+        if (!settingsWasOpenRef.current) return;
+        settingsWasOpenRef.current = false;
+        const frame = window.requestAnimationFrame(() => settingsButtonRef.current?.focus());
+        return () => window.cancelAnimationFrame(frame);
+    }, [showSettings]);
+
+    const handleLiveSettingsKeyDown = useCallback((event: React.KeyboardEvent<HTMLDivElement>) => {
+        if (!isMovixTvRuntime()) return;
+        if (event.key === 'Escape') {
+            event.preventDefault();
+            event.stopPropagation();
+            setShowSettings(false);
+            return;
+        }
+        if (event.key !== 'ArrowUp' && event.key !== 'ArrowDown') return;
+        const target = event.target;
+        if (!(target instanceof HTMLElement)) return;
+        if (target.matches('input, textarea, select, [role="slider"], [data-tv-dpad-scope="native"]')) return;
+
+        const panel = containerRef.current?.querySelector<HTMLElement>('[data-live-tv-settings-panel]');
+        if (!panel) return;
+        const focusables = Array.from(panel.querySelectorAll<HTMLElement>('button:not([disabled]), [tabindex]:not([tabindex="-1"])'))
+            .filter((element) => {
+                const style = window.getComputedStyle(element);
+                const rect = element.getBoundingClientRect();
+                return style.display !== 'none' && style.visibility !== 'hidden' && rect.width > 0 && rect.height > 0;
+            });
+        const current = focusables.indexOf(target);
+        const delta = event.key === 'ArrowDown' ? 1 : -1;
+        const nextIndex = current < 0 ? 0 : Math.min(focusables.length - 1, Math.max(0, current + delta));
+        const next = focusables[nextIndex];
+        if (!next || next === target) return;
+        event.preventDefault();
+        event.stopPropagation();
+        next.focus();
+        next.scrollIntoView({ block: 'nearest' });
+    }, []);
+
     const VolumeIcon = volume === 0 ? VolumeX : volume < 0.5 ? Volume1 : Volume2;
     const shouldShowPausedOverlay =
         hasActiveStream &&
@@ -2156,8 +2241,10 @@ const LiveTVPlayer: React.FC<LiveTVPlayerProps> = ({
             onPointerMove={isEmbedStream ? undefined : handleMouseMove}
             onMouseMove={isEmbedStream ? undefined : handleMouseMove}
             onClick={isEmbedStream ? undefined : handleMouseMove}
+            onFocusCapture={isEmbedStream ? undefined : handleControlsFocusCapture}
+            onBlurCapture={isEmbedStream ? undefined : handleControlsBlurCapture}
             onMouseLeave={isEmbedStream ? undefined : (() => {
-                if (isPlaying && !showSettings && !isUserPaused) {
+                if (isPlaying && !showSettings && !isUserPaused && !playerControlHasFocus()) {
                     clearControlsTimeout();
                     setShowControls(false);
                 }
@@ -2238,6 +2325,8 @@ const LiveTVPlayer: React.FC<LiveTVPlayerProps> = ({
                                         className="flex items-center gap-2 rounded-lg bg-black/50 p-2 text-white shadow-lg backdrop-blur-sm transition-colors hover:bg-black/70"
                                         title={t('watch.sources')}
                                         aria-expanded={showSettings}
+                                        aria-label={t('watch.sources')}
+                                        data-tv-player-menu-trigger="live-sources"
                                     >
                                         <Settings size={18} />
                                         {hasStreamedChoices && <span className="text-sm">{t('liveTV.streamedServers')}</span>}
@@ -2433,6 +2522,8 @@ const LiveTVPlayer: React.FC<LiveTVPlayerProps> = ({
             {!isEmbedStream && !error && hasActiveStream && (
                 <motion.div
                     className={`absolute bottom-0 left-0 right-0 p-4 z-20 ${showControls ? 'pointer-events-auto' : 'pointer-events-none'}`}
+                    data-player-controls=""
+                    data-tv-focus-group="live-tv-controls"
                     initial={{ opacity: 0, y: 20 }}
                     animate={{
                         opacity: showControls ? 1 : 0,
@@ -2450,6 +2541,7 @@ const LiveTVPlayer: React.FC<LiveTVPlayerProps> = ({
                                     title={playPauseButtonLabel}
                                     aria-label={playPauseButtonLabel}
                                     className="p-2 hover:bg-white/10 rounded-full transition-colors cursor-pointer text-white"
+                                    aria-label={isFullscreen ? t('watchParty.exitFullscreen') : t('watchParty.fullscreen')}
                                 >
                                     <AnimatePresence mode="wait" initial={false}>
                                         <motion.span
@@ -2480,6 +2572,7 @@ const LiveTVPlayer: React.FC<LiveTVPlayerProps> = ({
                                     }}
                                     className="flex items-center gap-1.5 px-2 py-1 bg-red-600 hover:bg-red-700 rounded text-xs font-bold transition-colors cursor-pointer text-white"
                                     title={t('liveTV.backToLive')}
+                                    aria-label={t('liveTV.backToLive')}
                                 >
                                     <span className="w-2 h-2 bg-white rounded-full animate-pulse" />
                                     {t('liveTV.live')}
@@ -2493,11 +2586,12 @@ const LiveTVPlayer: React.FC<LiveTVPlayerProps> = ({
                                         <button
                                             onClick={(e) => { e.stopPropagation(); toggleMute(); }}
                                             className="text-white hover:text-gray-300 transition-colors flex items-center justify-center h-full cursor-pointer"
+                                            aria-label={t('watch.volume')}
                                         >
                                             <VolumeIcon size={24} />
                                         </button>
 
-                                        <div className="overflow-hidden transition-all duration-200 flex items-center h-full w-0 group-hover/volume:w-[112px] ml-0 group-hover/volume:ml-2">
+                                        <div className="overflow-hidden transition-all duration-200 flex items-center h-full w-0 group-hover/volume:w-[112px] group-focus-within/volume:w-[112px] ml-0 group-hover/volume:ml-2 group-focus-within/volume:ml-2">
                                             <div className="w-[100px] mx-[6px] flex items-center h-full">
                                                 <input
                                                     type="range"
@@ -2529,6 +2623,7 @@ const LiveTVPlayer: React.FC<LiveTVPlayerProps> = ({
                                     transition={{ duration: 0.2, ease: "easeInOut" }}
                                 >
                                     <button
+                                        ref={settingsButtonRef}
                                         onClick={(e) => { e.stopPropagation(); setShowSettings(!showSettings); }}
                                         className="flex items-center gap-2 rounded-full p-2 text-white transition-colors hover:bg-white/10"
                                         title={t('watch.sources')}
@@ -2551,6 +2646,7 @@ const LiveTVPlayer: React.FC<LiveTVPlayerProps> = ({
                                     onClick={(e) => { e.stopPropagation(); handleCast(); }}
                                     className="p-2 hover:bg-white/10 rounded-full transition-colors cursor-pointer"
                                     title={t('liveTV.castToChromecast')}
+                                    aria-label={t('liveTV.castToChromecast')}
                                 >
                                     <Cast size={24} />
                                 </button>
@@ -2602,9 +2698,12 @@ const LiveTVPlayer: React.FC<LiveTVPlayerProps> = ({
                         exit={{ opacity: 0, x: '100%' }}
                         transition={{ duration: 0.3, ease: [0.25, 1, 0.5, 1] }}
                         onUpdate={() => undefined}
-                        role="region"
+                        role="dialog"
                         aria-label={hasStreamedChoices ? t('liveTV.streamedServers') : t('liveTV.server')}
-                        onKeyDown={event => { if (event.key !== 'Escape') event.stopPropagation(); }}
+                        data-live-tv-settings-panel=""
+                        data-player-menu="live-sources"
+                        data-tv-dpad-scope={isMovixTvRuntime() ? 'native' : undefined}
+                        onKeyDownCapture={handleLiveSettingsKeyDown}
                         className={`absolute inset-y-0 right-0 z-[10002] flex max-w-[90vw] flex-col border-l border-gray-800 ${hasStreamedChoices ? 'w-80 bg-neutral-950' : 'w-[280px] bg-black/95'}`}
                     >
                         {/* Header */}
@@ -2615,7 +2714,7 @@ const LiveTVPlayer: React.FC<LiveTVPlayerProps> = ({
                             <button
                                 onClick={() => setShowSettings(false)}
                                 aria-label={t('common.close')}
-                                autoFocus
+                                data-live-tv-settings-close=""
                                 className="flex min-h-11 min-w-11 items-center justify-center rounded-full text-gray-400 transition-colors hover:bg-white/10 hover:text-white focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-red-400"
                             >
                                 <X size={18} />
@@ -2633,6 +2732,7 @@ const LiveTVPlayer: React.FC<LiveTVPlayerProps> = ({
                                 <button
                                     key={index}
                                     onClick={() => handleServerChange(index)}
+                                    data-live-tv-server-active={index === currentStreamIndex ? 'true' : undefined}
                                     className={`w-full text-left px-3 py-2.5 rounded-lg text-sm transition-colors cursor-pointer flex items-center gap-2 ${
                                         index === currentStreamIndex ? 'bg-red-600/20 text-red-400' : 'text-gray-300 hover:bg-white/5'
                                     }`}
