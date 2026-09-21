@@ -43,7 +43,26 @@ export function buildInjectedJavaScript(
   });
 
   // Cast shim FIRST — must be on window before any page JS runs.
+  // Block popup/new-window advertising at the JavaScript boundary as early as
+  // possible. The native WebView layer also rejects onOpenWindow events.
+  const popupBlocker = `
+(() => {
+  const blockedOpen = () => null;
+  try {
+    Object.defineProperty(window, 'open', {
+      value: blockedOpen,
+      writable: false,
+      configurable: false,
+    });
+  } catch {
+    try { window.open = blockedOpen; } catch {}
+  }
+})();
+`;
+
   return `
+${popupBlocker}
+
 ${castShim}
 
 ${pipShim}
