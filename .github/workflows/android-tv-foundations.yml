@@ -84,6 +84,7 @@ jobs:
           ./gradlew \
             :app:processDebugMainManifest \
             :app:assembleDebug \
+            -Dorg.gradle.jvmargs="-Xmx4096m -XX:MaxMetaspaceSize=1024m" \
             --stacktrace
 
       - name: Assert merged TV and mobile manifest contracts
