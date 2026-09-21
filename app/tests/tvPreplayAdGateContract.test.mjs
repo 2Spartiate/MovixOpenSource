@@ -17,7 +17,7 @@ async function importTypeScript(relativePath) {
   return import(`data:text/javascript;base64,${Buffer.from(outputText).toString('base64')}`);
 }
 
-test('frontend TV runtime is explicit and does not impersonate VIP', async () => {
+test('frontend TV runtime remains explicit and does not impersonate VIP', async () => {
   const originalWindow = globalThis.window;
   try {
     const { isMovixTvRuntime } = await importTypeScript('../src/utils/tvRuntime.ts');
@@ -36,29 +36,37 @@ test('frontend TV runtime is explicit and does not impersonate VIP', async () =>
   }
 });
 
-test('generic preplay gate exits before advertising on television', async () => {
+test('generic playback advertising is disabled on every device without granting VIP', async () => {
   const context = await text('../src/context/AdFreePopupContext.tsx');
+  const block = context.match(
+    /const showPopupForPlayer = useCallback\(\([^)]*\) => \{([\s\S]{0,900}?)\n\s*\}, \[\]\);/,
+  )?.[1] || '';
 
-  assert.match(context, /if \(isMovixTvRuntime\(\)\) \{[\s\S]{0,320}setShouldLoadIframe\(true\)[\s\S]{0,200}return;/);
-  assert.match(context, /const sync = \(\) => \{\s*if \(isMovixTvRuntime\(\)\) return;/);
-  const tvBranch = context.match(/if \(isMovixTvRuntime\(\)\) \{([\s\S]{0,500}?)\n\s*\}/)?.[1] || '';
-  assert.doesNotMatch(tvBranch, /setIsVip|localStorage|loadAdScript|showAdFreePopup\(true\)/);
+  assert.match(block, /setShowAdFreePopup\(false\)/);
+  assert.match(block, /setShouldLoadIframe\(true\)/);
+  assert.match(block, /setPlayerToShow\(null\)/);
+  assert.doesNotMatch(block, /setIsVip|localStorage|loadAdScript|window\.open/);
+  assert.doesNotMatch(context, /getAdPopupMode|subscribeToAdPopupModeChanges|SCRIPT_AD_MODE_ENABLED|loadAdScript/);
 });
 
-test('Live TV opens directly without reading or minting ad credits on television', async () => {
+test('Live TV playback opens directly without ad credits on every device', async () => {
   const liveTv = await text('../src/pages/LiveTV.tsx');
-  const branch = liveTv.match(/if \(isMovixTvRuntime\(\)\) \{([\s\S]{0,220}?)\n\s*\}/)?.[1] || '';
+  const branch = liveTv.match(
+    /const handleChannelClick = useCallback\(\(channel: Channel\) => \{([\s\S]{0,500}?)\n\s*\}, \[openPlayer\]\);/,
+  )?.[1] || '';
 
   assert.match(branch, /openPlayer\(channel\)/);
-  assert.match(branch, /return/);
-  assert.doesNotMatch(branch, /livetv_ad_credits|sessionStorage|openAd/);
+  assert.match(branch, /isPlayableEventChannel/);
+  assert.doesNotMatch(branch, /livetv_ad_credits|sessionStorage|openAd|isMovixTvRuntime|isVip/);
+  assert.doesNotMatch(liveTv, /livetv_ad_credits|AdFreePlayerAds/);
 });
 
-test('SwiftFlux skips only its advertising step on TV and retains verification', async () => {
+test('SwiftFlux advertising is disabled globally while Turnstile stays mandatory', async () => {
   const gate = await text('../src/components/SwiftfluxGate.tsx');
 
-  assert.match(gate, /const skipAd = isVip \|\| isMovixTvRuntime\(\) \|\| !SWIFTFLUX_AD_URL/);
-  assert.match(gate, /isUserVip\(\) \|\| isMovixTvRuntime\(\) \|\| !SWIFTFLUX_AD_URL \? 'verify' : 'ad'/);
+  assert.match(gate, /const skipAd = true;/);
+  assert.match(gate, /useState<GateStep>\('verify'\)/);
   assert.match(gate, /<TurnstileWidget/);
-  assert.match(gate, /window\.open\(SWIFTFLUX_AD_URL, '_blank', 'noopener'\)/);
+  assert.match(gate, /forceChallenge/);
+  assert.doesNotMatch(gate, /window\.open\(SWIFTFLUX_AD_URL/);
 });
