@@ -112,11 +112,14 @@ ${domDiscoveryRuntime}
       next.element.focus();
     }
 
+    const horizontalMove = direction === 'left' || direction === 'right';
+    const carouselRow = next.element.closest('[data-tv-carousel-row]');
+
     try {
       next.element.scrollIntoView({
         behavior: 'auto',
         block: 'nearest',
-        inline: 'nearest',
+        inline: horizontalMove && carouselRow ? 'center' : 'nearest',
       });
     } catch {
       next.element.scrollIntoView();
