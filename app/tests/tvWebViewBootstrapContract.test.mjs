@@ -55,12 +55,12 @@ test('WebView injection cache is partitioned by journal and TV runtime', async (
 });
 
 
-test('TV hides only the URL bar while handheld keeps the saved preference', async () => {
+test('embedded URL bar stays hidden on TV, phones and tablets', async () => {
   const browserScreen = await text('src/screens/BrowserScreen.tsx');
 
   assert.match(
     browserScreen,
-    /const effectiveShowUrlBar = isTV \? false : uiPrefs\.showUrlBar/,
+    /const effectiveShowUrlBar = false;/,
   );
   assert.match(
     browserScreen,
@@ -68,4 +68,5 @@ test('TV hides only the URL bar while handheld keeps the saved preference', asyn
   );
   assert.match(browserScreen, /showUrlBar=\{effectiveShowUrlBar\}/);
   assert.match(browserScreen, /showNavBar=\{uiPrefs\.showNavBar\}/);
+  assert.doesNotMatch(browserScreen, /isTV \? false : uiPrefs\.showUrlBar/);
 });
