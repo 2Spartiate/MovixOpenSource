@@ -444,6 +444,8 @@ const Header: React.FC = () => {
               {/* Logo */}
               <Link
                 to="/"
+                data-tv-ignore-focus
+                data-tv-header-logo
                 className="text-2xl md:text-3xl font-extrabold flex items-center hover:scale-105 transition-transform duration-300 flex-shrink-0"
                 onClick={(e) => {
                   if (location.pathname === '/') {
@@ -462,6 +464,8 @@ const Header: React.FC = () => {
 
               <a
                 href="https://t.me/movix_site"
+                data-tv-ignore-focus
+                data-tv-header-telegram
                 target="_blank"
                 rel="noopener noreferrer"
                 aria-label={t('telegram.joinTelegram')}
@@ -532,6 +536,7 @@ const Header: React.FC = () => {
                 <form onSubmit={handleSearchSubmit} className="relative">
                   <input
                     ref={searchInputRef}
+                    data-tv-primary-focus="search"
                     type="text"
                     value={headerQuery}
                     onChange={handleQueryChange}
