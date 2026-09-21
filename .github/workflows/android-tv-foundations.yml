@@ -65,6 +65,7 @@ jobs:
             tests/tvLivePlayerDpadContract.test.mjs \
             tests/tvFrancePlayerDpadContract.test.mjs \
             tests/tvPlayerBackContract.test.mjs \
+            tests/tvExternalPlayerLimitsContract.test.mjs \
             tests/tvCarouselContract.test.mjs \
             tests/tvFocusRestoration.test.mjs
           npx tsc --noEmit

@@ -2316,6 +2316,9 @@ const LiveTVPlayer: React.FC<LiveTVPlayerProps> = ({
                         className="absolute inset-0 h-full w-full border-0"
                         allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture"
                         allowFullScreen
+                        tabIndex={isMovixTvRuntime() ? 0 : undefined}
+                        data-tv-focus={isMovixTvRuntime() ? '' : undefined}
+                        aria-label={isMovixTvRuntime() ? t('watch.player') : undefined}
                     />
 
                     {/* Floating control bar overlaid on top of the iframe */}
