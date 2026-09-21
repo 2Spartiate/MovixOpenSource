@@ -152,6 +152,7 @@ const CarouselCard = React.memo<{
   showRanking: boolean;
   handleAuxOpen: (e: React.MouseEvent, path: string) => void;
   onRemoveItem?: (itemId: number, mediaType: string) => void;
+  onTVFocus?: (index: number) => void;
 }>(({
   item,
   index,
@@ -163,6 +164,7 @@ const CarouselCard = React.memo<{
   showRanking,
   handleAuxOpen,
   onRemoveItem,
+  onTVFocus,
 }) => {
   const { t } = useTranslation();
   const [starred, setStarred] = useState(initialStarred);
@@ -366,6 +368,7 @@ const CarouselCard = React.memo<{
           to={detailPath}
           data-tv-focus
           data-tv-card
+          onFocus={() => onTVFocus?.(index)}
           onAuxClick={(e) => handleAuxOpen(e, detailPath)}
           className="absolute inset-0 z-[5]"
         >
@@ -652,6 +655,15 @@ const EmblaCarousel: React.FC<EmblaCarouselProps> = ({
     }
   }, [emblaApi, getStep, effectivePrefs.transitions]);
 
+  const handleTVCardFocus = useCallback((index: number) => {
+    if (!(window as any).MOVIX_TV || !emblaApi) return;
+    try {
+      emblaApi.scrollTo(index, !effectivePrefs.transitions);
+    } catch {
+      // The spatial runtime still performs scrollIntoView as a fallback.
+    }
+  }, [emblaApi, effectivePrefs.transitions]);
+
   // Open in new tab on middle-click
   const handleAuxOpen = useCallback((e: React.MouseEvent, path: string) => {
     // Middle mouse button is button === 1
@@ -820,6 +832,7 @@ const EmblaCarousel: React.FC<EmblaCarouselProps> = ({
                     showRanking={showRanking}
                     handleAuxOpen={handleAuxOpen}
                     onRemoveItem={onRemoveItem}
+                    onTVFocus={handleTVCardFocus}
                   />
                 );
               })}
