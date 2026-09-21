@@ -233,7 +233,7 @@ const CarouselCard = React.memo<{
       : t('common.movie');
 
   return (
-    <div className="embla-slide flex-none relative w-[144px] md:w-[192px]">
+    <div className="embla-slide flex-none relative w-[144px] md:w-[192px]" data-tv-card-container>
       <div
         style={{ animationDelay: `${Math.min(index * 0.03, 0.5)}s` }}
         className="relative group rounded-xl overflow-hidden bg-white/5 border border-white/10 hover:border-white/20 hover:scale-105 transform-gpu will-change-transform transition-transform duration-200 ease-out animate-card-enter"
@@ -256,6 +256,8 @@ const CarouselCard = React.memo<{
         {isHistory && onRemoveItem ? (
           <button
             type="button"
+            data-tv-ignore-focus
+            data-tv-carousel-overlay
             onClick={(e) => {
               e.preventDefault();
               e.stopPropagation();
@@ -270,6 +272,8 @@ const CarouselCard = React.memo<{
         ) : (
           <button
             type="button"
+            data-tv-ignore-focus
+            data-tv-favorite-overlay
             onClick={toggleWatchlist}
             title={starred ? t('profile.removeFromWatchlist') : t('profile.addToWatchlist')}
             aria-label={starred ? t('profile.removeFromWatchlist') : t('profile.addToWatchlist')}
@@ -360,6 +364,8 @@ const CarouselCard = React.memo<{
         {/* Main clickable area */}
         <Link
           to={detailPath}
+          data-tv-focus
+          data-tv-card
           onAuxClick={(e) => handleAuxOpen(e, detailPath)}
           className="absolute inset-0 z-[5]"
         >
@@ -740,7 +746,13 @@ const EmblaCarousel: React.FC<EmblaCarouselProps> = ({
   if (limitedItems.length === 0) return null;
 
   return (
-    <div ref={rowRef} className="mb-4 content-row-container -mx-3 md:-mx-4 group/carousel" style={{ position: 'relative' }}>
+    <div
+      ref={rowRef}
+      data-tv-focus-group="carousel-row"
+      data-tv-carousel-row
+      className="mb-4 content-row-container -mx-3 md:-mx-4 group/carousel"
+      style={{ position: 'relative' }}
+    >
         <div className="flex justify-between items-center mb-2 px-4 md:px-6 relative">
           <div className="flex items-center gap-3">
             <h2 className="section-title">{title}</h2>
@@ -818,6 +830,8 @@ const EmblaCarousel: React.FC<EmblaCarouselProps> = ({
           {/* Boutons de navigation - verticaux noirs avec slide-in au hover */}
           <button
             type="button"
+            data-tv-ignore-focus
+            data-tv-carousel-arrow
             aria-label={t('common.previous')}
             onClick={handlePrev}
             onPointerDown={(e) => { e.preventDefault(); e.stopPropagation(); }}
@@ -836,6 +850,8 @@ const EmblaCarousel: React.FC<EmblaCarouselProps> = ({
           </button>
           <button
             type="button"
+            data-tv-ignore-focus
+            data-tv-carousel-arrow
             aria-label={t('common.next')}
             onClick={handleNext}
             onPointerDown={(e) => { e.preventDefault(); e.stopPropagation(); }}
