@@ -1,0 +1,73 @@
+name: Android TV foundations
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - agent/google-tv-roadmap-v1
+    paths:
+      - 'app/**'
+      - '.github/workflows/android-tv-foundations.yml'
+
+concurrency:
+  group: android-tv-foundations-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  validate:
+    name: Contracts and Android debug build
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: '22'
+          cache: npm
+          cache-dependency-path: app/package-lock.json
+
+      - name: Install JavaScript dependencies
+        working-directory: app
+        run: npm ci
+
+      - name: Validate TV runtime and WebView contracts
+        working-directory: app
+        run: |
+          node --test \
+            tests/tvRuntimeContract.test.mjs \
+            tests/tvWebViewBootstrapContract.test.mjs
+          npx tsc --noEmit
+
+      - name: Rebuild injected userscript
+        working-directory: app
+        run: npm run build:userscript
+
+      - name: Validate Android manifest and debug build
+        working-directory: app/android
+        run: |
+          chmod +x gradlew
+          ./gradlew \
+            :app:processDebugMainManifest \
+            :app:assembleDebug \
+            --stacktrace
+
+      - name: Assert merged TV and mobile manifest contracts
+        working-directory: app/android
+        shell: bash
+        run: |
+          set -euo pipefail
+          MERGED="$(find app/build/intermediates -type f -name AndroidManifest.xml -path '*debug*' | head -n 1)"
+          test -n "$MERGED"
+          echo "Merged manifest: $MERGED"
+          grep -q 'android.software.leanback' "$MERGED"
+          grep -q 'android.hardware.touchscreen' "$MERGED"
+          grep -q 'android.intent.category.LEANBACK_LAUNCHER' "$MERGED"
+          grep -q 'android.intent.category.LAUNCHER' "$MERGED"
+          grep -q 'android:banner="@drawable/tv_banner"' "$MERGED"
+          grep -q 'android.support.v4.content.FileProvider\|androidx.core.content.FileProvider' "$MERGED"
+          grep -q 'com.movix.app.cast.CastOptionsProvider' "$MERGED"
