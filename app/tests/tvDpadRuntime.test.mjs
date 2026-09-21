@@ -77,7 +77,10 @@ test('dynamic content is discovered at navigation time instead of cached', () =>
   const discovery = runtime.indexOf('api.getTVFocusCandidates()', moveStart);
   assert.ok(moveStart >= 0);
   assert.ok(discovery > moveStart);
-  assert.doesNotMatch(runtime, /MutationObserver/);
+  // O may use a MutationObserver for guarded focus-loss recovery, but
+  // candidate discovery itself must remain lazy and uncached.
+  assert.doesNotMatch(runtime, /cachedCandidates|candidateObserver/);
+  assert.match(runtime, /new MutationObserver\(scheduleFocusRecovery\)/);
 });
 
 test('TV D-pad runtime is injected only behind tvMode', async () => {
