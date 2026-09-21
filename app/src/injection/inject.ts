@@ -6,6 +6,9 @@ import {
 } from './picture-in-picture-shim';
 import { buildPlaybackAwakeShim } from './playback-awake-shim';
 import { buildTvBootstrap } from './tv-bootstrap';
+import { buildTvDomDiscoveryRuntime } from './tv-focus-dom';
+import { buildTvDpadRuntime } from './tv-dpad-runtime';
+import { findNextFocusTarget } from './tv-spatial-engine';
 import { USERSCRIPT_SOURCE } from './userscript-source';
 
 export function buildInjectedJavaScript(
@@ -25,6 +28,12 @@ export function buildInjectedJavaScript(
   );
   const playbackAwakeShim = buildPlaybackAwakeShim();
   const tvBootstrap = options.tvMode ? buildTvBootstrap() : '';
+  const tvDpadRuntime = options.tvMode
+    ? buildTvDpadRuntime(
+        `(${findNextFocusTarget.toString()})`,
+        buildTvDomDiscoveryRuntime(),
+      )
+    : '';
   const bridge = buildBridgeRuntime({
     mediaProxyRoutingEnabled: options.mediaProxyRoutingEnabled,
     mediaProxyCapabilityEnabled: options.mediaProxyCapabilityEnabled,
@@ -44,6 +53,8 @@ ${playbackAwakeShim}
 ${bridge}
 
 ${tvBootstrap}
+
+${tvDpadRuntime}
 
 // --- Userscript Movix ---
 ${USERSCRIPT_SOURCE}
