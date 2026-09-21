@@ -8819,6 +8819,108 @@ const HLSPlayer = forwardRef<HLSPlayerRef, HLSPlayerProps>(({
     setHasIgnored(true);
   }, []);
 
+  useEffect(() => {
+    if (!isMovixTvRuntime()) return;
+
+    const handleTvBack = (event: Event) => {
+      const consume = () => event.preventDefault();
+
+      if (isLocked) {
+        consume();
+        unlockPlayer();
+        return;
+      }
+      if (showSettings) {
+        consume();
+        setShowSettings(false);
+        return;
+      }
+      if (showCastMenu) {
+        consume();
+        setShowCastMenu(false);
+        return;
+      }
+      if (showSeasonDropdown) {
+        consume();
+        setShowSeasonDropdown(false);
+        return;
+      }
+      if (showInternalEpisodesMenu) {
+        consume();
+        setShowInternalEpisodesMenu(false);
+        return;
+      }
+      if (studioOpen) {
+        consume();
+        setStudioOpen(false);
+        return;
+      }
+      if (showStreamInfo) {
+        consume();
+        setShowStreamInfo(false);
+        return;
+      }
+      if (showShortcutsHelp) {
+        consume();
+        setShowShortcutsHelp(false);
+        return;
+      }
+      if (showVolumeSlider) {
+        consume();
+        setShowVolumeSlider(false);
+        return;
+      }
+      if (skipPromptVisible) {
+        consume();
+        dismissActiveSegment();
+        return;
+      }
+      if (votableSubmission) {
+        consume();
+        dismissVote();
+        return;
+      }
+      if (nextEpisodePromptVisible) {
+        consume();
+        handleIgnore();
+        return;
+      }
+      if (showNextMovie) {
+        consume();
+        dismissEndedMovie();
+        return;
+      }
+      if (showNextMovieOverlay && !hasIgnored) {
+        consume();
+        dismissMovieSuggestion();
+        return;
+      }
+
+      const video = videoRef.current as HTMLVideoElementWithWebkit | null;
+      const fullscreenActive = Boolean(
+        getFullscreenElement()
+        || video?.webkitDisplayingFullscreen
+        || isFullscreen
+      );
+      if (fullscreenActive) {
+        consume();
+        void toggleFullscreen();
+      }
+      // Otherwise leave the event unconsumed: BrowserScreen performs WebView
+      // history navigation, which is the HLS watch-route exit.
+    };
+
+    window.addEventListener('movix-tv-back', handleTvBack);
+    return () => window.removeEventListener('movix-tv-back', handleTvBack);
+  }, [
+    isLocked, unlockPlayer, showSettings, showCastMenu, showSeasonDropdown,
+    showInternalEpisodesMenu, studioOpen, showStreamInfo, showShortcutsHelp,
+    showVolumeSlider, skipPromptVisible, dismissActiveSegment, votableSubmission,
+    dismissVote, nextEpisodePromptVisible, handleIgnore, showNextMovie,
+    dismissEndedMovie, showNextMovieOverlay, hasIgnored, dismissMovieSuggestion,
+    isFullscreen,
+  ]);
+
   // Poster localisé (langue d'interface > EN > sans langue) prioritaire,
   // sinon le poster_path par défaut de la reco (souvent VO).
   const nextMovieImageUrl = useMemo(() => (

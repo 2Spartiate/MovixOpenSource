@@ -783,6 +783,31 @@ const FranceTVPlayer: React.FC = () => {
     next.scrollIntoView({ block: 'nearest', inline: 'nearest' });
   }, []);
 
+  useEffect(() => {
+    if (!isMovixTvRuntime()) return;
+
+    const handleTvBack = (event: Event) => {
+      event.preventDefault();
+
+      if (showSettings) {
+        setShowSettings(false);
+        return;
+      }
+
+      if (document.fullscreenElement || isFullscreen) {
+        void toggleFullscreen();
+        return;
+      }
+
+      // FranceTVPlayer owns the full route. Exit the player route first; only
+      // later Back presses may reach the Android WebView history fallback.
+      navigate(-1);
+    };
+
+    window.addEventListener('movix-tv-back', handleTvBack);
+    return () => window.removeEventListener('movix-tv-back', handleTvBack);
+  }, [showSettings, isFullscreen, toggleFullscreen, navigate]);
+
   // ─── Fullscreen ─────────────────────────────────────────────────────────
 
   useEffect(() => {

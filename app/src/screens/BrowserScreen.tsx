@@ -71,14 +71,25 @@ export default function BrowserScreen() {
         return true;
       }
       if (canGoBack) {
-        webViewRef.current?.goBack();
+        if (isTV) {
+          webViewRef.current?.injectJavaScript(`
+            (() => {
+              const event = new Event('movix-tv-back', { cancelable: true });
+              window.dispatchEvent(event);
+              if (!event.defaultPrevented) window.history.back();
+            })();
+            true;
+          `);
+        } else {
+          webViewRef.current?.goBack();
+        }
         return true;
       }
       return false;
     });
 
     return () => handler.remove();
-  }, [canGoBack, settingsVisible]);
+  }, [canGoBack, isTV, settingsVisible]);
 
   useEffect(() => {
     const subscription = AppState.addEventListener('change', nextState => {

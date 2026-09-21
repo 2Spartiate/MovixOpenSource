@@ -2206,6 +2206,32 @@ const LiveTVPlayer: React.FC<LiveTVPlayerProps> = ({
         next.scrollIntoView({ block: 'nearest' });
     }, []);
 
+    useEffect(() => {
+        if (!isMovixTvRuntime()) return;
+
+        const handleTvBack = (event: Event) => {
+            event.preventDefault();
+
+            if (showSettings) {
+                setShowSettings(false);
+                return;
+            }
+
+            const video = videoRef.current as HTMLVideoElement & { webkitDisplayingFullscreen?: boolean } | null;
+            if (isFullscreen || getFullscreenElement() || video?.webkitDisplayingFullscreen) {
+                void toggleFullscreen();
+                return;
+            }
+
+            // LiveTVPlayer is an overlay owned by LiveTV: close it before the
+            // Android shell is allowed to navigate the WebView history.
+            onClose();
+        };
+
+        window.addEventListener('movix-tv-back', handleTvBack);
+        return () => window.removeEventListener('movix-tv-back', handleTvBack);
+    }, [showSettings, isFullscreen, onClose]);
+
     const VolumeIcon = volume === 0 ? VolumeX : volume < 0.5 ? Volume1 : Volume2;
     const shouldShowPausedOverlay =
         hasActiveStream &&
