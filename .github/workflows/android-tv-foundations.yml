@@ -35,6 +35,10 @@ jobs:
         working-directory: app
         run: npm ci
 
+      - name: Rebuild injected userscript
+        working-directory: app
+        run: npm run build:userscript
+
       - name: Validate TV runtime and WebView contracts
         working-directory: app
         run: |
@@ -42,10 +46,6 @@ jobs:
             tests/tvRuntimeContract.test.mjs \
             tests/tvWebViewBootstrapContract.test.mjs
           npx tsc --noEmit
-
-      - name: Rebuild injected userscript
-        working-directory: app
-        run: npm run build:userscript
 
       - name: Validate Android manifest and debug build
         working-directory: app/android
