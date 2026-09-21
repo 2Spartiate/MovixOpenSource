@@ -27,8 +27,6 @@ import { AlertTriangle, ExternalLink, Loader2, ShieldCheck, X } from 'lucide-rea
 import TurnstileWidget from './TurnstileWidget';
 import { Button } from './ui/button';
 import { getOverlayPortalRoot } from '../utils/overlayPortal';
-import { isUserVip } from '../utils/vipUtils';
-import { isMovixTvRuntime } from '../utils/tvRuntime';
 import {
   resolveSwiftfluxPlayback,
   type ResolveSwiftfluxParams,
@@ -60,14 +58,10 @@ interface SwiftfluxGateProps {
 
 const SwiftfluxGate: React.FC<SwiftfluxGateProps> = ({ request, onResolved, onClose }) => {
   const { t } = useTranslation();
-  // Le statut est lu une fois au montage : un changement de statut VIP en cours
-  // de porte n'a pas à faire disparaître l'étape sous le doigt de l'utilisateur.
-  const [isVip] = useState(() => isUserVip());
-  // Pas de smartlink configuré (.env) = pas d'étape pub, pour personne.
-  const skipAd = isVip || isMovixTvRuntime() || !SWIFTFLUX_AD_URL;
-  const [step, setStep] = useState<GateStep>(() => (
-    isUserVip() || isMovixTvRuntime() || !SWIFTFLUX_AD_URL ? 'verify' : 'ad'
-  ));
+  // The partner advertising step is disabled on every device. Turnstile
+  // remains mandatory and still protects direct playback resolution.
+  const skipAd = true;
+  const [step, setStep] = useState<GateStep>('verify');
   const [token, setToken] = useState('');
   const [error, setError] = useState('');
   const [resetSignal, setResetSignal] = useState(0);
