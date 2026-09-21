@@ -28,7 +28,7 @@ test('Live TV volume slider opens by focus as well as hover', async () => {
 
 test('Live TV source settings autofocus, navigate vertically and restore trigger focus', async () => {
   const live = await text('../src/components/LiveTVPlayer.tsx');
-  assert.match(live, /ref=\{settingsButtonRef\}[\s\S]{0,360}data-tv-player-menu-trigger="live-sources"/);
+  assert.match(live, /ref=\{settingsButtonRef\}[\s\S]{0,520}data-tv-player-menu-trigger="live-sources"/);
   assert.match(live, /data-live-tv-settings-panel/);
   assert.match(live, /firstServer\?\.focus\(\)/);
   assert.match(live, /settingsButtonRef\.current\?\.focus\(\)/);

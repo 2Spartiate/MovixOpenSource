@@ -2350,6 +2350,7 @@ const LiveTVPlayer: React.FC<LiveTVPlayerProps> = ({
 
                                 {streams.length > 1 && (
                                     <button
+                                        ref={settingsButtonRef}
                                         onClick={() => setShowSettings(true)}
                                         className="flex items-center gap-2 rounded-lg bg-black/50 p-2 text-white shadow-lg backdrop-blur-sm transition-colors hover:bg-black/70"
                                         title={t('watch.sources')}
@@ -2366,6 +2367,7 @@ const LiveTVPlayer: React.FC<LiveTVPlayerProps> = ({
                                     onClick={() => { void toggleFullscreen(); }}
                                     className="rounded-lg bg-black/50 p-2 text-white shadow-lg backdrop-blur-sm transition-colors hover:bg-black/70"
                                     title={isFullscreen ? t('watchParty.exitFullscreen') : t('watchParty.fullscreen')}
+                                    aria-label={isFullscreen ? t('watchParty.exitFullscreen') : t('watchParty.fullscreen')}
                                 >
                                     {isFullscreen ? <Minimize size={18} /> : <Maximize size={18} />}
                                 </button>
@@ -2570,7 +2572,6 @@ const LiveTVPlayer: React.FC<LiveTVPlayerProps> = ({
                                     title={playPauseButtonLabel}
                                     aria-label={playPauseButtonLabel}
                                     className="p-2 hover:bg-white/10 rounded-full transition-colors cursor-pointer text-white"
-                                    aria-label={isFullscreen ? t('watchParty.exitFullscreen') : t('watchParty.fullscreen')}
                                 >
                                     <AnimatePresence mode="wait" initial={false}>
                                         <motion.span
@@ -2657,6 +2658,8 @@ const LiveTVPlayer: React.FC<LiveTVPlayerProps> = ({
                                         className="flex items-center gap-2 rounded-full p-2 text-white transition-colors hover:bg-white/10"
                                         title={t('watch.sources')}
                                         aria-expanded={showSettings}
+                                        aria-label={t('watch.sources')}
+                                        data-tv-player-menu-trigger="live-sources"
                                     >
                                         <Settings size={24} className={`transition-transform duration-300 ${showSettings ? 'rotate-180' : ''}`} />
                                         {hasStreamedChoices && <span className="text-sm">{t('liveTV.streamedServers')}</span>}
@@ -2693,6 +2696,7 @@ const LiveTVPlayer: React.FC<LiveTVPlayerProps> = ({
                                         onClick={(e) => { e.stopPropagation(); handleAirPlay(); }}
                                         className="p-2 hover:bg-white/10 rounded-full transition-colors cursor-pointer"
                                         title={t('liveTV.castViaAirplay')}
+                                        aria-label={t('liveTV.castViaAirplay')}
                                     >
                                         <Airplay size={24} />
                                     </button>
@@ -2708,6 +2712,7 @@ const LiveTVPlayer: React.FC<LiveTVPlayerProps> = ({
                                 <button
                                     onClick={(e) => { e.stopPropagation(); toggleFullscreen(); }}
                                     className="p-2 hover:bg-white/10 rounded-full transition-colors cursor-pointer text-white"
+                                    aria-label={isFullscreen ? t('watchParty.exitFullscreen') : t('watchParty.fullscreen')}
                                 >
                                     {isFullscreen ? <Minimize size={24} /> : <Maximize size={24} />}
                                 </button>

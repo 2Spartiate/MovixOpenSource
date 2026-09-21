@@ -16,9 +16,13 @@ test('HLS yields TV Arrow keys when an interactive control owns focus', async ()
 
 test('range inputs keep native arrows before the HLS shortcut switch', async () => {
   const hls = await text('../src/components/HLSPlayer.tsx');
-  const inputGuard = hls.indexOf('e.target instanceof HTMLInputElement');
-  const arrowSwitch = hls.indexOf("case 'ArrowLeft':");
+  const handlerStart = hls.indexOf('const handleKeyPress = (e: KeyboardEvent) => {');
+  const handlerEnd = hls.indexOf("document.addEventListener('keydown', handleKeyPress)", handlerStart);
+  const handler = hls.slice(handlerStart, handlerEnd);
+  const inputGuard = handler.indexOf('e.target instanceof HTMLInputElement');
+  const arrowSwitch = handler.indexOf("case 'ArrowLeft':");
 
+  assert.ok(handlerStart >= 0);
   assert.ok(inputGuard >= 0);
   assert.ok(arrowSwitch > inputGuard);
   assert.match(hls, /<input\s+[\s\S]{0,120}type="range"/);
