@@ -20,6 +20,11 @@ export function buildTvBootstrap(): string {
           outline: 3px solid #ffffff !important;
           outline-offset: 3px !important;
         }
+
+        .movix-tv [data-tv-carousel-arrow],
+        .movix-tv [data-tv-favorite-overlay] {
+          display: none !important;
+        }
       \`;
       (document.head || root).appendChild(style);
     }
