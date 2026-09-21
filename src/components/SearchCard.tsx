@@ -139,6 +139,8 @@ export const SearchGridCard: React.FC<GridCardProps> = React.memo(({ item, index
             <Tooltip>
                 <TooltipTrigger asChild>
                     <motion.button
+                        data-tv-ignore-focus
+                        data-tv-favorite-overlay
                         onClick={toggle}
                         whileTap={{ scale: 0.7 }}
                         className={`absolute top-2 right-2 z-20 p-2 rounded-full transition-all duration-200 md:opacity-0 md:group-hover:opacity-100 ${starred ? 'bg-yellow-500/25 border border-yellow-400/30' : 'bg-black/55 hover:bg-black/70'}`}
@@ -201,7 +203,12 @@ export const SearchGridCard: React.FC<GridCardProps> = React.memo(({ item, index
             </div>
 
             {/* Main clickable area */}
-            <Link to={`/${item.media_type}/${encodeId(item.id)}`} className="absolute inset-0 z-10">
+            <Link
+                to={`/${item.media_type}/${encodeId(item.id)}`}
+                data-tv-focus
+                data-tv-card
+                className="absolute inset-0 z-10"
+            >
                 <span className="sr-only">{item.title || item.name}</span>
             </Link>
         </motion.div>
@@ -259,6 +266,8 @@ export const SearchListCard: React.FC<ListCardProps> = React.memo(({ item, index
         >
             <Link
                 to={`/${item.media_type}/${encodeId(item.id)}`}
+                data-tv-focus
+                data-tv-card
                 className="flex gap-4 p-4 rounded-xl bg-white/5 border border-white/10 hover:border-white/20 hover:bg-white/[0.08] transition-all group"
             >
                 <div className="relative flex-shrink-0">
@@ -297,6 +306,8 @@ export const SearchListCard: React.FC<ListCardProps> = React.memo(({ item, index
                         <Tooltip>
                             <TooltipTrigger asChild>
                                 <motion.button
+                                    data-tv-ignore-focus
+                                    data-tv-favorite-overlay
                                     onClick={toggle}
                                     whileTap={{ scale: 0.85 }}
                                     className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg transition-all duration-200 relative z-10 ${starred ? 'bg-yellow-500/10 border border-yellow-400/20' : 'bg-white/5 hover:bg-white/10'}`}
