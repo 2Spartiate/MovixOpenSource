@@ -135,6 +135,7 @@ import {
   isVideoLevelFailure,
   selectAudioTrackIndex,
   selectLevelForPreference,
+  selectLowerLevelIndex,
 } from '../utils/hlsQuality';
 import type {
   HlsQualityOption,
@@ -273,6 +274,14 @@ const SOURCE_MAIN_TO_TOP_LEVEL: Record<string, TopLevelSourceId> = {
 const hlsQualityPreferences = new Map<string, HlsQualityPreference>();
 const hlsAudioPreferences = new Map<string, { language: string; name: string }>();
 
+function getDefaultHlsQualityPreference(): HlsQualityPreference {
+  return isMovixTvRuntime() ? 'auto' : 1080;
+}
+
+function getHlsAutoMaxHeight(): number {
+  return isMovixTvRuntime() ? Number.POSITIVE_INFINITY : 1080;
+}
+
 function getCastRelayErrorTranslationKey(error: unknown): string {
   const code = typeof error === 'string'
     ? error
@@ -327,13 +336,6 @@ function decideHlsAudioFailure(fatal: boolean): 'keep-source' | 'switch-source' 
   return fatal ? 'switch-source' : 'keep-source';
 }
 
-function selectExactHlsFallbackLevel(
-  options: ReadonlyArray<Pick<HlsQualityOption, 'height' | 'index'>>,
-  targetHeight: number,
-): number {
-  return options.find(option => option.height === targetHeight)?.index ?? -1;
-}
-
 function decideHlsVideoFallback({
   activeFallbackLevel,
   failedHeight,
@@ -353,17 +355,18 @@ function decideHlsVideoFallback({
     return { action: 'ignore' };
   }
 
-  if (activeFallbackLevel !== null) {
-    if (failedLevel >= 0 && failedLevel !== activeFallbackLevel) {
-      return { action: 'ignore' };
-    }
-    return { action: 'switch-source' };
+  if (activeFallbackLevel !== null && failedLevel >= 0 && failedLevel !== activeFallbackLevel) {
+    return { action: 'ignore' };
   }
 
+  // Step down through the manifest instead of abandoning the source after the
+  // first high-resolution failure. Keep 720p as the lowest automatic fallback.
   if (
-    failedHeight === 1080
+    failedHeight !== null
+    && failedHeight > 720
     && lowerLevel >= 0
-    && lowerHeight === 720
+    && lowerHeight !== null
+    && lowerHeight >= 720
   ) {
     return { action: 'switch-level', level: lowerLevel };
   }
@@ -1552,7 +1555,7 @@ const HLSPlayer = forwardRef<HLSPlayerRef, HLSPlayerProps>(({
   const [qualities, setQualities] = useState<HlsQualityOption[]>([]);
   const qualitiesRef = useRef<HlsQualityOption[]>([]);
   const [qualityPreference, setQualityPreference] = useState<HlsQualityPreference>(
-    () => hlsQualityPreferences.get(contentQualityKey) ?? 1080,
+    () => hlsQualityPreferences.get(contentQualityKey) ?? getDefaultHlsQualityPreference(),
   );
   const contentQualityKeyRef = useRef(contentQualityKey);
   const qualityPreferenceRef = useRef<HlsQualityPreference>(qualityPreference);
@@ -1634,7 +1637,7 @@ const HLSPlayer = forwardRef<HLSPlayerRef, HLSPlayerProps>(({
 
   useEffect(() => {
     contentQualityKeyRef.current = contentQualityKey;
-    const rememberedPreference = hlsQualityPreferences.get(contentQualityKey) ?? 1080;
+    const rememberedPreference = hlsQualityPreferences.get(contentQualityKey) ?? getDefaultHlsQualityPreference();
     qualityPreferenceRef.current = rememberedPreference;
     setQualityPreference(rememberedPreference);
   }, [contentQualityKey]);
@@ -1661,7 +1664,7 @@ const HLSPlayer = forwardRef<HLSPlayerRef, HLSPlayerProps>(({
     hlsQualityPreferences.set(contentQualityKey, preference);
     if (!hls) return;
 
-    const target = selectLevelForPreference(qualitiesRef.current, preference, 1080);
+    const target = selectLevelForPreference(qualitiesRef.current, preference, getHlsAutoMaxHeight());
     if (preference === 'auto') {
       hls.autoLevelCapping = target;
       hls.currentLevel = -1;
@@ -3844,7 +3847,7 @@ const HLSPlayer = forwardRef<HLSPlayerRef, HLSPlayerProps>(({
         setQualities(nextOptions);
 
         const requested = nextOptions.length === 0 ? 'auto' : qualityPreferenceRef.current;
-        const targetLevel = selectLevelForPreference(nextOptions, requested, 1080);
+        const targetLevel = selectLevelForPreference(nextOptions, requested, getHlsAutoMaxHeight());
         if (requested === 'auto') {
           hls.autoLevelCapping = targetLevel;
           hls.startLevel = targetLevel;
@@ -4086,7 +4089,7 @@ const HLSPlayer = forwardRef<HLSPlayerRef, HLSPlayerProps>(({
 
         if (isVideoLevelFailure(data)) {
           const failedLevel = getFailingLevelIndex(data, hls);
-          const lowerLevel = selectExactHlsFallbackLevel(qualitiesRef.current, 720);
+          const lowerLevel = selectLowerLevelIndex(qualitiesRef.current, failedLevel);
           const failedHeight = hls.levels[failedLevel]?.height ?? null;
           const lowerHeight = hls.levels[lowerLevel]?.height ?? null;
           const fallbackDecision = decideHlsVideoFallback({
