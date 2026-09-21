@@ -162,7 +162,11 @@ const ProfileMenu: React.FC = () => {
   return (
     <div className="relative z-50 flex items-center justify-center">
       {/* Desktop profile button */}
-      <motion.div
+      <motion.button
+        type="button"
+        data-tv-primary-focus="account"
+        aria-haspopup="menu"
+        aria-expanded={isOpen}
         whileHover={{ scale: 1.05 }}
         whileTap={{ scale: 0.95 }}
         onClick={() => setIsOpen(!isOpen)}
@@ -196,7 +200,7 @@ const ProfileMenu: React.FC = () => {
         </div>
         
         <ChevronDown className="w-4 h-4 hidden sm:inline md:inline transition-transform duration-300" />
-      </motion.div>
+      </motion.button>
 
       <AnimatePresence>
         {isOpen && (
