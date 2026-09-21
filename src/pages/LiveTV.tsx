@@ -17,11 +17,9 @@ import { Button } from '../components/ui/button';
 import { Badge } from '../components/ui/badge';
 import { Input } from '../components/ui/input';
 import { useWrappedTracker } from '../hooks/useWrappedTracker';
-import AdFreePlayerAds from '../components/AdFreePlayerAds';
 import { isUserVip } from '../utils/authUtils';
 import { getVipHeaders } from '../utils/vipUtils';
 import { cn } from '../lib/utils';
-import { isMovixTvRuntime } from '../utils/tvRuntime';
 import { Tooltip, TooltipContent, TooltipTrigger } from '../components/ui/tooltip';
 import { groupVavooChannels, type VavooChannelVariant } from '../utils/vavooChannelGroups';
 
@@ -469,20 +467,17 @@ TimeRemaining.displayName = 'TimeRemaining';
 
 interface LiveTVPlaybackHandle {
   openPlayer: (channel: Channel) => void;
-  openAd: (channel: Channel) => void;
 }
 
 // Le lecteur et le popup partagent un état isolé de la grille : ouvrir ou
 // fermer une surcouche ne doit pas recalculer toutes les cartes derrière.
 const LiveTVPlayback = React.forwardRef<LiveTVPlaybackHandle>(
   (_props, ref) => {
-    const [pendingChannel, setPendingChannel] = useState<Channel | null>(null);
     const [selectedChannel, setSelectedChannel] = useState<Channel | null>(null);
     const closingPlayerRef = useRef(false);
 
     React.useImperativeHandle(ref, () => ({
       openPlayer: setSelectedChannel,
-      openAd: setPendingChannel,
     }), []);
 
     useEffect(() => {
@@ -515,16 +510,6 @@ const LiveTVPlayback = React.forwardRef<LiveTVPlaybackHandle>(
       isActive: !!selectedChannel,
     });
 
-    const handleAccept = useCallback(() => {
-      if (!pendingChannel) return;
-      // Deux chaînes par publicité, dont celle qui vient d'être choisie.
-      sessionStorage.setItem('livetv_ad_credits', '1');
-      setPendingChannel(null);
-      setSelectedChannel(pendingChannel);
-    }, [pendingChannel]);
-
-    const handleClose = useCallback(() => setPendingChannel(null), []);
-
     return (
       <>
         {selectedChannel && (
@@ -546,9 +531,6 @@ const LiveTVPlayback = React.forwardRef<LiveTVPlaybackHandle>(
             />
           )}
         </AnimatePresence>
-        {pendingChannel && (
-          <AdFreePlayerAds onClose={handleClose} onAccept={handleAccept} variant="livetv" />
-        )}
       </>
     );
   }
@@ -1060,27 +1042,9 @@ const LiveTV: React.FC = () => {
       return;
     }
 
-    // Google TV bypasses the Movix preplay gate entirely. Do not consume or
-    // mint ad credits: this is a runtime policy, not an advertising unlock.
-    if (isMovixTvRuntime()) {
-      openPlayer(channel);
-      return;
-    }
-
-    // Les VIPs n'ont pas de publicité
-    if (isVip) {
-      openPlayer(channel);
-      return;
-    }
-
-    const credits = parseInt(sessionStorage.getItem('livetv_ad_credits') || '0');
-    if (credits > 0) {
-      sessionStorage.setItem('livetv_ad_credits', (credits - 1).toString());
-      openPlayer(channel);
-    } else {
-      playbackRef.current?.openAd(channel);
-    }
-  }, [isVip, openPlayer]);
+    // Playback advertising is disabled on every supported device.
+    openPlayer(channel);
+  }, [openPlayer]);
 
   const handleIptvChannelClick = async (stream: IptvStream) => {
     try {
