@@ -70,3 +70,21 @@ test('embedded URL bar stays hidden on TV, phones and tablets', async () => {
   assert.match(browserScreen, /showNavBar=\{uiPrefs\.showNavBar\}/);
   assert.doesNotMatch(browserScreen, /isTV \? false : uiPrefs\.showUrlBar/);
 });
+
+
+test('app blocks popup windows on every runtime before and after page scripts', async () => {
+  const [inject, webView] = await Promise.all([
+    text('src/injection/inject.ts'),
+    text('src/components/WebViewBrowser.tsx'),
+  ]);
+
+  assert.match(inject, /Object\.defineProperty\(window, 'open'/);
+  assert.match(inject, /const blockedOpen = \(\) => null/);
+  assert.match(inject, /writable:\s*false/);
+  assert.match(inject, /configurable:\s*false/);
+
+  assert.match(webView, /const onOpenWindow = useCallback\(\(_event: WebViewOpenWindowEvent\) => \{/);
+  assert.match(webView, /setSupportMultipleWindows=\{true\}/);
+  assert.match(webView, /javaScriptCanOpenWindowsAutomatically=\{false\}/);
+  assert.doesNotMatch(webView, /Linking\.openURL/);
+});
