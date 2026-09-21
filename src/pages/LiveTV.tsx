@@ -21,6 +21,7 @@ import AdFreePlayerAds from '../components/AdFreePlayerAds';
 import { isUserVip } from '../utils/authUtils';
 import { getVipHeaders } from '../utils/vipUtils';
 import { cn } from '../lib/utils';
+import { isMovixTvRuntime } from '../utils/tvRuntime';
 import { Tooltip, TooltipContent, TooltipTrigger } from '../components/ui/tooltip';
 import { groupVavooChannels, type VavooChannelVariant } from '../utils/vavooChannelGroups';
 
@@ -1056,6 +1057,13 @@ const LiveTV: React.FC = () => {
 
   const handleChannelClick = useCallback((channel: Channel) => {
     if (!isPlayableEventChannel(channel)) {
+      return;
+    }
+
+    // Google TV bypasses the Movix preplay gate entirely. Do not consume or
+    // mint ad credits: this is a runtime policy, not an advertising unlock.
+    if (isMovixTvRuntime()) {
+      openPlayer(channel);
       return;
     }
 

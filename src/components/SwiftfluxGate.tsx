@@ -28,6 +28,7 @@ import TurnstileWidget from './TurnstileWidget';
 import { Button } from './ui/button';
 import { getOverlayPortalRoot } from '../utils/overlayPortal';
 import { isUserVip } from '../utils/vipUtils';
+import { isMovixTvRuntime } from '../utils/tvRuntime';
 import {
   resolveSwiftfluxPlayback,
   type ResolveSwiftfluxParams,
@@ -63,8 +64,10 @@ const SwiftfluxGate: React.FC<SwiftfluxGateProps> = ({ request, onResolved, onCl
   // de porte n'a pas à faire disparaître l'étape sous le doigt de l'utilisateur.
   const [isVip] = useState(() => isUserVip());
   // Pas de smartlink configuré (.env) = pas d'étape pub, pour personne.
-  const skipAd = isVip || !SWIFTFLUX_AD_URL;
-  const [step, setStep] = useState<GateStep>(() => (isUserVip() || !SWIFTFLUX_AD_URL ? 'verify' : 'ad'));
+  const skipAd = isVip || isMovixTvRuntime() || !SWIFTFLUX_AD_URL;
+  const [step, setStep] = useState<GateStep>(() => (
+    isUserVip() || isMovixTvRuntime() || !SWIFTFLUX_AD_URL ? 'verify' : 'ad'
+  ));
   const [token, setToken] = useState('');
   const [error, setError] = useState('');
   const [resetSignal, setResetSignal] = useState(0);

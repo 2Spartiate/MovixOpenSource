@@ -3,6 +3,7 @@ import { useLocation } from 'react-router-dom';
 import { checkVipStatus, isUserVip } from '../utils/vipUtils';
 import { getAdPopupMode, subscribeToAdPopupModeChanges } from '../utils/adPopupMode';
 import { SCRIPT_AD_MODE_ENABLED, loadAdScript } from '../utils/adScriptMode';
+import { isMovixTvRuntime } from '../utils/tvRuntime';
 
 
 interface AdFreePopupContextType {
@@ -100,6 +101,7 @@ export const AdFreePopupProvider: React.FC<{ children: React.ReactNode }> = ({ c
   // Auto et click-anywhere continuent d'utiliser le lien direct.
   useEffect(() => {
     const sync = () => {
+      if (isMovixTvRuntime()) return;
       if (getAdPopupMode() === 'normal' && SCRIPT_AD_MODE_ENABLED) loadAdScript();
     };
     sync();
@@ -107,6 +109,17 @@ export const AdFreePopupProvider: React.FC<{ children: React.ReactNode }> = ({ c
   }, []);
 
   const showPopupForPlayer = useCallback((playerType: string, additionalInfo?: any) => {
+    // Television is an explicit runtime, not a fake VIP/ad-unlock state.
+    // Do not enter the Movix advertising gate and do not load/open an ad.
+    if (isMovixTvRuntime()) {
+      setShowAdFreePopup(false);
+      setPlayerToShow(null);
+      setShouldLoadIframe(true);
+      setIsSpecialPlayer(false);
+      setIsVoVostfrOnly(false);
+      return;
+    }
+
     // First check VIP status via server-verified utility
     const isVipUser = isUserVip() || is_vip;
 
