@@ -7409,6 +7409,38 @@ const HLSPlayer = forwardRef<HLSPlayerRef, HLSPlayerProps>(({
     }
   };
 
+  const handleProgressDpadKeyDown = (e: React.KeyboardEvent<HTMLDivElement>) => {
+    if (!isMovixTvRuntime() || isWatchPartyGuest) return;
+    const video = videoRef.current;
+    if (!video || !Number.isFinite(video.duration) || video.duration <= 0) return;
+
+    let nextTime: number | null = null;
+    switch (e.key) {
+      case 'ArrowLeft':
+      case 'ArrowDown':
+        nextTime = Math.max(0, video.currentTime - 10);
+        break;
+      case 'ArrowRight':
+      case 'ArrowUp':
+        nextTime = Math.min(video.duration, video.currentTime + 10);
+        break;
+      case 'Home':
+        nextTime = 0;
+        break;
+      case 'End':
+        nextTime = video.duration;
+        break;
+      default:
+        return;
+    }
+
+    e.preventDefault();
+    e.stopPropagation();
+    video.currentTime = nextTime;
+    setCurrentTime(nextTime);
+    setShowControls(true);
+  };
+
   const handleProgressClick = (e: React.MouseEvent<HTMLDivElement> | React.TouchEvent<HTMLDivElement>) => {
     const progressBar = progressBarRef.current;
     if (!progressBar || !videoRef.current) return;
@@ -11946,6 +11978,7 @@ const HLSPlayer = forwardRef<HLSPlayerRef, HLSPlayerProps>(({
             <div
               className="flex items-center justify-center gap-8 pointer-events-auto"
               data-player-controls=""
+              data-tv-focus-group="hls-center-controls"
             >
             <motion.button
               onClick={(e) => {
@@ -12197,6 +12230,8 @@ const HLSPlayer = forwardRef<HLSPlayerRef, HLSPlayerProps>(({
           aria-hidden={!showControls}
           tabIndex={showControls ? 0 : -1}
           className="absolute top-16 right-2 z-50 flex items-center gap-2 px-4 py-2 rounded-lg bg-black/70 backdrop-blur-sm border border-gray-700 text-white font-medium text-sm shadow-lg border-opacity-50"
+          data-player-controls=""
+          data-tv-focus-group="hls-controls"
         >
           <svg className="w-4 h-4 text-red-500" fill="none" stroke="currentColor" strokeWidth="2" viewBox="0 0 24 24">
             <path strokeLinecap="round" strokeLinejoin="round" d="M4 6h16M4 12h16M4 18h16" />
@@ -12247,6 +12282,7 @@ const HLSPlayer = forwardRef<HLSPlayerRef, HLSPlayerProps>(({
           ref={controlBarRef}
           className="absolute bottom-0 left-0 right-0 z-40 p-4 control-bar"
           data-player-controls=""
+          data-tv-focus-group="hls-controls"
           initial={{ opacity: 0, y: 20 }}
           animate={{
             opacity: showControls ? 1 : 0,
@@ -12267,6 +12303,14 @@ const HLSPlayer = forwardRef<HLSPlayerRef, HLSPlayerProps>(({
             } : undefined}
             onMouseMove={!isWatchPartyGuest ? handleProgressHover : undefined}
             onMouseLeave={!isWatchPartyGuest ? handleProgressLeave : undefined}
+            onKeyDown={handleProgressDpadKeyDown}
+            role={isMovixTvRuntime() && !isWatchPartyGuest ? 'slider' : undefined}
+            tabIndex={isMovixTvRuntime() && !isWatchPartyGuest ? 0 : undefined}
+            data-tv-dpad-scope={isMovixTvRuntime() && !isWatchPartyGuest ? 'native' : undefined}
+            aria-label={isMovixTvRuntime() && !isWatchPartyGuest ? t('watch.progress') : undefined}
+            aria-valuemin={isMovixTvRuntime() && !isWatchPartyGuest ? 0 : undefined}
+            aria-valuemax={isMovixTvRuntime() && !isWatchPartyGuest ? Math.max(0, duration || 0) : undefined}
+            aria-valuenow={isMovixTvRuntime() && !isWatchPartyGuest ? Math.max(0, currentTime || 0) : undefined}
           >
             <div
               className="absolute h-full bg-gray-600/50 rounded-full"
@@ -12336,6 +12380,7 @@ const HLSPlayer = forwardRef<HLSPlayerRef, HLSPlayerProps>(({
                     e.stopPropagation();
                   } : undefined}
                   className={`text-white transition-colors ${!isWatchPartyGuest ? 'hover:text-gray-300' : 'opacity-50 cursor-not-allowed'}`}
+                  aria-label={isPlaying ? t('watch.pause') : t('watch.play')}
                   disabled={isWatchPartyGuest}
                   aria-disabled={isWatchPartyGuest}
                 >
@@ -12344,6 +12389,7 @@ const HLSPlayer = forwardRef<HLSPlayerRef, HLSPlayerProps>(({
                 <button
                   onClick={!isWatchPartyGuest ? () => skipTime(-10) : undefined}
                   className={`text-white transition-colors ${!isWatchPartyGuest ? 'hover:text-gray-300' : 'opacity-50 cursor-not-allowed'}`}
+                  aria-label={t('watch.rewind10')}
                   disabled={isWatchPartyGuest}
                   aria-disabled={isWatchPartyGuest}
                 >
@@ -12352,6 +12398,7 @@ const HLSPlayer = forwardRef<HLSPlayerRef, HLSPlayerProps>(({
                 <button
                   onClick={!isWatchPartyGuest ? () => skipTime(10) : undefined}
                   className={`text-white transition-colors ${!isWatchPartyGuest ? 'hover:text-gray-300' : 'opacity-50 cursor-not-allowed'}`}
+                  aria-label={t('watch.forward10')}
                   disabled={isWatchPartyGuest}
                   aria-disabled={isWatchPartyGuest}
                 >
@@ -12362,6 +12409,7 @@ const HLSPlayer = forwardRef<HLSPlayerRef, HLSPlayerProps>(({
                     <button
                       onClick={handleMuteToggle} // Use the updated handler
                       className="text-white hover:text-gray-300 transition-colors flex items-center justify-center h-full"
+                      aria-label={t('watch.volume')}
                     >
                       {/* Icon logic should check videoRef.current.muted */}
                       {videoRef.current?.muted || volume === 0 ? (
@@ -12376,7 +12424,7 @@ const HLSPlayer = forwardRef<HLSPlayerRef, HLSPlayerProps>(({
                     <div className={`
                       overflow-hidden transition-all duration-200 flex items-center h-full
                       ${isMobile && !isFullscreen ? 'w-0' : 'ml-2 w-[112px]'}
-                      ${!isMobile && !isFullscreen ? 'w-0 group-hover/volume:w-[112px]' : ''}
+                      ${!isMobile && !isFullscreen ? 'w-0 group-hover/volume:w-[112px] group-focus-within/volume:w-[112px]' : ''}
                     `}>
                       <div className="w-[100px] mx-[6px] flex items-center h-full">
                         <input
@@ -12512,6 +12560,8 @@ const HLSPlayer = forwardRef<HLSPlayerRef, HLSPlayerProps>(({
                 <button
                   onClick={() => setShowSettings(!showSettings)}
                   className="text-white hover:text-red-600 transition-colors flex items-center justify-center"
+                  aria-label={t('watch.settingsTitle')}
+                  data-tv-player-menu-trigger="settings"
                 >
                   <motion.div
                     animate={{
@@ -12529,6 +12579,7 @@ const HLSPlayer = forwardRef<HLSPlayerRef, HLSPlayerProps>(({
               <button
                 onClick={toggleFullscreen}
                 className="text-white hover:text-red-600 transition-colors flex items-center justify-center h-[24px]"
+                aria-label={isFullscreen ? t('watch.exitFullscreen') : t('watch.fullscreen')}
               >
                 {isFullscreen ?
                   <Minimize size={isMobile ? 20 : 24} /> :
@@ -12558,6 +12609,9 @@ const HLSPlayer = forwardRef<HLSPlayerRef, HLSPlayerProps>(({
                         }}
                         className="block cursor-pointer"
                         title={t('watch.cast')}
+                        aria-label={t('watch.cast')}
+                        tabIndex={0}
+                        data-tv-focus=""
                         style={{
                           display: 'inline-flex',
                           width: `${isMobile ? 20 : 24}px`,
