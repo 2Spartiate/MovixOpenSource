@@ -66,6 +66,7 @@ import {
   isPlayerControlsFocusTarget,
 } from '../utils/playerControlInteraction';
 import { isLowLatencyEnabled } from '../utils/lowLatencyPref';
+import { isMovixTvRuntime } from '../utils/tvRuntime';
 import {
   createHlsAutoFallbackGuard,
   type HlsAutoFallbackGuard,
@@ -8426,6 +8427,18 @@ const HLSPlayer = forwardRef<HLSPlayerRef, HLSPlayerProps>(({
       }
 
       const keyboardTarget = e.target instanceof HTMLElement ? e.target : document.activeElement;
+
+      // On television, D-pad arrows belong to the focused interactive control
+      // (or to spatial navigation) before they belong to player seek/volume.
+      // Desktop keeps the historical global Arrow shortcuts unchanged.
+      if (
+        isMovixTvRuntime()
+        && e.code.startsWith('Arrow')
+        && isPlayerControlInteractionTarget(keyboardTarget)
+      ) {
+        return;
+      }
+
       if (isSourceMenuTarget(keyboardTarget)) {
         return;
       }
