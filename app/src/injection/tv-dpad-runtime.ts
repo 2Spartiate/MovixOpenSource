@@ -102,13 +102,13 @@ ${domDiscoveryRuntime}
   const focusKeyFor = (element) => {
     if (!(element instanceof HTMLElement)) return null;
     const explicit = element.getAttribute('data-tv-focus-id');
-    if (explicit) return `focus:${explicit}`;
-    if (element.id) return `id:${element.id}`;
+    if (explicit) return 'focus:' + explicit;
+    if (element.id) return 'id:' + element.id;
     const primary = element.getAttribute('data-tv-primary-focus');
-    if (primary) return `primary:${primary}`;
+    if (primary) return 'primary:' + primary;
     if (element instanceof HTMLAnchorElement) {
       const href = element.getAttribute('href');
-      if (href) return `href:${href}`;
+      if (href) return 'href:' + href;
     }
     return null;
   };
