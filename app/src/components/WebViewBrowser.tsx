@@ -85,18 +85,24 @@ const BASE_INJECTION_OPTIONS = {
   mediaProxyScheme: Platform.OS === 'ios' ? 'movix-media' : null,
 } as const;
 
-// Construit une fois par état de capture, pas à chaque rendu : le script
-// injecté est volumineux, et son contenu ne dépend que de ce booléen.
-const INJECTED_JS_BY_JOURNAL_STATE = new Map<boolean, string>();
+// Construit une fois par combinaison journal/TV, pas à chaque rendu : le
+// script injecté est volumineux. Ne jamais réutiliser un script téléphone sur
+// TV (ou inversement), car le bootstrap TV fait partie du document initial.
+const INJECTED_JS_BY_RUNTIME_STATE = new Map<string, string>();
 
-function injectedJavaScriptFor(journalConsoleEnabled: boolean): string {
-  const cached = INJECTED_JS_BY_JOURNAL_STATE.get(journalConsoleEnabled);
+function injectedJavaScriptFor(
+  journalConsoleEnabled: boolean,
+  isTV: boolean,
+): string {
+  const cacheKey = `${journalConsoleEnabled ? 'journal' : 'quiet'}:${isTV ? 'tv' : 'handheld'}`;
+  const cached = INJECTED_JS_BY_RUNTIME_STATE.get(cacheKey);
   if (cached !== undefined) return cached;
   const built = buildInjectedJavaScript({
     ...BASE_INJECTION_OPTIONS,
     journalConsoleEnabled,
+    tvMode: isTV,
   });
-  INJECTED_JS_BY_JOURNAL_STATE.set(journalConsoleEnabled, built);
+  INJECTED_JS_BY_RUNTIME_STATE.set(cacheKey, built);
   return built;
 }
 
@@ -118,7 +124,7 @@ function isSameOrigin(a: string, b: string): boolean {
 }
 
 const WebViewBrowser = forwardRef<WebViewBrowserRef, WebViewBrowserProps>(
-  ({ url, isTV: _isTV, onNavigationStateChange, onError, onPictureInPictureModeChange }, ref) => {
+  ({ url, isTV, onNavigationStateChange, onError, onPictureInPictureModeChange }, ref) => {
     const webViewRef = useRef<WebView>(null);
     const topLevelUrlRef = useRef(url);
     const navigationGenerationRef = useRef(0);
@@ -237,8 +243,8 @@ const WebViewBrowser = forwardRef<WebViewBrowserRef, WebViewBrowserProps>(
     );
     useEffect(() => subscribeNetworkJournal(setJournalConsole), []);
     const injectedJS = useMemo(
-      () => injectedJavaScriptFor(journalConsole),
-      [journalConsole],
+      () => injectedJavaScriptFor(journalConsole, isTV),
+      [journalConsole, isTV],
     );
 
     // Sur iOS, laisser WKWebView annoncer la version réelle de WebKit et de

@@ -1,0 +1,53 @@
+import assert from 'node:assert/strict';
+import { readFile } from 'node:fs/promises';
+import test from 'node:test';
+import ts from 'typescript';
+
+const root = new URL('../', import.meta.url);
+const text = path => readFile(new URL(path, root), 'utf8');
+
+async function importTypeScript(relativePath) {
+  const source = await text(relativePath);
+  const { outputText } = ts.transpileModule(source, {
+    compilerOptions: {
+      module: ts.ModuleKind.ESNext,
+      target: ts.ScriptTarget.ES2022,
+    },
+  });
+  return import(`data:text/javascript;base64,${Buffer.from(outputText).toString('base64')}`);
+}
+
+test('TV bootstrap is idempotent and only establishes the TV contract', async () => {
+  const { buildTvBootstrap } = await importTypeScript(
+    'src/injection/tv-bootstrap.ts',
+  );
+  const script = buildTvBootstrap();
+
+  assert.match(script, /MOVIX_TV\s*=\s*true/);
+  assert.match(script, /classList\.add\('movix-tv'\)/);
+  assert.match(script, /__MOVIX_TV_BOOTSTRAP_READY/);
+  assert.match(script, /movix-tv-bootstrap-style/);
+  assert.match(script, /:focus-visible/);
+  assert.match(script, /DOMContentLoaded/);
+
+  assert.doesNotMatch(script, /MutationObserver|ArrowLeft|ArrowRight|ArrowUp|ArrowDown|scrollIntoView/);
+});
+
+test('injection enables the TV bootstrap only when tvMode is true', async () => {
+  const inject = await text('src/injection/inject.ts');
+
+  assert.match(inject, /tvMode\?: boolean/);
+  assert.match(inject, /options\.tvMode \? buildTvBootstrap\(\) : ''/);
+  assert.match(inject, /\$\{tvBootstrap\}/);
+});
+
+test('WebView injection cache is partitioned by journal and TV runtime', async () => {
+  const webView = await text('src/components/WebViewBrowser.tsx');
+
+  assert.match(webView, /INJECTED_JS_BY_RUNTIME_STATE = new Map<string, string>/);
+  assert.match(webView, /isTV \? 'tv' : 'handheld'/);
+  assert.match(webView, /tvMode: isTV/);
+  assert.match(webView, /injectedJavaScriptFor\(journalConsole, isTV\)/);
+  assert.match(webView, /\[journalConsole, isTV\]/);
+  assert.match(webView, /injectedJavaScriptBeforeContentLoadedForMainFrameOnly=\{true\}/);
+});
