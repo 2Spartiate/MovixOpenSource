@@ -56,7 +56,10 @@ test('runtime handles four D-pad arrows and scrolls only after focus selection',
   assert.match(runtime, /focus\(\{ preventScroll: true \}\)/);
   assert.match(runtime, /scrollIntoView/);
   assert.match(runtime, /block: 'nearest'/);
-  assert.match(runtime, /inline: 'nearest'/);
+  assert.match(
+    runtime,
+    /inline: horizontalMove && carouselRow \? 'center' : 'nearest'/,
+  );
   assert.match(runtime, /data-tv-consume-arrows/);
   assert.match(runtime, /data-tv-player-control/);
 });
