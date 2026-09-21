@@ -61,7 +61,10 @@ import { toast } from 'sonner';
 import { isUserVip } from '../utils/authUtils';
 import { isExtensionAvailable } from '../utils/extensionProxy';
 import { isDnsLikeError, notifyDnsBlocked } from '../utils/dnsErrorDetection';
-import { isPlayerControlInteractionTarget } from '../utils/playerControlInteraction';
+import {
+  isPlayerControlInteractionTarget,
+  isPlayerControlsFocusTarget,
+} from '../utils/playerControlInteraction';
 import { isLowLatencyEnabled } from '../utils/lowLatencyPref';
 import {
   createHlsAutoFallbackGuard,
@@ -1698,6 +1701,10 @@ const HLSPlayer = forwardRef<HLSPlayerRef, HLSPlayerProps>(({
   const [selectedExternalSub, setSelectedExternalSub] = useState<SubtitleTrack | null>(null);
   const [loadingSubtitle, setLoadingSubtitle] = useState(false);
   const controlsTimeoutRef = useRef<NodeJS.Timeout>();
+
+  const playerControlsContainFocus = useCallback(() => (
+    isPlayerControlsFocusTarget(document.activeElement)
+  ), []);
   /** Dernier état de plein écran connu, pour ne réagir qu'aux transitions. */
   const wasFullscreenRef = useRef(false);
   /** Fin de la fenêtre morte suivant l'entrée en plein écran (timestamp ms). */
@@ -5402,13 +5409,20 @@ const HLSPlayer = forwardRef<HLSPlayerRef, HLSPlayerProps>(({
     if (isPlaying && !showCastMenu) {
       controlsTimeoutRef.current = setTimeout(() => {
         // Vérifier si des animations +10/-10 sont en cours avant de cacher
-        if (!showCastMenu && !showForwardAnimation && !showRewindAnimation && !showLeftTapAnimation && !showRightTapAnimation) {
+        if (
+          !playerControlsContainFocus()
+          && !showCastMenu
+          && !showForwardAnimation
+          && !showRewindAnimation
+          && !showLeftTapAnimation
+          && !showRightTapAnimation
+        ) {
           setShowControls(false);
           setShowVolumeSlider(false);
         }
       }, 5000);
     }
-  }, [isMousePointer, isPlaying, showCastMenu, showForwardAnimation, showRewindAnimation, showLeftTapAnimation, showRightTapAnimation]);
+  }, [isMousePointer, isPlaying, showCastMenu, showForwardAnimation, showRewindAnimation, showLeftTapAnimation, showRightTapAnimation, playerControlsContainFocus]);
 
   /**
    * Écouteurs natifs de mouvement de pointeur, en plus des gestionnaires React.
@@ -5979,6 +5993,7 @@ const HLSPlayer = forwardRef<HLSPlayerRef, HLSPlayerProps>(({
 
     controlsTimeoutRef.current = setTimeout(() => {
       controlsTimeoutRef.current = undefined;
+      if (playerControlsContainFocus()) return;
       setShowControls(false);
       setShowVolumeSlider(false);
     }, FULLSCREEN_IDLE_HIDE_MS);
@@ -5994,6 +6009,7 @@ const HLSPlayer = forwardRef<HLSPlayerRef, HLSPlayerProps>(({
     showSettings, showCastMenu, showVolumeSlider,
     showInternalEpisodesMenu, showStreamInfo, showShortcutsHelp,
     showForwardAnimation, showRewindAnimation, showLeftTapAnimation, showRightTapAnimation,
+    playerControlsContainFocus,
   ]);
 
   // Add state for PiP error message display
@@ -6209,11 +6225,44 @@ const HLSPlayer = forwardRef<HLSPlayerRef, HLSPlayerProps>(({
     controlsTimeoutRef.current = undefined;
     if (!isPlaying || showCastMenu) return;
     controlsTimeoutRef.current = setTimeout(() => {
+      controlsTimeoutRef.current = undefined;
+      if (playerControlsContainFocus()) return;
       setShowControls(false);
       setShowVolumeSlider(false);
-      controlsTimeoutRef.current = undefined;
     }, 5_000);
-  }, [isPlaying, showCastMenu]);
+  }, [isPlaying, showCastMenu, playerControlsContainFocus]);
+
+  const handlePlayerControlsFocusCapture = useCallback((event: React.FocusEvent) => {
+    if (!isPlayerControlsFocusTarget(event.target)) return;
+    setShowControls(true);
+    if (controlsTimeoutRef.current) {
+      clearTimeout(controlsTimeoutRef.current);
+      controlsTimeoutRef.current = undefined;
+    }
+  }, []);
+
+  const handlePlayerControlsBlurCapture = useCallback((event: React.FocusEvent) => {
+    if (!isPlayerControlsFocusTarget(event.target)) return;
+    if (isPlayerControlsFocusTarget(event.relatedTarget)) return;
+
+    if (controlsTimeoutRef.current) clearTimeout(controlsTimeoutRef.current);
+    controlsTimeoutRef.current = undefined;
+    if (!isPlaying || showCastMenu) return;
+
+    controlsTimeoutRef.current = setTimeout(() => {
+      controlsTimeoutRef.current = undefined;
+      if (playerControlsContainFocus()) return;
+      setShowControls(false);
+      setShowVolumeSlider(false);
+    }, 5_000);
+  }, [isPlaying, showCastMenu, playerControlsContainFocus]);
+
+  useEffect(() => () => {
+    if (controlsTimeoutRef.current) {
+      clearTimeout(controlsTimeoutRef.current);
+      controlsTimeoutRef.current = undefined;
+    }
+  }, []);
 
   const handlePlayerControlInteractionCapture = useCallback(
     (event: React.SyntheticEvent) => {
@@ -7669,7 +7718,7 @@ const HLSPlayer = forwardRef<HLSPlayerRef, HLSPlayerProps>(({
 
         controlsTimeoutRef.current = setTimeout(() => {
           // Vérifier à nouveau si des animations sont en cours avant de cacher
-          if (!showForwardAnimation && !showRewindAnimation) {
+          if (!playerControlsContainFocus() && !showForwardAnimation && !showRewindAnimation) {
             setShowControls(false);
             setShowVolumeSlider(false);
           }
@@ -10885,7 +10934,14 @@ const HLSPlayer = forwardRef<HLSPlayerRef, HLSPlayerProps>(({
       if (controlsTimeoutRef.current) clearTimeout(controlsTimeoutRef.current);
       controlsTimeoutRef.current = setTimeout(() => {
         // Do not hide if skip animations or tap overlays are showing
-        if (!showCastMenu && !showForwardAnimation && !showRewindAnimation && !showLeftTapAnimation && !showRightTapAnimation) {
+        if (
+          !playerControlsContainFocus()
+          && !showCastMenu
+          && !showForwardAnimation
+          && !showRewindAnimation
+          && !showLeftTapAnimation
+          && !showRightTapAnimation
+        ) {
           console.log('Auto-hiding controls after 5s');
           setShowControls(false);
           setShowVolumeSlider(false);
@@ -11116,7 +11172,11 @@ const HLSPlayer = forwardRef<HLSPlayerRef, HLSPlayerProps>(({
       className={`relative group w-full h-full bg-black rounded-xl overflow-hidden ${isLoading ? 'aspect-[16/9]' : ''} video-container ${className} ${isFullscreenAnimating ? 'fullscreen-animating' : ''} ${isPageFullscreen ? PLAYER_FULLSCREEN_FILL_CLASS : ''} select-none ${shouldHideCursor || isLocked ? 'cursor-none' : ''}`}
       onPointerMove={handleMouseMove}
       onMouseMove={handleMouseMove}
-      onMouseLeave={() => isPlaying && !showCastMenu && setShowControls(false)}
+      onMouseLeave={() => {
+        if (isPlaying && !showCastMenu && !playerControlsContainFocus()) setShowControls(false);
+      }}
+      onFocusCapture={handlePlayerControlsFocusCapture}
+      onBlurCapture={handlePlayerControlsBlurCapture}
       onClickCapture={handlePlayerControlInteractionCapture}
       onChangeCapture={handlePlayerControlInteractionCapture}
       onClick={handleVideoClick}

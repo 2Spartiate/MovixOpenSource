@@ -21,3 +21,11 @@ export function isPlayerControlInteractionTarget(target: unknown): boolean {
     closest.call(target, PLAYER_CONTROL_INTERACTION_SELECTOR),
   );
 }
+
+
+export function isPlayerControlsFocusTarget(target: unknown): boolean {
+  if (!target || typeof target !== 'object') return false;
+  const closest = (target as { closest?: unknown }).closest;
+  if (typeof closest !== 'function') return false;
+  return Boolean(closest.call(target, '[data-player-controls]'));
+}
