@@ -61,6 +61,25 @@ test('runtime handles four D-pad arrows and scrolls only after focus selection',
   assert.match(runtime, /data-tv-player-control/);
 });
 
+test('bootstrap replacement is idempotent and does not duplicate key handlers', () => {
+  const runtime = buildTvDpadRuntime('(function () { return null; })', '/* dom discovery */');
+  const removeIndex = runtime.indexOf("document.removeEventListener('keydown', api.keydownHandler, true)");
+  const addIndex = runtime.indexOf("document.addEventListener('keydown', handleDpadKeydown, true)");
+  assert.ok(removeIndex >= 0);
+  assert.ok(addIndex > removeIndex);
+  assert.match(runtime, /api\.keydownHandler = handleDpadKeydown/);
+  assert.match(runtime, /destroyDpadRuntime/);
+});
+
+test('dynamic content is discovered at navigation time instead of cached', () => {
+  const runtime = buildTvDpadRuntime('(function () { return null; })', '/* dom discovery */');
+  const moveStart = runtime.indexOf('api.moveFocus =');
+  const discovery = runtime.indexOf('api.getTVFocusCandidates()', moveStart);
+  assert.ok(moveStart >= 0);
+  assert.ok(discovery > moveStart);
+  assert.doesNotMatch(runtime, /MutationObserver/);
+});
+
 test('TV D-pad runtime is injected only behind tvMode', async () => {
   const inject = await text('src/injection/inject.ts');
   assert.match(inject, /const tvDpadRuntime = options\.tvMode/);
