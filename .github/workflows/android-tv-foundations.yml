@@ -62,6 +62,10 @@ jobs:
           npx tsc --noEmit
 
       - name: Validate frontend production build
+        env:
+          # Build-only public origin. This workflow validates compilation and
+          # does not deploy the generated frontend.
+          VITE_SITE_URL: https://movix.example
         run: npm run build
 
       - name: Validate Android manifest and debug build
