@@ -5,6 +5,8 @@ import { useTranslation } from 'react-i18next';
 import { motion, AnimatePresence } from 'framer-motion';
 import { isUserVip } from '../../utils/authUtils';
 import { getVipHeaders } from '../../utils/vipUtils';
+import { isMovixTvRuntime } from '../../utils/tvRuntime';
+import { isPlayerControlInteractionTarget } from '../../utils/playerControlInteraction';
 import { MAIN_API, PROXIES_EMBED_API } from '../../config/runtime';
 import type HlsType from 'hls.js';
 import type * as ShakaType from 'shaka-player';
@@ -83,6 +85,8 @@ const FranceTVPlayer: React.FC = () => {
   const { t } = useTranslation();
 
   const containerRef = useRef<HTMLDivElement>(null);
+  const settingsButtonRef = useRef<HTMLButtonElement>(null);
+  const settingsWasOpenRef = useRef(false);
   const videoRef = useRef<HTMLVideoElement>(null);
   const hlsRef = useRef<HlsType | null>(null);
   const shakaRef = useRef<ShakaType.Player | null>(null);
@@ -472,13 +476,20 @@ const FranceTVPlayer: React.FC = () => {
     video.muted = val === 0;
   }, []);
 
+  const playerControlHasFocus = useCallback(() => {
+    const active = document.activeElement;
+    return active instanceof HTMLElement
+      && !!containerRef.current?.contains(active)
+      && isPlayerControlInteractionTarget(active);
+  }, []);
+
   const resetControlsTimeout = useCallback(() => {
     setShowControls(true);
     if (controlsTimeoutRef.current) clearTimeout(controlsTimeoutRef.current);
     controlsTimeoutRef.current = setTimeout(() => {
-      if (isPlaying && !showSettings) setShowControls(false);
+      if (isPlaying && !showSettings && !playerControlHasFocus()) setShowControls(false);
     }, 5000);
-  }, [isPlaying, showSettings]);
+  }, [isPlaying, showSettings, playerControlHasFocus]);
 
   const handleMouseMove = useCallback((e?: Event | React.MouseEvent | PointerEvent) => {
     if (e && 'pointerType' in e && (e as PointerEvent).pointerType === 'touch') return;
@@ -522,12 +533,29 @@ const FranceTVPlayer: React.FC = () => {
     };
   }, [handleMouseMove]);
 
+  const handleControlsFocusCapture = useCallback((event: React.FocusEvent) => {
+    if (!isPlayerControlInteractionTarget(event.target)) return;
+    setShowControls(true);
+    if (controlsTimeoutRef.current) {
+      clearTimeout(controlsTimeoutRef.current);
+      controlsTimeoutRef.current = null;
+    }
+  }, []);
+
+  const handleControlsBlurCapture = useCallback((event: React.FocusEvent) => {
+    if (!isPlayerControlInteractionTarget(event.target)) return;
+    if (isPlayerControlInteractionTarget(event.relatedTarget)) return;
+    resetControlsTimeout();
+  }, [resetControlsTimeout]);
+
   const handleMouseLeave = useCallback(() => {
     if (isPlaying) {
       if (controlsTimeoutRef.current) clearTimeout(controlsTimeoutRef.current);
-      controlsTimeoutRef.current = setTimeout(() => setShowControls(false), 1000);
+      controlsTimeoutRef.current = setTimeout(() => {
+        if (!playerControlHasFocus()) setShowControls(false);
+      }, 1000);
     }
-  }, [isPlaying]);
+  }, [isPlaying, playerControlHasFocus]);
 
   // ─── Lock body scroll (like WatchTv) ────────────────────────────────────
 
@@ -583,6 +611,15 @@ const FranceTVPlayer: React.FC = () => {
 
     const handleKeyDown = (e: KeyboardEvent) => {
       if (e.target instanceof HTMLInputElement || e.target instanceof HTMLTextAreaElement) return;
+
+      const keyboardTarget = e.target instanceof HTMLElement ? e.target : document.activeElement;
+      if (
+        isMovixTvRuntime()
+        && e.code.startsWith('Arrow')
+        && isPlayerControlInteractionTarget(keyboardTarget)
+      ) {
+        return;
+      }
 
       switch (e.code) {
         case 'Space':
@@ -678,6 +715,73 @@ const FranceTVPlayer: React.FC = () => {
       window.removeEventListener('keydown', handleKeyDown);
     };
   }, [togglePlayPause, seekBy, toggleFullscreen, toggleMute, resetControlsTimeout, playbackSpeed, showSettings]);
+
+  useEffect(() => {
+    if (!isMovixTvRuntime()) return;
+
+    if (showSettings) {
+      settingsWasOpenRef.current = true;
+      const frame = window.requestAnimationFrame(() => {
+        const panel = containerRef.current?.querySelector<HTMLElement>('[data-francetv-settings-panel]');
+        const active = panel?.querySelector<HTMLElement>(
+          '[data-francetv-settings-tab][aria-pressed="true"], [data-francetv-option-active="true"]'
+        );
+        const first = active ?? panel?.querySelector<HTMLElement>(
+          'button:not([disabled]):not([data-francetv-settings-close])'
+        );
+        first?.focus();
+      });
+      return () => window.cancelAnimationFrame(frame);
+    }
+
+    if (!settingsWasOpenRef.current) return;
+    settingsWasOpenRef.current = false;
+    const frame = window.requestAnimationFrame(() => settingsButtonRef.current?.focus());
+    return () => window.cancelAnimationFrame(frame);
+  }, [showSettings]);
+
+  const handleSettingsTvKeyDown = useCallback((event: React.KeyboardEvent<HTMLDivElement>) => {
+    if (!isMovixTvRuntime()) return;
+
+    if (event.key === 'Escape') {
+      event.preventDefault();
+      event.stopPropagation();
+      setShowSettings(false);
+      return;
+    }
+
+    if (event.key !== 'ArrowUp' && event.key !== 'ArrowDown') return;
+    const target = event.target;
+    if (!(target instanceof HTMLElement)) return;
+    if (target.matches('input, textarea, select, [role="slider"], [data-tv-dpad-scope="native"]')) return;
+
+    const panel = containerRef.current?.querySelector<HTMLElement>('[data-francetv-settings-panel]');
+    if (!panel) return;
+    const focusables = Array.from(panel.querySelectorAll<HTMLElement>(
+      'button:not([disabled]), a[href], input:not([disabled]), select:not([disabled]), [tabindex]:not([tabindex="-1"])'
+    )).filter((element) => {
+      const style = window.getComputedStyle(element);
+      const rect = element.getBoundingClientRect();
+      return style.display !== 'none'
+        && style.visibility !== 'hidden'
+        && rect.width > 0
+        && rect.height > 0;
+    });
+    if (!focusables.length) return;
+
+    const current = focusables.indexOf(target);
+    const delta = event.key === 'ArrowDown' ? 1 : -1;
+    const nextIndex = current < 0
+      ? 0
+      : Math.min(focusables.length - 1, Math.max(0, current + delta));
+    const next = focusables[nextIndex];
+    if (!next || next === target) return;
+
+    event.preventDefault();
+    event.stopPropagation();
+    next.focus();
+    next.scrollIntoView({ block: 'nearest', inline: 'nearest' });
+  }, []);
 
   // ─── Fullscreen ─────────────────────────────────────────────────────────
 
@@ -803,6 +907,8 @@ const FranceTVPlayer: React.FC = () => {
       className="w-full bg-black text-white overflow-hidden fixed inset-0 z-40"
       onPointerMove={handleMouseMove}
       onMouseMove={handleMouseMove}
+      onFocusCapture={handleControlsFocusCapture}
+      onBlurCapture={handleControlsBlurCapture}
       onMouseLeave={handleMouseLeave}
     >
       {/* Video element — fills entire screen */}
@@ -857,6 +963,8 @@ const FranceTVPlayer: React.FC = () => {
         animate={{ opacity: showControls ? 1 : 0 }}
         transition={{ duration: 0.2, ease: "easeInOut" }}
         className="absolute top-0 left-0 right-0 z-20 bg-gradient-to-b from-black/80 via-black/40 to-transparent pt-3 pb-12 px-4"
+        data-player-controls=""
+        data-tv-focus-group="francetv-controls"
       >
         <div className="flex items-center justify-between max-w-screen-2xl mx-auto">
           <button
@@ -891,8 +999,12 @@ const FranceTVPlayer: React.FC = () => {
                 transition={{ duration: 0.2, ease: "easeInOut" }}
               >
                 <button
+                  ref={settingsButtonRef}
                   onClick={() => setShowSettings(!showSettings)}
                   className="p-1.5 sm:p-2 hover:bg-white/10 rounded-full transition-colors cursor-pointer text-white"
+                  aria-label={t('watch.settingsTitle')}
+                  aria-expanded={showSettings}
+                  data-tv-player-menu-trigger="francetv-settings"
                 >
                   <Settings className={`w-5 h-5 sm:w-[22px] sm:h-[22px] transition-transform duration-300 ${showSettings ? 'rotate-180' : ''}`} />
                 </button>
@@ -913,6 +1025,8 @@ const FranceTVPlayer: React.FC = () => {
       {/* Controls bar — HLSPlayer pattern */}
       <motion.div
         className="absolute bottom-0 left-0 right-0 p-4 z-20"
+        data-player-controls=""
+        data-tv-focus-group="francetv-controls"
         initial={{ opacity: 0, y: 20 }}
         animate={{
           opacity: showControls ? 1 : 0,
@@ -988,7 +1102,7 @@ const FranceTVPlayer: React.FC = () => {
                     <VolumeIcon size={24} />
                   </button>
 
-                  <div className="overflow-hidden transition-all duration-200 flex items-center h-full w-0 group-hover/volume:w-[112px] ml-0 group-hover/volume:ml-2">
+                  <div className="overflow-hidden transition-all duration-200 flex items-center h-full w-0 group-hover/volume:w-[112px] group-focus-within/volume:w-[112px] ml-0 group-hover/volume:ml-2 group-focus-within/volume:ml-2">
                     <div className="w-[100px] mx-[6px] flex items-center h-full">
                       <input
                         type="range"
@@ -1038,13 +1152,21 @@ const FranceTVPlayer: React.FC = () => {
             exit={{ opacity: 0, width: 0 }}
             transition={{ duration: 0.3, ease: [0.25, 1, 0.5, 1] }}
             style={{ height: '100%', position: 'absolute', top: 0, right: 0, bottom: 0, maxWidth: '90vw' }}
-            className="bg-black/95 z-[10002] flex flex-col border-l border-gray-800 shadow-xl"
+            className="bg-black/95 z-[10002] flex flex-col border-l border-gray-800 shadow-xl settings-menu"
+            role={isMovixTvRuntime() ? 'dialog' : undefined}
+            aria-label={isMovixTvRuntime() ? t('watch.settingsTitle') : undefined}
+            data-francetv-settings-panel=""
+            data-player-menu="francetv-settings"
+            data-tv-dpad-scope={isMovixTvRuntime() ? 'native' : undefined}
+            onKeyDownCapture={handleSettingsTvKeyDown}
           >
             {/* Header */}
             <div className="flex items-center justify-between px-4 py-3 border-b border-gray-800">
               <h3 className="text-white text-sm font-medium">{t('francetv.qualityTab')}</h3>
               <button
                 onClick={() => setShowSettings(false)}
+                data-francetv-settings-close=""
+                aria-label={t('common.close')}
                 className="p-1 hover:bg-white/10 rounded-full transition-colors cursor-pointer text-gray-400 hover:text-white"
               >
                 <X size={18} />
@@ -1056,6 +1178,8 @@ const FranceTVPlayer: React.FC = () => {
               {qualities.length > 1 && (
                 <motion.button
                   onClick={() => setSettingsTab('quality')}
+                  data-francetv-settings-tab="quality"
+                  aria-pressed={settingsTab === 'quality'}
                   className={`relative py-2 px-3 text-sm font-medium transition-colors cursor-pointer ${settingsTab === 'quality' ? 'text-white' : 'text-gray-400 hover:text-gray-200'}`}
                   whileTap={{ scale: 0.97 }}
                 >
@@ -1066,6 +1190,8 @@ const FranceTVPlayer: React.FC = () => {
               {audioTracks.length > 1 && (
                 <motion.button
                   onClick={() => setSettingsTab('audio')}
+                  data-francetv-settings-tab="audio"
+                  aria-pressed={settingsTab === 'audio'}
                   className={`relative py-2 px-3 text-sm font-medium transition-colors cursor-pointer ${settingsTab === 'audio' ? 'text-white' : 'text-gray-400 hover:text-gray-200'}`}
                   whileTap={{ scale: 0.97 }}
                 >
@@ -1076,6 +1202,8 @@ const FranceTVPlayer: React.FC = () => {
               {subtitles.length > 1 && (
                 <motion.button
                   onClick={() => setSettingsTab('subtitles')}
+                  data-francetv-settings-tab="subtitles"
+                  aria-pressed={settingsTab === 'subtitles'}
                   className={`relative py-2 px-3 text-sm font-medium transition-colors cursor-pointer ${settingsTab === 'subtitles' ? 'text-white' : 'text-gray-400 hover:text-gray-200'}`}
                   whileTap={{ scale: 0.97 }}
                 >
@@ -1085,6 +1213,8 @@ const FranceTVPlayer: React.FC = () => {
               )}
               <motion.button
                 onClick={() => setSettingsTab('speed')}
+                  data-francetv-settings-tab="speed"
+                  aria-pressed={settingsTab === 'speed'}
                 className={`relative py-2 px-3 text-sm font-medium transition-colors cursor-pointer ${settingsTab === 'speed' ? 'text-white' : 'text-gray-400 hover:text-gray-200'}`}
                 whileTap={{ scale: 0.97 }}
               >
@@ -1102,6 +1232,7 @@ const FranceTVPlayer: React.FC = () => {
                       <button
                         key={q.value}
                         onClick={() => handleQualityChange(q.value)}
+                        data-francetv-option-active={selectedQuality === q.value ? 'true' : undefined}
                         className={`w-full text-left px-3 py-2.5 rounded-lg text-sm transition-colors cursor-pointer ${
                           selectedQuality === q.value ? 'bg-red-600/20 text-red-400' : 'text-gray-300 hover:bg-white/5'
                         }`}
@@ -1118,6 +1249,7 @@ const FranceTVPlayer: React.FC = () => {
                       <button
                         key={a.value}
                         onClick={() => handleAudioChange(a.value)}
+                        data-francetv-option-active={selectedAudio === a.value ? 'true' : undefined}
                         className={`w-full text-left px-3 py-2.5 rounded-lg text-sm transition-colors cursor-pointer ${
                           selectedAudio === a.value ? 'bg-red-600/20 text-red-400' : 'text-gray-300 hover:bg-white/5'
                         }`}
@@ -1134,6 +1266,7 @@ const FranceTVPlayer: React.FC = () => {
                       <button
                         key={s.value}
                         onClick={() => handleSubChange(s.value)}
+                        data-francetv-option-active={selectedSub === s.value ? 'true' : undefined}
                         className={`w-full text-left px-3 py-2.5 rounded-lg text-sm transition-colors cursor-pointer ${
                           selectedSub === s.value ? 'bg-red-600/20 text-red-400' : 'text-gray-300 hover:bg-white/5'
                         }`}
@@ -1150,6 +1283,7 @@ const FranceTVPlayer: React.FC = () => {
                       <button
                         key={speed}
                         onClick={() => handleSpeedChange(speed)}
+                        data-francetv-option-active={playbackSpeed === speed ? 'true' : undefined}
                         className={`w-full text-left px-3 py-2.5 rounded-lg text-sm transition-colors cursor-pointer ${
                           playbackSpeed === speed ? 'bg-red-600/20 text-red-400' : 'text-gray-300 hover:bg-white/5'
                         }`}
