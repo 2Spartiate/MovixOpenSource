@@ -44,6 +44,12 @@ ${domDiscoveryRuntime}
     ArrowDown: 'down',
   };
 
+  // Re-injection can happen during WebView/document lifecycle transitions.
+  // Always detach the exact previous capture listener before installing one.
+  if (typeof api.keydownHandler === 'function') {
+    document.removeEventListener('keydown', api.keydownHandler, true);
+  }
+
   api.shouldSpatialNavigationHandle = (event) => {
     if (!directions[event.key]) return false;
     if (event.altKey || event.ctrlKey || event.metaKey) return false;
@@ -92,6 +98,9 @@ ${domDiscoveryRuntime}
     const current = document.activeElement;
     if (!(current instanceof HTMLElement)) return false;
 
+    // Discovery is deliberately performed at keypress time. React route
+    // changes, lazy rows, search results and modal content are therefore
+    // immediately eligible without maintaining a mutation-driven cache.
     const candidates = api.getTVFocusCandidates()
       .filter(candidate => candidate.element !== current);
     const next = findNextFocusTarget(toRect(current), candidates, direction);
@@ -116,7 +125,7 @@ ${domDiscoveryRuntime}
     return document.activeElement === next.element;
   };
 
-  api.handleDpadKeydown = (event) => {
+  const handleDpadKeydown = (event) => {
     if (!api.shouldSpatialNavigationHandle(event)) return false;
 
     const direction = directions[event.key];
@@ -125,7 +134,6 @@ ${domDiscoveryRuntime}
     const moved = api.moveFocus(direction);
     if (!moved) return false;
 
-    // Only consume the key after a real spatial target accepted focus.
     event.preventDefault();
     event.stopPropagation();
     if (typeof event.stopImmediatePropagation === 'function') {
@@ -134,7 +142,16 @@ ${domDiscoveryRuntime}
     return true;
   };
 
-  document.addEventListener('keydown', api.handleDpadKeydown, true);
+  api.handleDpadKeydown = handleDpadKeydown;
+  api.keydownHandler = handleDpadKeydown;
+  api.destroyDpadRuntime = () => {
+    if (api.keydownHandler === handleDpadKeydown) {
+      document.removeEventListener('keydown', handleDpadKeydown, true);
+      api.keydownHandler = null;
+    }
+  };
+
+  document.addEventListener('keydown', handleDpadKeydown, true);
 })();
 `;
 }
