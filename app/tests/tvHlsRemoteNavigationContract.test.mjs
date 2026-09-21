@@ -11,7 +11,12 @@ test('HLS exposes its main control clusters to TV spatial navigation', async () 
   assert.match(hls, /data-player-controls=""\s*data-tv-focus-group="hls-center-controls"/);
   assert.match(hls, /data-player-controls=""\s*data-tv-focus-group="hls-controls"/);
   assert.match(hls, /data-tv-player-menu-trigger="settings"/);
-  assert.match(hls, /<google-cast-launcher[\s\S]{0,520}tabIndex=\{0\}[\s\S]{0,160}data-tv-focus/);
+  const castStart = hls.indexOf('<google-cast-launcher');
+  const castEnd = hls.indexOf('/>', castStart);
+  const castMarkup = hls.slice(castStart, castEnd);
+  assert.ok(castStart >= 0);
+  assert.match(castMarkup, /tabIndex=\{0\}/);
+  assert.match(castMarkup, /data-tv-focus=""/);
 });
 
 test('TV progress is a native D-pad slider while desktop markup stays pointer-compatible', async () => {
