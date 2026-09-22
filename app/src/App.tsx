@@ -15,8 +15,74 @@ import UpdateDialog from './components/UpdateDialog';
 import { useAppUpdate } from './hooks/useAppUpdate';
 import { AddressProvider, useAddress } from './context/AddressContext';
 import { loadNetworkJournalPreference } from './services/networkJournal';
+import { isAndroidTvRuntime } from './platform/tvRuntime';
 
 const { DnsModule } = NativeModules;
+
+const TV_DNS_READY_TIMEOUT_MS = 5000;
+const TV_DNS_READY_POLL_MS = 100;
+const TV_DNS_POST_READY_GRACE_MS = 250;
+
+const delay = (ms: number) => new Promise<void>(resolve => setTimeout(resolve, ms));
+
+async function waitForTvDnsReady(): Promise<boolean> {
+  if (Platform.OS !== 'android' || !DnsModule || !isAndroidTvRuntime()) {
+    return false;
+  }
+
+  const deadline = Date.now() + TV_DNS_READY_TIMEOUT_MS;
+  while (Date.now() < deadline) {
+    try {
+      if (await DnsModule.isEnabled()) {
+        // isActive flips immediately before the DNS forwarding thread starts.
+        // Give the slower TV runtime one short grace period before network use.
+        await delay(TV_DNS_POST_READY_GRACE_MS);
+        return true;
+      }
+    } catch {}
+    await delay(TV_DNS_READY_POLL_MS);
+  }
+  return false;
+}
+
+function promptDnsForTv(): Promise<void> {
+  return new Promise(resolve => {
+    Alert.alert(
+      'DNS Cloudflare 1.1.1.1',
+      'Activer le DNS Cloudflare pour une navigation plus rapide et sécurisée ?\n\n(Recommandé)',
+      [
+        {
+          text: 'Non merci',
+          style: 'cancel',
+          onPress: async () => {
+            await AsyncStorage.setItem('dns_enabled', 'false');
+            resolve();
+          },
+        },
+        {
+          text: 'Activer',
+          style: 'default',
+          onPress: async () => {
+            try {
+              if (!DnsModule) {
+                await AsyncStorage.setItem('dns_enabled', 'false');
+                return;
+              }
+              await DnsModule.enable('1.1.1.1', '1.0.0.1');
+              const ready = await waitForTvDnsReady();
+              await AsyncStorage.setItem('dns_enabled', ready ? 'true' : 'false');
+            } catch {
+              await AsyncStorage.setItem('dns_enabled', 'false');
+            } finally {
+              resolve();
+            }
+          },
+        },
+      ],
+      { cancelable: false },
+    );
+  });
+}
 
 function promptDns() {
   Alert.alert(
@@ -92,17 +158,30 @@ export default function App() {
           }
           setDnsSettled(true);
         } else if (stored === 'true' && DnsModule && Platform.OS === 'android') {
-          DnsModule.enable('1.1.1.1', '1.0.0.1').catch(() => {});
+          if (isAndroidTvRuntime()) {
+            // TV-only: after a process kill the VPN service is restarted, but
+            // DnsModule.enable() resolves before DnsVpnService is actually ready.
+            // Keep handheld Android on the original fast path.
+            try {
+              await DnsModule.enable('1.1.1.1', '1.0.0.1');
+              await waitForTvDnsReady();
+            } catch {}
+          } else {
+            DnsModule.enable('1.1.1.1', '1.0.0.1').catch(() => {});
+          }
           setDnsSettled(true);
         } else if (stored === 'true') {
           await AsyncStorage.setItem('dns_enabled', 'false');
           setDnsSettled(true);
         } else if (stored === null) {
-          promptDns();
-          // Mark settled on next tick — we don't block on user's DNS answer.
-          // The update check is cheap and will still run after; its dialog
-          // stacks on top of the DNS prompt on Android without issue now
-          // that it's a proper Modal, not Alert.alert.
+          if (isAndroidTvRuntime()) {
+            // TV-only first launch: do not mount AddressProvider/WebView until
+            // the VPN permission flow has completed and DNS forwarding is live.
+            await promptDnsForTv();
+          } else {
+            promptDns();
+            // Original phone/tablet behavior: do not block startup on the DNS prompt.
+          }
           setDnsSettled(true);
         } else {
           setDnsSettled(true);
