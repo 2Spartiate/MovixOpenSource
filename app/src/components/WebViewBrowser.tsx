@@ -115,6 +115,38 @@ function isUsableHttpUrl(value: unknown): value is string {
   );
 }
 
+function isSameDocumentUrl(left: string, right: string): boolean {
+  try {
+    const a = new URL(left);
+    const b = new URL(right);
+    a.hash = '';
+    b.hash = '';
+    return a.href === b.href;
+  } catch {
+    return left === right;
+  }
+}
+
+function isTopLevelFailure(
+  nativeEvent: { url?: unknown; isTopFrame?: unknown },
+  currentTopLevelUrl: string,
+): boolean {
+  if (typeof nativeEvent.isTopFrame === 'boolean') {
+    return nativeEvent.isTopFrame;
+  }
+
+  const eventUrl = nativeEvent.url;
+  // Some main-frame Android errors do not expose isTopFrame. In that case an
+  // exact document URL is our safe fallback. Subresource 403/404 errors must
+  // never evict a healthy Movix mirror.
+  if (isUsableHttpUrl(eventUrl)) {
+    return isSameDocumentUrl(eventUrl, currentTopLevelUrl);
+  }
+
+  // Unknown/no URL: keep the historical conservative behavior.
+  return true;
+}
+
 const WebViewBrowser = forwardRef<WebViewBrowserRef, WebViewBrowserProps>(
   ({ url, isTV, onNavigationStateChange, onError, onPictureInPictureModeChange }, ref) => {
     const webViewRef = useRef<WebView>(null);
@@ -201,6 +233,9 @@ const WebViewBrowser = forwardRef<WebViewBrowserRef, WebViewBrowserProps>(
 
     const onHttpError = useCallback(
       (event: any) => {
+        if (!isTopLevelFailure(event.nativeEvent, topLevelUrlRef.current)) {
+          return;
+        }
         onError?.(
           `HTTP ${event.nativeEvent.statusCode}: ${event.nativeEvent.url}`,
         );
@@ -210,6 +245,9 @@ const WebViewBrowser = forwardRef<WebViewBrowserRef, WebViewBrowserProps>(
 
     const onWebViewError = useCallback(
       (event: WebViewErrorEvent) => {
+        if (!isTopLevelFailure(event.nativeEvent, topLevelUrlRef.current)) {
+          return;
+        }
         onError?.(event.nativeEvent.description);
       },
       [onError],
