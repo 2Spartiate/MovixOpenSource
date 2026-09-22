@@ -43,6 +43,25 @@ test('injection enables the TV bootstrap only when tvMode is true', async () => 
   assert.match(inject, /\$\{tvBootstrap\}/);
 });
 
+test('hardware isolation build keeps TV bootstrap but disables D-pad injection', async () => {
+  const [inject, webView] = await Promise.all([
+    text('src/injection/inject.ts'),
+    text('src/components/WebViewBrowser.tsx'),
+  ]);
+
+  assert.match(inject, /tvDpadEnabled\?: boolean/);
+  assert.match(inject, /options\.tvMode && options\.tvDpadEnabled !== false/);
+  assert.match(webView, /const TV_DPAD_ENABLED = false;/);
+  assert.match(
+    webView,
+    /tvDpadEnabled: isTV \? TV_DPAD_ENABLED : false/,
+  );
+  assert.match(
+    webView,
+    /isTV && TV_DPAD_ENABLED \? 'dpad' : 'no-dpad'/,
+  );
+});
+
 test('WebView injection cache is partitioned by journal and TV runtime', async () => {
   const webView = await text('src/components/WebViewBrowser.tsx');
 
