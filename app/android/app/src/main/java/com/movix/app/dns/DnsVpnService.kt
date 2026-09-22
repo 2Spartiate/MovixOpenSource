@@ -8,6 +8,8 @@ import java.net.DatagramSocket
 import java.net.InetAddress
 import java.io.FileInputStream
 import java.io.FileOutputStream
+import java.util.concurrent.ExecutorService
+import java.util.concurrent.Executors
 
 /**
  * VPN local qui redirige UNIQUEMENT les requêtes DNS vers Cloudflare 1.1.1.1.
@@ -18,11 +20,13 @@ class DnsVpnService : VpnService() {
     private var vpnInterface: ParcelFileDescriptor? = null
     private var isRunning = false
     private var dnsThread: Thread? = null
+    private var dnsExecutor: ExecutorService? = null
 
     companion object {
         private const val VPN_ADDRESS = "10.215.173.1"
         private const val VIRTUAL_DNS = "10.215.173.2"
         private const val DNS_PORT = 53
+        private const val DNS_WORKER_COUNT = 8
 
         var primaryDns: String = "1.1.1.1"
         var secondaryDns: String = "1.0.0.1"
@@ -83,6 +87,8 @@ class DnsVpnService : VpnService() {
             val input = FileInputStream(fd)
             val output = FileOutputStream(fd)
             val buffer = ByteArray(32767)
+            val executor = Executors.newFixedThreadPool(DNS_WORKER_COUNT)
+            dnsExecutor = executor
 
             while (isRunning) {
                 try {
@@ -104,14 +110,34 @@ class DnsVpnService : VpnService() {
                     if (destinationPort != DNS_PORT) continue
 
                     val dnsPayload = packet.copyOfRange(ipHeaderLength + 8, packet.size)
-                    val response = forwardDnsQuery(dnsPayload) ?: continue
-                    val responsePacket = buildResponsePacket(packet, ipHeaderLength, response) ?: continue
-                    output.write(responsePacket)
+                    executor.execute {
+                        if (!isRunning) return@execute
+
+                        val response = forwardDnsQuery(dnsPayload) ?: return@execute
+                        val responsePacket =
+                            buildResponsePacket(packet, ipHeaderLength, response) ?: return@execute
+
+                        try {
+                            synchronized(output) {
+                                if (isRunning) {
+                                    output.write(responsePacket)
+                                }
+                            }
+                        } catch (_: Exception) {
+                            // Le tunnel peut être fermé pendant qu'une requête
+                            // parallèle se termine. La session suivante recrée
+                            // une interface et un pool de workers neufs.
+                        }
+                    }
                 } catch (_: Exception) {
                     if (!isRunning) break
                 }
             }
 
+            executor.shutdownNow()
+            if (dnsExecutor === executor) {
+                dnsExecutor = null
+            }
             try { input.close() } catch (_: Exception) {}
             try { output.close() } catch (_: Exception) {}
         }.also { it.start() }
@@ -205,6 +231,8 @@ class DnsVpnService : VpnService() {
         isActive = false
         dnsThread?.interrupt()
         dnsThread = null
+        dnsExecutor?.shutdownNow()
+        dnsExecutor = null
         try { vpnInterface?.close() } catch (_: Exception) {}
         vpnInterface = null
         stopSelf()
