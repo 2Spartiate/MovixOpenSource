@@ -26,8 +26,11 @@ test('native app injects live-site cleanup because the WebView loads remote Movi
   assert.match(overrides, /DETAIL_PATH/);
   assert.match(overrides, /looksLikePosterCardLink/);
   assert.match(overrides, /data-tv-card/);
+  assert.match(overrides, /window\.MOVIX_TV !== true/);
   assert.match(overrides, /data-tv-card-proxy/);
   assert.match(overrides, /data-tv-card-link/);
+  assert.match(overrides, /data-tv-focus-id/);
+  assert.match(overrides, /media:\$\{path\}/);
   assert.match(overrides, /installCardActivation/);
   assert.match(overrides, /event\.key !== 'Enter'/);
   assert.match(overrides, /link\.click\(\)/);
