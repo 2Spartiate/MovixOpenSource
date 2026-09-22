@@ -47,6 +47,7 @@ interface WebViewBrowserProps {
   url: string;
   isTV: boolean;
   onNavigationStateChange?: (state: WebViewNavigation) => void;
+  onLoadSuccess?: () => void;
   onError?: (error: string) => void;
   onPictureInPictureModeChange?: (active: boolean) => void;
 }
@@ -148,7 +149,7 @@ function isTopLevelFailure(
 }
 
 const WebViewBrowser = forwardRef<WebViewBrowserRef, WebViewBrowserProps>(
-  ({ url, isTV, onNavigationStateChange, onError, onPictureInPictureModeChange }, ref) => {
+  ({ url, isTV, onNavigationStateChange, onLoadSuccess, onError, onPictureInPictureModeChange }, ref) => {
     const webViewRef = useRef<WebView>(null);
     const topLevelUrlRef = useRef(url);
     const navigationGenerationRef = useRef(0);
@@ -293,6 +294,7 @@ const WebViewBrowser = forwardRef<WebViewBrowserRef, WebViewBrowserProps>(
         }}
         // Navigation
         onNavigationStateChange={onNavigationStateChange}
+        onLoad={() => onLoadSuccess?.()}
         // Keep multiple-window support enabled so target="_blank" is surfaced
         // through onOpenWindow instead of replacing the current WebView.
         setSupportMultipleWindows={true}
