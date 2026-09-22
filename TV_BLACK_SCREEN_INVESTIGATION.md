@@ -375,3 +375,39 @@ Initial remote HEAD at journal creation: `97c62bedba930f0830f461fdca138fc057c48e
 - NEXT CODE ANALYSIS:
   - Inspect fallback/retry implementation and address-resolution flow to determine what state changes between first load and retry.
   - Compare TV and handheld paths for WebView/network initialization and Android VPN behavior before designing the next one-variable APK.
+
+
+---
+
+## Code-level narrowing — native VPN unchanged; TV-only startup sequencing differs
+
+- DATE: 2026-09-22
+- VERIFIED GIT BLOBS:
+  - `app/android/app/src/main/java/com/movix/app/dns/DnsVpnService.kt`
+    - baseline `ff56b3c5`: `70f6c6539a0ae0033bfd4aa10e2fa439385fb747`
+    - hardware-PASS `c5431067`: same blob
+    - TV-BS-G `29ffab4e`: same blob
+  - `app/android/app/src/main/java/com/movix/app/dns/DnsModule.kt`
+    - baseline `ff56b3c5`: `0a4dfcda8717826b6d68eff4ed2295fa5f12fb92`
+    - hardware-PASS `c5431067`: same blob
+    - TV-BS-G `29ffab4e`: same blob
+- FACT:
+  - The native VPN/DNS implementation itself did not change between original baseline, known-good TV baseline-runtime build, and TV-BS-G.
+  - Native VPN routes only `1.1.1.1/32` and `1.0.0.1/32`; it is a DNS-only TUN path, not a full-traffic VPN.
+- KEY DIFFERENCE:
+  - Baseline / phone path does NOT wait for the DNS VPN permission/activation before mounting the React Native/WebView application. On first run it calls `promptDns()`, marks DNS settled, and continues startup immediately.
+  - TV-BS-G contains a TV-only branch: `isAndroidTvRuntime()` -> `await promptDnsForTv()` -> `DnsModule.enable()` -> `await waitForTvDnsReady()` (+ 250 ms grace) -> only then `setReady(true)` and mount WebView.
+  - On handheld Android, this TV-only blocking path is not used, which directly explains why the phone can remain unaffected.
+- STRONG WORKING HYPOTHESIS:
+  - The regression is caused by WebView/network-process initialization occurring *after* the DNS-only VPN/TUN has already been established on Google TV.
+  - The original/phone behavior initializes WebView while VPN activation is still asynchronous; later VPN establishment does not produce the same failure.
+  - Hardware sequence "VPN on -> black; disable VPN -> fallback; retry -> Movix works without VPN" is compatible with DNS being needed for initial host discovery/resolution while an already-established DNS-only TUN interferes with the first WebView network initialization.
+- IMPORTANT NATIVE DETAIL TO INSTRUMENT LATER IF NEEDED:
+  - `forwardDnsQuery()` calls `protect(socket)` but ignores its Boolean return value.
+  - Android documentation states that a tunnel/upstream socket covered by VPN routes must be protected or its traffic can loop back into the VPN; `protect()` can fail if the VPN is not prepared or has been revoked.
+  - This is a secondary native hypothesis only; because the same native blobs work in the known-good build, startup ordering should be tested first.
+- NEXT CLEAN A/B:
+  - Start from TV-BS-G.
+  - Change only `app/src/App.tsx` back to the exact known-good `c543106`/baseline behavior (remove TV-only blocking DNS wait).
+  - Keep WebViewBrowser, BrowserScreen, MirrorErrorScreen, injection, native VPN code, launcher manifest, and all other runtime variables unchanged.
+  - Expected discriminator: if TV returns to stable rendering with VPN enabled, the TV-only DNS-before-WebView sequencing is the causal regression.
