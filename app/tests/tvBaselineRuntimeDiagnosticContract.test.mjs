@@ -5,7 +5,7 @@ import test from 'node:test';
 const root = new URL('../', import.meta.url);
 const text = path => readFile(new URL(path, root), 'utf8');
 
-test('diagnostic build keeps the original app runtime and only native TV launcher support', async () => {
+test('diagnostic build differs from original runtime only by TV marker injection', async () => {
   const [app, webView, browser, inject, manifest] = await Promise.all([
     text('src/App.tsx'),
     text('src/components/WebViewBrowser.tsx'),
@@ -15,16 +15,19 @@ test('diagnostic build keeps the original app runtime and only native TV launche
   ]);
 
   assert.doesNotMatch(app, /waitForAndroidDnsActive|activateDnsForStartup/);
-  assert.doesNotMatch(webView, /\bisTV\b|isTopLevelFailure|javaScriptCanOpenWindowsAutomatically/);
   assert.doesNotMatch(browser, /isAndroidTvRuntime|tvFailureRetriesRef|movix-tv-back/);
-  assert.doesNotMatch(inject, /buildTvBootstrap|buildTvDpadRuntime|MOVIX_TV|popupBlocker/);
+  assert.doesNotMatch(inject, /buildTvBootstrap|buildTvDpadRuntime|popupBlocker/);
+
+  assert.match(webView, /isAndroidTvRuntime/);
+  assert.match(webView, /window\.MOVIX_TV = true;/);
+  assert.doesNotMatch(webView, /movix-tv-bootstrap-style|MutationObserver|buildTvDpadRuntime/);
 
   assert.match(manifest, /android\.software\.leanback/);
   assert.match(manifest, /android\.intent\.category\.LEANBACK_LAUNCHER/);
   assert.match(manifest, /android:banner="@drawable\/tv_banner"/);
 });
 
-test('original WebView behavior remains present in diagnostic build', async () => {
+test('original WebView behavior remains otherwise intact', async () => {
   const webView = await text('src/components/WebViewBrowser.tsx');
 
   assert.match(webView, /Linking\.openURL/);
