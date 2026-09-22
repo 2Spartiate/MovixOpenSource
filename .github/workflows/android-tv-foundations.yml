@@ -18,6 +18,7 @@ concurrency:
 
 permissions:
   contents: read
+  actions: write
 
 jobs:
   validate:
@@ -114,6 +115,52 @@ jobs:
           test -f "$APK"
           unzip -l "$APK" | grep -q 'assets/index.android.bundle'
           echo "Standalone React Native bundle is packaged in $APK"
+
+      - name: Delete previous Movix Android APK/AAB artifacts
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          ARTIFACTS_FILE="${RUNNER_TEMP}/movix-android-artifacts.tsv"
+          : > "${ARTIFACTS_FILE}"
+
+          page=1
+          while true; do
+            response="$(gh api "repos/${GITHUB_REPOSITORY}/actions/artifacts?per_page=100&page=${page}")"
+            count="$(jq '.artifacts | length' <<<"${response}")"
+
+            jq -r --argjson current_run "${GITHUB_RUN_ID}" '
+              .artifacts[]
+              | select(
+                  (.workflow_run.id != $current_run)
+                  and (.name | test("^movix.*(apk|aab)"; "i"))
+                )
+              | [.id, .name, .workflow_run.id]
+              | @tsv
+            ' <<<"${response}" >> "${ARTIFACTS_FILE}"
+
+            if [ "${count}" -lt 100 ]; then
+              break
+            fi
+            page=$((page + 1))
+          done
+
+          if [ ! -s "${ARTIFACTS_FILE}" ]; then
+            echo "No previous Movix APK/AAB artifacts to delete."
+          else
+            while IFS=        with:
+          name: movix-google-tv-standalone-apk
+          path: app/android/app/build/outputs/apk/release/app-release.apk
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 7
+\t' read -r artifact_id artifact_name artifact_run; do
+              echo "Deleting artifact ${artifact_id}: ${artifact_name} (run ${artifact_run})"
+              gh api --method DELETE                 "repos/${GITHUB_REPOSITORY}/actions/artifacts/${artifact_id}"
+            done < "${ARTIFACTS_FILE}"
+          fi
 
       - name: Upload Google TV standalone APK
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
