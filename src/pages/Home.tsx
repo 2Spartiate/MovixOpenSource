@@ -7,7 +7,6 @@ import { useTranslation } from 'react-i18next';
 import HeroSkeleton from '../components/skeletons/HeroSkeleton';
 import ContentRowSkeleton from '../components/skeletons/ContentRowSkeleton';
 
-import TelegramPromotion from '../components/TelegramPromotion';
 import HeroSlider from '../components/HeroSlider';
 import EmblaCarousel from '../components/EmblaCarousel';
 import EmblaCarouselPlatforms from '../components/EmblaCarouselPlatforms';
@@ -1283,10 +1282,6 @@ const Home: React.FC = () => {
             >
               {!loading && (
                 <div>
-                  <div className="home-section">
-                    <TelegramPromotion />
-                  </div>
-
                   {/* Tendances - Lazy loaded (index 3) */}
                   <div className="home-section px-4 md:px-8">
                     <LazySection index={3} immediateLoadCount={IMMEDIATE_LOAD_COUNT}>
