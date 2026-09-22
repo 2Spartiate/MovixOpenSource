@@ -799,3 +799,32 @@ Initial remote HEAD at journal creation: `97c62bedba930f0830f461fdca138fc057c48e
   - If J1 behavior persists (partial first launch, later fallback, Retry works), concurrency alone is insufficient and J2B should add DNS-over-TCP support next.
   - If black returns, stop and investigate concurrency/TUN write ordering before proceeding.
 - USER HARDWARE RESULT: **PENDING**
+
+
+---
+
+## TV-BS-J2A hardware result — first launch fixed, repeated-launch fallback remains
+
+- DATE OF HARDWARE RESULT: 2026-09-22
+- APK: TV-BS-J2A
+- APK SOURCE COMMIT: `3d69d59be46eb4810207bf8e206f218d369ffd85`
+- APK SHA-256: `47d75a55a29d20a692feb1a5a8a690e66330be4b697813bf6b704bdd8619babc`
+- UNIQUE TEST VARIABLE:
+  - J1 virtual DNS architecture preserved;
+  - UDP/53 forwarding changed from serial/blocking to 8 concurrent workers with synchronized TUN writes.
+- USER HARDWARE OBSERVATION:
+  1. First launch: OK.
+  2. Second launch after kill: OK.
+  3. Third and subsequent launches: fallback.
+  4. On fallback, pressing "Réessayer" succeeds immediately.
+- FACTUAL CONSEQUENCE:
+  - Concurrent UDP DNS forwarding materially improves startup reliability versus J1:
+    - J1 first launch: shell/logo only.
+    - J2A first launch: fully OK.
+  - Therefore serial head-of-line blocking in the DNS relay was materially involved in the first-launch partial-load failure.
+  - The recurring third-launch fallback is NOT solved by UDP concurrency alone.
+  - Black WebView does not return under this observed sequence, so J1's virtual-DNS routing improvement remains effective.
+- LEADING NEXT STEP:
+  - Keep J2A unchanged.
+  - Add DNS-over-TCP support as TV-BS-J2B, still limited to the virtual DNS endpoint and port 53.
+  - Do not add automatic UI retry yet; the remaining failure should be fixed at the resolver/transport layer if possible.
