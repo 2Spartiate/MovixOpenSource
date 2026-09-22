@@ -922,3 +922,30 @@ Initial remote HEAD at journal creation: `97c62bedba930f0830f461fdca138fc057c48e
   - If launches 3+ now succeed directly, the remaining J2A fallback was a DNS-service readiness race.
   - If fallback persists unchanged, `isActive` is not a sufficient readiness signal and the next diagnostic should validate actual DNS query success rather than merely service state.
 - USER HARDWARE RESULT: **PENDING**
+
+
+---
+
+## TV-BS-J2B hardware result — readiness gating worsens launch behavior
+
+- DATE OF HARDWARE RESULT: 2026-09-22
+- APK: TV-BS-J2B
+- APK SOURCE COMMIT: `dd01dfe4c1debb53ad7ba534f092a06131457773`
+- APK SHA-256: `22327fde1f4389f480ab7dc32b542f78b56dfaf8dbcd349050df3734ced4bad3`
+- UNIQUE TEST VARIABLE:
+  - J2A virtual-DNS + concurrent UDP relay frozen;
+  - on stored-enabled/native-disabled Android relaunch, app waits for `DnsModule.isEnabled() === true` before mounting address/WebView path.
+- USER HARDWARE OBSERVATION:
+  1. First launch: structural shell only.
+  2. Second and subsequent launches: fallback.
+  3. On every fallback, pressing "Réessayer" succeeds.
+- FACTUAL CONSEQUENCE:
+  - Gating startup on `isActive/isEnabled === true` does NOT solve the repeated-launch fallback.
+  - Compared with J2A (launch 1 OK, launch 2 OK, launch 3+ fallback), J2B is worse:
+    - launch 1 regresses to shell-only;
+    - launch 2 already falls back.
+  - Therefore `DnsVpnService.isActive === true` is NOT a sufficient signal that the DNS path is actually usable by AddressResolver/WebView.
+  - More importantly, delaying initial address/WebView startup until after the VPN becomes active is itself correlated with worse behavior on this TV, consistent with earlier tests where pre-WebView VPN readiness produced failures.
+- NEXT ACTION REQUESTED BY USER:
+  - Re-read the complete experiment history before making another code change.
+  - Derive a solution that explains the entire observed sequence rather than stacking more local patches.
