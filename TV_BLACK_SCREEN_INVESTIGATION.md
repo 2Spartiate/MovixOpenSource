@@ -411,3 +411,57 @@ Initial remote HEAD at journal creation: `97c62bedba930f0830f461fdca138fc057c48e
   - Change only `app/src/App.tsx` back to the exact known-good `c543106`/baseline behavior (remove TV-only blocking DNS wait).
   - Keep WebViewBrowser, BrowserScreen, MirrorErrorScreen, injection, native VPN code, launcher manifest, and all other runtime variables unchanged.
   - Expected discriminator: if TV returns to stable rendering with VPN enabled, the TV-only DNS-before-WebView sequencing is the causal regression.
+
+
+---
+
+## TV-BS-H — exact baseline DNS/WebView startup ordering
+
+- TEST ID: TV-BS-H
+- DATE: 2026-09-22
+- PURPOSE:
+  - Test whether the TV-only blocking sequence "VPN ready before WebView mount" is the causal regression.
+- UNIQUE RUNTIME VARIABLE VS TV-BS-G:
+  - `app/src/App.tsx` restored exactly to the hardware-PASS `c543106` / original baseline behavior.
+  - Removed TV-only `isAndroidTvRuntime()` DNS startup branch, `promptDnsForTv()`, `waitForTvDnsReady()`, and the 250 ms post-ready grace.
+  - First-run DNS prompt is again asynchronous and does not block WebView startup, exactly like the original app and handheld Android path.
+- FROZEN RUNTIME ANCHORS:
+  - `App.tsx`: `5fbe28710abf29ed78a478e1ca6bdf364f82b71a`
+  - `WebViewBrowser.tsx`: `c42d8b9e33dd01af93ddadbf9f89ba432255784a`
+  - `BrowserScreen.tsx`: `e7a7aae7f7754c49880b166006debff6b25efdbb`
+  - `MirrorErrorScreen.tsx`: `39854aee4c3fda0915629de455059f61486c557e`
+  - `inject.ts`: `4df61dd53d5bd8d9cb30368905aa20aac261d142`
+  - native `DnsModule.kt`: `0a4dfcda8717826b6d68eff4ed2295fa5f12fb92`
+  - native `DnsVpnService.kt`: `70f6c6539a0ae0033bfd4aa10e2fa439385fb747`
+- TEST COMMIT / APK SOURCE COMMIT:
+  - `6dbd88159e725add934eb4595f226dea5378eda5`
+  - message: `diag(tv): restore baseline DNS/WebView startup ordering`
+- CI:
+  - workflow: Android TV foundations
+  - run ID: `35722118740`
+  - conclusion: PASS
+  - A/B diagnostic contract: PASS
+  - frontend production build: PASS
+  - standalone Android APK: PASS
+  - merged TV/mobile manifest contract: PASS
+  - standalone JS bundle packaged: PASS
+- GITHUB ARTIFACT:
+  - ID: `10692326949`
+  - name: `movix-google-tv-standalone-apk`
+  - artifact ZIP digest: `sha256:2eb1b473399bc1c8e0c2c971d46d25c46aa13cd82adfb9defe829f6cdce58ea7`
+- APK:
+  - file: `app-release.apk`
+  - size: `72,593,302 bytes`
+  - SHA-256: `1ff14effc12f1b83cbf5036eb4d171918b5c55ce4812c013ee8d904a0e6f2f1a`
+- HARDWARE PROTOCOL:
+  1. Install TV-BS-H.
+  2. Keep the normal Movix DNS/VPN feature enabled; do not manually force a VPN restart/resync.
+  3. On a fresh first launch, record whether both expected prompts appear if Android requires VPN consent.
+  4. Record whether Movix renders on the first launch.
+  5. Perform at least three complete kill/relaunch cycles with VPN enabled and record each result.
+  6. If fallback appears, record exactly what preceded it; do not change VPN state before recording.
+  7. Test basic images/search/video only if the page renders.
+- EXPECTED DISCRIMINATOR:
+  - Stable rendering with VPN enabled strongly identifies the removed TV-only DNS-before-WebView sequencing as the causal regression.
+  - Continued black screen means startup ordering alone is insufficient and the next test must isolate another VPN/WebView interaction without changing native VPN code gratuitously.
+- USER HARDWARE RESULT: **PENDING**
