@@ -118,13 +118,8 @@ export function buildAppSiteOverrides(): string {
           const hasStar = Boolean(
             button.querySelector('svg.lucide-star, .lucide-star')
           );
-          const classes = String(button.className || '');
-          const looksLikeOverlay =
-            classes.includes('absolute') ||
-            classes.includes('top-') ||
-            classes.includes('right-');
 
-          if (hasStar && looksLikeOverlay) button.remove();
+          if (hasStar) button.remove();
         });
       });
   };
