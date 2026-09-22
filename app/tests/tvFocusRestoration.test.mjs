@@ -16,6 +16,13 @@ test('initial TV focus uses explicit priority order', async () => {
   assert.match(source, /elements\[0\]/);
 });
 
+test('initial TV focus waits briefly for media content instead of stealing focus to search', async () => {
+  const source = await text('src/injection/tv-dpad-runtime.ts');
+  assert.match(source, /preferContentAfterNavigation = true/);
+  assert.match(source, /performance\.now\(\) \+ 5000/);
+  assert.match(source, /scheduleFocusRecovery\(\)/);
+});
+
 test('initial focus never replaces an already meaningful active element', async () => {
   const source = await text('src/injection/tv-dpad-runtime.ts');
   assert.match(source, /active === document\.body \|\| active === document\.documentElement/);
