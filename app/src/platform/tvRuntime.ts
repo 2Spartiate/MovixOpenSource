@@ -9,5 +9,10 @@ import { resolveAndroidTvRuntime } from './tvRuntimePolicy';
  * Keep this wrapper free of screen-size and user-agent heuristics.
  */
 export function isAndroidTvRuntime(): boolean {
-  return resolveAndroidTvRuntime(Platform.OS, Platform.isTV);
+  const uiMode =
+    Platform.OS === 'android'
+      ? String((Platform.constants as { uiMode?: unknown } | undefined)?.uiMode ?? '')
+      : '';
+
+  return resolveAndroidTvRuntime(Platform.OS, Platform.isTV, uiMode);
 }

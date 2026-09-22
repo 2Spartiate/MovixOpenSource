@@ -1,6 +1,9 @@
 export function resolveAndroidTvRuntime(
   os: string,
   platformIsTV: boolean,
+  uiMode?: string | null,
 ): boolean {
-  return os === 'android' && platformIsTV === true;
+  if (os !== 'android') return false;
+  if (platformIsTV === true) return true;
+  return String(uiMode || '').toLowerCase() === 'tv';
 }
