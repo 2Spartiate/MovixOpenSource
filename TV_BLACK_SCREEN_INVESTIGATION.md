@@ -491,3 +491,41 @@ Initial remote HEAD at journal creation: `97c62bedba930f0830f461fdca138fc057c48e
   - Focus shifts from React/WebView startup ordering to Android VPN service lifecycle / TUN state across app process kills and relaunches, or to a Google TV-specific interaction between that persistent DNS-only VPN and Chromium/WebView networking.
 - NEXT ANALYSIS:
   - Inspect service lifecycle semantics (`START_STICKY`, `onDestroy`, `onRevoke`, static `isActive`) and whether repeated app kills can leave/recreate VPN/TUN state differently from handheld Android.
+
+
+---
+
+## Native VPN lifecycle finding after TV-BS-H
+
+- DATE: 2026-09-22
+- CONTROL COMPARISON:
+  - `c543106779066d73fe8603efde9315e6a9fd4766` -> TV-BS-H runtime commit `6dbd88159e725add934eb4595f226dea5378eda5`
+  - Only four repository files differ:
+    - `TV_BLACK_SCREEN_INVESTIGATION.md` (documentation only)
+    - `app/src/injection/tv-render-diagnostic.ts` (added diagnostic source, not referenced by the frozen baseline WebView runtime)
+    - `app/src/platform/tvRuntimePolicy.ts` (only adds exported `TV_PRODUCT_FEATURES_ENABLED = false`; `resolveAndroidTvRuntime()` body is unchanged)
+    - `app/tests/tvBaselineRuntimeDiagnosticContract.test.mjs` (test only)
+  - Therefore TV-BS-H is functionally extremely close to the historical hardware-PASS baseline runtime.
+- ANDROID BUILD CONTRACT:
+  - `targetSdkVersion = 35`
+  - `compileSdkVersion = 35`
+  - `minSdkVersion = 24`
+- NATIVE VPN SERVICE BEHAVIOR:
+  - `DnsVpnService.onStartCommand()` returns `START_STICKY`.
+  - Android's documented `START_STICKY` semantics allow the system to recreate a killed service later and call `onStartCommand()` with a null Intent when there is no pending start command.
+  - `DnsVpnService` does **not** call `startForeground()`.
+  - Android's documented VpnService behavior on API 26+ requires a VPN service launched in the background to promote itself to foreground or the system may shut it down.
+- WHY THIS FITS THE HARDWARE SEQUENCE:
+  - Repeated kill/relaunch cycles are exactly the scenario where a sticky service can enter system-driven recreation rather than clean app-driven startup.
+  - The observed sequence (launch 1 partial, launch 2 perfect, launch 3+ black) is compatible with lifecycle/state accumulation or system-driven restart of the DNS-only VPN service.
+  - Manual Android VPN disconnect immediately restoring Movix strongly keeps the VPN/TUN lifecycle as the leading causal area.
+- SECONDARY NATIVE RISK:
+  - `forwardDnsQuery()` calls `protect(socket)` but ignores the returned Boolean.
+  - Android documents that an unprotected upstream socket whose destination is covered by VPN routes can loop back into the VPN; `protect()` returns false if the app is not prepared or has been revoked.
+  - Do NOT change this together with service restart semantics in the next A/B.
+- NEXT ONE-VARIABLE A/B RECOMMENDATION:
+  - Starting from TV-BS-H, change only `DnsVpnService.onStartCommand()` return value from `START_STICKY` to `START_NOT_STICKY`.
+  - Rationale: after an app/process kill, Android will not autonomously recreate the DNS VPN service; the next Movix launch will explicitly re-enable it from the normal app path.
+  - Keep foreground-service behavior, `protect()`, App.tsx, WebView, DNS forwarding and all other runtime code unchanged for this diagnostic.
+  - If the repeated sequence disappears across several kill/relaunch cycles, sticky VPN recreation is strongly implicated.
+  - If it persists, the next observation target should be `protect(socket)` result / DNS forwarding lifecycle rather than broad WebView changes.
