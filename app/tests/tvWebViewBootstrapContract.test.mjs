@@ -47,6 +47,18 @@ test('TV bootstrap and D-pad runtime are enabled only behind tvMode', async () =
   assert.doesNotMatch(inject, /tvDpadEnabled/);
 });
 
+test('TV marker is injected before live-site overrides and D-pad runtime', async () => {
+  const inject = await text('src/injection/inject.ts');
+
+  const bootstrap = inject.indexOf('${tvBootstrap}');
+  const overrides = inject.indexOf('${appSiteOverrides}');
+  const dpad = inject.indexOf('${tvDpadRuntime}');
+
+  assert.ok(bootstrap >= 0);
+  assert.ok(overrides > bootstrap);
+  assert.ok(dpad > overrides);
+});
+
 test('WebView injection cache is partitioned by journal and TV runtime', async () => {
   const webView = await text('src/components/WebViewBrowser.tsx');
 
