@@ -18,49 +18,75 @@ import { loadNetworkJournalPreference } from './services/networkJournal';
 
 const { DnsModule } = NativeModules;
 
-function promptDns() {
-  Alert.alert(
-    'DNS Cloudflare 1.1.1.1',
-    'Activer le DNS Cloudflare pour une navigation plus rapide et sécurisée ?\n\n(Recommandé)',
-    [
-      {
-        text: 'Non merci',
-        style: 'cancel',
-        onPress: () => {
-          AsyncStorage.setItem('dns_enabled', 'false');
-        },
-      },
-      {
-        text: 'Activer',
-        style: 'default',
-        onPress: async () => {
-          try {
-            if (!DnsModule) {
-              await AsyncStorage.setItem('dns_enabled', 'false');
-              return;
-            }
+const DNS_BOOT_TIMEOUT_MS = 5000;
+const DNS_BOOT_POLL_MS = 100;
 
-            if (Platform.OS === 'ios') {
-              const dnsActivated = await DnsModule.enable('1.1.1.1', '1.0.0.1');
+const delay = (ms: number) => new Promise<void>(resolve => setTimeout(resolve, ms));
+
+async function waitForAndroidDnsActive(): Promise<boolean> {
+  if (Platform.OS !== 'android' || !DnsModule) return false;
+
+  const deadline = Date.now() + DNS_BOOT_TIMEOUT_MS;
+  while (Date.now() < deadline) {
+    try {
+      if (await DnsModule.isEnabled()) return true;
+    } catch {}
+    await delay(DNS_BOOT_POLL_MS);
+  }
+  return false;
+}
+
+async function activateDnsForStartup(): Promise<boolean> {
+  if (!DnsModule) return false;
+
+  const enabled = await DnsModule.enable('1.1.1.1', '1.0.0.1');
+  if (Platform.OS === 'ios') return enabled === true;
+
+  // DnsModule.enable() starts the Android service, but the promise may resolve
+  // before DnsVpnService.establish() has published isActive=true. Do not mount
+  // the address resolver/WebView until the VPN DNS route is actually ready.
+  return waitForAndroidDnsActive();
+}
+
+function promptDns(): Promise<void> {
+  return new Promise(resolve => {
+    Alert.alert(
+      'DNS Cloudflare 1.1.1.1',
+      'Activer le DNS Cloudflare pour une navigation plus rapide et sécurisée ?\n\n(Recommandé)',
+      [
+        {
+          text: 'Non merci',
+          style: 'cancel',
+          onPress: async () => {
+            await AsyncStorage.setItem('dns_enabled', 'false');
+            resolve();
+          },
+        },
+        {
+          text: 'Activer',
+          style: 'default',
+          onPress: async () => {
+            try {
+              const dnsActivated = await activateDnsForStartup();
               await AsyncStorage.setItem('dns_enabled', dnsActivated ? 'true' : 'false');
-              if (!dnsActivated) {
+              if (Platform.OS === 'ios' && !dnsActivated) {
                 Alert.alert(
                   'Activation DNS requise',
                   'La configuration est installée. Active-la manuellement dans Réglages > Général > VPN et gestion de l’appareil > DNS.',
                   [{ text: 'Compris' }],
                 );
               }
-            } else {
-              await DnsModule.enable('1.1.1.1', '1.0.0.1');
-              await AsyncStorage.setItem('dns_enabled', 'true');
+            } catch {
+              await AsyncStorage.setItem('dns_enabled', 'false');
+            } finally {
+              resolve();
             }
-          } catch {
-            await AsyncStorage.setItem('dns_enabled', 'false');
-          }
+          },
         },
-      },
-    ],
-  );
+      ],
+      { cancelable: false },
+    );
+  });
 }
 
 export default function App() {
@@ -92,17 +118,20 @@ export default function App() {
           }
           setDnsSettled(true);
         } else if (stored === 'true' && DnsModule && Platform.OS === 'android') {
-          DnsModule.enable('1.1.1.1', '1.0.0.1').catch(() => {});
+          try {
+            const dnsActivated = await activateDnsForStartup();
+            await AsyncStorage.setItem('dns_enabled', dnsActivated ? 'true' : 'false');
+          } catch {
+            await AsyncStorage.setItem('dns_enabled', 'false');
+          }
           setDnsSettled(true);
         } else if (stored === 'true') {
           await AsyncStorage.setItem('dns_enabled', 'false');
           setDnsSettled(true);
         } else if (stored === null) {
-          promptDns();
-          // Mark settled on next tick — we don't block on user's DNS answer.
-          // The update check is cheap and will still run after; its dialog
-          // stacks on top of the DNS prompt on Android without issue now
-          // that it's a proper Modal, not Alert.alert.
+          // First launch: wait for the user's VPN/DNS decision and, on Android,
+          // for DnsVpnService.isActive before mounting AddressProvider.
+          await promptDns();
           setDnsSettled(true);
         } else {
           setDnsSettled(true);
