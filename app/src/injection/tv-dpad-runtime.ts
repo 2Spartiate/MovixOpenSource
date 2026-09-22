@@ -157,8 +157,8 @@ ${domDiscoveryRuntime}
     const elements = api.getTVFocusableElements();
     const target =
       elements.find(element => element.hasAttribute('data-tv-autofocus')) ||
-      elements.find(element => element.hasAttribute('data-tv-primary-focus')) ||
       elements.find(element => element.hasAttribute('data-tv-card')) ||
+      elements.find(element => element.hasAttribute('data-tv-primary-focus')) ||
       elements[0];
 
     return target ? focusWithoutJank(target) : false;
@@ -231,6 +231,10 @@ ${domDiscoveryRuntime}
     cancelAnimationFrame(api.focusRecoveryRaf);
     api.focusRecoveryRaf = null;
   }
+  if (api.focusRecoveryTimer) {
+    clearTimeout(api.focusRecoveryTimer);
+    api.focusRecoveryTimer = null;
+  }
 
   const handleFocusIn = (event) => {
     const target = event.target;
@@ -241,7 +245,19 @@ ${domDiscoveryRuntime}
   api.focusinHandler = handleFocusIn;
 
   const scheduleFocusRecovery = () => {
-    if (!pageFocusIsEmpty() || api.focusRecoveryRaf) return;
+    if (!pageFocusIsEmpty() || api.focusRecoveryRaf || api.focusRecoveryTimer) return;
+
+    const remainingNavigationMs =
+      Number(api.navigationInProgressUntil || 0) - performance.now();
+
+    if (remainingNavigationMs > 0) {
+      api.focusRecoveryTimer = setTimeout(() => {
+        api.focusRecoveryTimer = null;
+        scheduleFocusRecovery();
+      }, Math.min(Math.max(remainingNavigationMs, 80), 1500));
+      return;
+    }
+
     api.focusRecoveryRaf = requestAnimationFrame(() => {
       api.focusRecoveryRaf = null;
       if (!pageFocusIsEmpty()) return;
@@ -275,6 +291,10 @@ ${domDiscoveryRuntime}
     if (api.focusRecoveryRaf) {
       cancelAnimationFrame(api.focusRecoveryRaf);
       api.focusRecoveryRaf = null;
+    }
+    if (api.focusRecoveryTimer) {
+      clearTimeout(api.focusRecoveryTimer);
+      api.focusRecoveryTimer = null;
     }
   };
 
