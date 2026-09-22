@@ -128,7 +128,7 @@ const WebViewBrowser = forwardRef<WebViewBrowserRef, WebViewBrowserProps>(
 
     React.useEffect(() => {
       topLevelUrlRef.current = url;
-    }, [isTV, url]);
+    }, [url]);
 
     React.useEffect(() => {
       const stopCastStatusForwarding = startCastShimEventForwarding(webViewRef);
@@ -237,7 +237,7 @@ const WebViewBrowser = forwardRef<WebViewBrowserRef, WebViewBrowserProps>(
         isTopFrame: isTopFrame,
         navigationGeneration: navigationGenerationRef.current,
       });
-    }, [url]);
+    }, [isTV, url]);
 
     // `window.open` et les liens `target="_blank"` : sans ce gestionnaire,
     // react-native-webview recharge la cible dans le WebView courant, ce qui
