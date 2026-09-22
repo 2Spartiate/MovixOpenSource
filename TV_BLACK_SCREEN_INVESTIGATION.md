@@ -283,3 +283,37 @@ Initial remote HEAD at journal creation: `97c62bedba930f0830f461fdca138fc057c48e
 - HYPOTHÈSES EXCLUES: none additionally until hardware result exists.
 - HYPOTHÈSES ENCORE OUVERTES: MOVIX_TV marker, WebView/Chromium persisted state, VPN/DNS state, startup race, cache/service-worker state.
 - PROCHAIN TEST RECOMMANDÉ: **do not choose until TV-BS-G hardware result is recorded.**
+
+
+---
+
+## TV-BS-G hardware result — BLACK / VPN CONSENT STATE DIFFERENT
+
+- TEST ID: TV-BS-G
+- DATE OF HARDWARE RESULT: 2026-09-22
+- TEST RUNTIME COMMIT: `29ffab4ee454c4e18bfb6bcfa24ac6aefbe5f67f`
+- APK SHA-256: `dad600b805ed64a91e008d675af6425a6f58ae19016d620e03ddfae79c0957f9`
+- USER HARDWARE RESULT:
+  - WebView content black on every tested launch.
+  - Native navigation bar remained functional, as in previous failures.
+  - On the first launch, only the first in-app Cloudflare prompt appeared.
+  - The second Android system VPN authorization prompt ("Movix souhaite changer la configuration réseau") did **not** appear.
+- FACT:
+  - `DnsModule.enable()` calls Android `VpnService.prepare(activity)`.
+  - If `VpnService.prepare()` returns a non-null Intent, Android shows the system VPN authorization UI.
+  - If it returns null, the app is already considered prepared/previously consented and the code starts `DnsVpnService` immediately.
+- IMPORTANT INTERPRETATION:
+  - TV-BS-G did successfully remove `window.MOVIX_TV`, but its OS-level VPN authorization starting state did **not** match the fresh-consent state observed in TEST D.
+  - Therefore TV-BS-G's all-black result does **not** cleanly falsify the MOVIX_TV hypothesis yet; the A/B is confounded by a different Android VPN consent state.
+  - Clearing application data is not sufficient evidence that Android's system VPN consent has been revoked.
+- ADDRESS-BAR HYPOTHESIS:
+  - TV-BS-G uses the exact `BrowserScreen.tsx` and `WebViewBrowser.tsx` blobs from hardware-PASS TEST B / `c543106`.
+  - Therefore the later forced-hidden address-bar/UI change is absent from this APK and cannot explain TV-BS-G directly.
+- NEXT TEST RECOMMENDED:
+  - **Do not build another APK yet.**
+  - Reuse the exact TV-BS-G APK.
+  - Explicitly revoke/disconnect Movix's Android VPN authorization/state at OS level until the second Android VPN authorization prompt is guaranteed to reappear.
+  - Clear all Movix app data after that.
+  - Relaunch the same TV-BS-G APK and repeat the launch sequence.
+  - This changes only the OS-level VPN authorization precondition while keeping the APK byte-identical.
+- RESULT STATUS: hardware result recorded; MOVIX_TV causality remains unresolved because of the VPN-consent confound.
