@@ -317,3 +317,32 @@ Initial remote HEAD at journal creation: `97c62bedba930f0830f461fdca138fc057c48e
   - Relaunch the same TV-BS-G APK and repeat the launch sequence.
   - This changes only the OS-level VPN authorization precondition while keeping the APK byte-identical.
 - RESULT STATUS: hardware result recorded; MOVIX_TV causality remains unresolved because of the VPN-consent confound.
+
+
+---
+
+## TV-BS-G hardware follow-up — VPN DISCONNECTED => APP WORKS
+
+- DATE OF HARDWARE RESULT: 2026-09-22
+- APK UNDER TEST: exact same TV-BS-G APK
+- TEST RUNTIME COMMIT: `29ffab4ee454c4e18bfb6bcfa24ac6aefbe5f67f`
+- APK SHA-256: `dad600b805ed64a91e008d675af6425a6f58ae19016d620e03ddfae79c0957f9`
+- USER HARDWARE OBSERVATION:
+  - With the Movix/Cloudflare VPN active, WebView content is black while the native navigation bar remains alive.
+  - After disconnecting the VPN at Android/Google TV system level, the application works and Movix content renders.
+- FACTUAL IMPORTANCE:
+  - No APK rebuild occurred between failure and success.
+  - No WebView/product-code change occurred between failure and success.
+  - The observed variable changed was the VPN connection state.
+- INTERPRETATION:
+  - This is the strongest evidence so far that the black-screen regression is in, or is triggered by, the Android DNS VPN path rather than the address bar, D-pad, MOVIX_TV marker, or baseline WebView rendering itself.
+  - This does not yet identify the exact defect inside the VPN path (permission lifecycle, TUN establishment, DNS forwarding, routing, startup race, stale service, packet handling, or interaction with Android WebView networking).
+- ADDRESS-BAR STATUS:
+  - Effectively excluded as direct cause for this failure: the same APK renders when VPN is disconnected.
+- NEXT MINIMAL CONFIRMATION:
+  - Keep the APK byte-identical.
+  - Toggle only VPN state on the same installation and observe whether the result follows the VPN state reproducibly:
+    1. VPN OFF -> verify Movix renders.
+    2. VPN ON -> verify whether content turns/stays black after a clean app relaunch.
+    3. VPN OFF -> verify rendering returns after a clean app relaunch.
+  - If OFF=works / ON=black / OFF=works reproduces, treat VPN path as causally demonstrated at the system level and move to isolating the specific VPN implementation defect.
