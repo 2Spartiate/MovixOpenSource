@@ -739,3 +739,63 @@ Initial remote HEAD at journal creation: `97c62bedba930f0830f461fdca138fc057c48e
   - Keep J1 architecture.
   - Add DNS-over-TCP support and enforce/check `protect(socket)` results in a separate checkpoint if possible.
   - Also consider an automatic one-shot retry only after the network/DNS layer is proven correct; do not hide a resolver defect with UI retries prematurely.
+
+
+---
+
+## TV-BS-J2A — concurrent UDP DNS forwarding
+
+- TEST ID: TV-BS-J2A
+- DATE: 2026-09-22
+- BASE: TV-BS-J1.
+- PURPOSE:
+  - Test whether sequential, blocking DNS forwarding causes the remaining partial-load/fallback behavior.
+- UNIQUE RUNTIME CHANGE:
+  - Keep the J1 virtual DNS architecture unchanged.
+  - Keep IPv4 UDP/53 only.
+  - Replace single-file serial upstream DNS handling with a bounded pool of 8 concurrent workers.
+  - Each DNS query is forwarded independently so one slow upstream response cannot block subsequent DNS queries.
+  - Writes back to the TUN remain synchronized to prevent packet interleaving.
+- INTENTIONALLY NOT CHANGED:
+  - no DNS-over-TCP support;
+  - no `protect(socket)` Boolean enforcement;
+  - no App/WebView startup changes;
+  - no retry/UI behavior changes;
+  - `START_NOT_STICKY` retained from I/J1;
+  - virtual DNS remains `10.215.173.2/32`.
+- NEW VPN BLOB:
+  - `DnsVpnService.kt`: `95201edbeb0cf8fe97f9ab3f3a11ddf4e0b2fff0`
+- APK SOURCE COMMIT:
+  - `3d69d59be46eb4810207bf8e206f218d369ffd85`
+  - message: `diag(tv): forward virtual DNS queries concurrently`
+- CI:
+  - workflow: Android TV foundations
+  - run ID: `35763062193`
+  - conclusion: PASS
+  - J2A diagnostic contract: PASS
+  - frontend production build: PASS
+  - standalone Android APK: PASS
+  - merged TV/mobile manifest contract: PASS
+  - standalone JS bundle packaged: PASS
+- GITHUB ARTIFACT:
+  - ID: `10710658748`
+  - name: `movix-google-tv-standalone-apk`
+  - artifact ZIP digest: `sha256:924951537a1d9792d1cd7884155da4ed09929f27c8e09133d7dfacfe29e7675f`
+- APK:
+  - file: `app-release.apk`
+  - size: `72,593,302 bytes`
+  - SHA-256: `47d75a55a29d20a692feb1a5a8a690e66330be4b697813bf6b704bdd8619babc`
+- HARDWARE PROTOCOL:
+  1. Install TV-BS-J2A.
+  2. Leave Movix DNS/VPN enabled normally.
+  3. Record first launch as full / shell-only / fallback / black.
+  4. Perform at least five complete kill/relaunch cycles.
+  5. Record every launch independently.
+  6. On successful launches, verify posters/images, search and basic navigation.
+  7. If fallback appears, press Retry once without changing VPN state and record whether it succeeds.
+  8. Do not manually disconnect VPN unless black unexpectedly returns.
+- EXPECTED DISCRIMINATOR:
+  - If first launch and repeated relaunches become reliably complete, serial DNS head-of-line blocking was materially involved.
+  - If J1 behavior persists (partial first launch, later fallback, Retry works), concurrency alone is insufficient and J2B should add DNS-over-TCP support next.
+  - If black returns, stop and investigate concurrency/TUN write ordering before proceeding.
+- USER HARDWARE RESULT: **PENDING**
