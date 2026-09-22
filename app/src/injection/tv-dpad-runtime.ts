@@ -286,8 +286,19 @@ ${domDiscoveryRuntime}
       api.focusObserver = new MutationObserver(scheduleFocusRecovery);
       api.focusObserver.observe(document.body, { childList: true, subtree: true });
     }
+
+    // The remote SPA usually mounts the header before the media rows. Waiting
+    // briefly for a card prevents the search input from stealing initial focus.
+    if (pageFocusIsEmpty()) {
+      api.preferContentAfterNavigation = true;
+      api.navigationInProgressUntil = Math.max(
+        Number(api.navigationInProgressUntil || 0),
+        performance.now() + 5000,
+      );
+    }
+
     requestAnimationFrame(() => {
-      if (pageFocusIsEmpty()) api.ensureInitialFocus();
+      if (pageFocusIsEmpty()) scheduleFocusRecovery();
     });
   };
 
