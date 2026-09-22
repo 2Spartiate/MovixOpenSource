@@ -21,12 +21,14 @@ import MirrorErrorScreen from '../components/MirrorErrorScreen';
 import { setLocalPlaybackAwake } from '../services/playbackAwake';
 import { setPictureInPicturePlaybackActive } from '../services/pictureInPicture';
 import { useAddress } from '../context/AddressContext';
+import { isAndroidTvRuntime } from '../platform/tvRuntime';
 import SettingsScreen from './SettingsScreen';
 
 export default function BrowserScreen() {
   const insets = useSafeAreaInsets();
   const webViewRef = useRef<WebViewBrowserRef>(null);
   const { config, isLoading, refresh } = useAddress();
+  const isTV = useMemo(() => isAndroidTvRuntime(), []);
 
   const urlChain = useMemo(() => {
     if (!config) return [];
@@ -53,14 +55,25 @@ export default function BrowserScreen() {
         return true;
       }
       if (canGoBack) {
-        webViewRef.current?.goBack();
+        if (isTV) {
+          webViewRef.current?.injectJavaScript(`
+            (() => {
+              const event = new Event('movix-tv-back', { cancelable: true });
+              window.dispatchEvent(event);
+              if (!event.defaultPrevented) window.history.back();
+            })();
+            true;
+          `);
+        } else {
+          webViewRef.current?.goBack();
+        }
         return true;
       }
       return false;
     });
 
     return () => handler.remove();
-  }, [canGoBack, settingsVisible]);
+  }, [canGoBack, isTV, settingsVisible]);
 
   useEffect(() => {
     const subscription = AppState.addEventListener('change', nextState => {
@@ -152,6 +165,7 @@ export default function BrowserScreen() {
           key={`${activeUrl}:${webViewGeneration}`}
           ref={webViewRef}
           url={activeUrl}
+          isTV={isTV}
           onNavigationStateChange={onNavigationStateChange}
           onError={onWebViewError}
           onPictureInPictureModeChange={onPictureInPictureModeChange}
@@ -191,7 +205,7 @@ export default function BrowserScreen() {
         </View>
       </Modal>
 
-      {!isPictureInPictureActive && (
+      {!isPictureInPictureActive && !isTV && (
         <MiniPill onPress={() => setSettingsVisible(true)} />
       )}
     </View>

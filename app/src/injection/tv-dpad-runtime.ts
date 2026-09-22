@@ -204,8 +204,11 @@ ${domDiscoveryRuntime}
     const direction = directions[event.key];
     if (!direction) return false;
 
-    const moved = api.moveFocus(direction);
-    if (!moved) return false;
+    // Once an arrow belongs to the TV spatial graph, consume it even when
+    // the current element is already at that edge. Otherwise Chromium falls
+    // back to page scrolling, which feels like a web page instead of a TV app.
+    // Player/native scopes are filtered by shouldSpatialNavigationHandle above.
+    api.moveFocus(direction);
 
     event.preventDefault();
     event.stopPropagation();

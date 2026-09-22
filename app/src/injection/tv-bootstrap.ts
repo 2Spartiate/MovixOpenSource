@@ -21,9 +21,7 @@ export function buildTvBootstrap(): string {
           outline-offset: 3px !important;
         }
 
-        .movix-tv [data-tv-carousel-arrow],
-        .movix-tv [data-tv-favorite-overlay],
-        .movix-tv [data-tv-header-telegram] {
+        .movix-tv [data-tv-favorite-overlay] {
           display: none !important;
         }
       \`;
