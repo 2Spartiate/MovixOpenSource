@@ -20,6 +20,10 @@ class DnsVpnService : VpnService() {
     private var dnsThread: Thread? = null
 
     companion object {
+        private const val VPN_ADDRESS = "10.215.173.1"
+        private const val VIRTUAL_DNS = "10.215.173.2"
+        private const val DNS_PORT = 53
+
         var primaryDns: String = "1.1.1.1"
         var secondaryDns: String = "1.0.0.1"
         var isActive: Boolean = false
@@ -45,12 +49,13 @@ class DnsVpnService : VpnService() {
         try {
             val builder = Builder()
                 .setSession("Movix DNS")
-                .addAddress("10.215.173.1", 32)
-                .addDnsServer(primaryDns)
-                .addDnsServer(secondaryDns)
-                // Route UNIQUEMENT les adresses DNS, pas tout le trafic
-                .addRoute(primaryDns, 32)
-                .addRoute(secondaryDns, 32)
+                .addAddress(VPN_ADDRESS, 32)
+                // Android envoie ses requêtes DNS vers une adresse virtuelle
+                // interne au TUN. Les vraies IP Cloudflare ne sont PAS routées
+                // dans le VPN : les sockets upstream protégés sortent donc
+                // directement par le réseau sous-jacent.
+                .addDnsServer(VIRTUAL_DNS)
+                .addRoute(VIRTUAL_DNS, 32)
                 .setMtu(1500)
                 .setBlocking(true)
 
@@ -91,7 +96,12 @@ class DnsVpnService : VpnService() {
                     if (packet.size < ipHeaderLength + 8) continue
 
                     val protocol = packet[9].toInt() and 0xFF
-                    if (protocol != 17) continue // UDP seulement
+                    if (protocol != 17) continue // J1: UDP uniquement
+
+                    val destinationPort =
+                        ((packet[ipHeaderLength + 2].toInt() and 0xFF) shl 8) or
+                            (packet[ipHeaderLength + 3].toInt() and 0xFF)
+                    if (destinationPort != DNS_PORT) continue
 
                     val dnsPayload = packet.copyOfRange(ipHeaderLength + 8, packet.size)
                     val response = forwardDnsQuery(dnsPayload) ?: continue
@@ -114,7 +124,7 @@ class DnsVpnService : VpnService() {
             protect(socket)
 
             val address = InetAddress.getByName(primaryDns)
-            socket.send(DatagramPacket(query, query.size, address, 53))
+            socket.send(DatagramPacket(query, query.size, address, DNS_PORT))
 
             val responseBuffer = ByteArray(4096)
             val responsePacket = DatagramPacket(responseBuffer, responseBuffer.size)
@@ -129,7 +139,7 @@ class DnsVpnService : VpnService() {
                 protect(socket)
 
                 val address = InetAddress.getByName(secondaryDns)
-                socket.send(DatagramPacket(query, query.size, address, 53))
+                socket.send(DatagramPacket(query, query.size, address, DNS_PORT))
 
                 val responseBuffer = ByteArray(4096)
                 val responsePacket = DatagramPacket(responseBuffer, responseBuffer.size)

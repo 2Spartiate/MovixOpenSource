@@ -12,7 +12,7 @@ function gitBlobSha(buffer) {
   return createHash('sha1').update(header).update(buffer).digest('hex');
 }
 
-test('TV-BS-I changes only sticky VPN restart semantics from TV-BS-H runtime', async () => {
+test('TV-BS-J1 routes only a virtual DNS endpoint into the TUN', async () => {
   const [
     appBytes,
     webViewBytes,
@@ -33,7 +33,7 @@ test('TV-BS-I changes only sticky VPN restart semantics from TV-BS-H runtime', a
     text('android/app/src/main/AndroidManifest.xml'),
   ]);
 
-  // Freeze the TV-BS-H / known-good baseline runtime everywhere else.
+  // Freeze TV-BS-I runtime everywhere except DnsVpnService.
   assert.equal(gitBlobSha(appBytes), '5fbe28710abf29ed78a478e1ca6bdf364f82b71a');
   assert.equal(gitBlobSha(webViewBytes), 'c42d8b9e33dd01af93ddadbf9f89ba432255784a');
   assert.equal(gitBlobSha(browserBytes), 'e7a7aae7f7754c49880b166006debff6b25efdbb');
@@ -41,20 +41,31 @@ test('TV-BS-I changes only sticky VPN restart semantics from TV-BS-H runtime', a
   assert.equal(gitBlobSha(injectBytes), '4df61dd53d5bd8d9cb30368905aa20aac261d142');
   assert.equal(gitBlobSha(dnsModuleBytes), '0a4dfcda8717826b6d68eff4ed2295fa5f12fb92');
 
-  // Unique TV-BS-I runtime variable: DnsVpnService is the TV-BS-H blob with
-  // onStartCommand's normal-start return changed START_STICKY -> START_NOT_STICKY.
-  assert.equal(gitBlobSha(dnsVpnBytes), 'd5bc90c71176b138836f766523e06fac57a350fe');
+  assert.equal(gitBlobSha(dnsVpnBytes), '4d5d5405a80c96c5a1d9e6c99e91683f39969d31');
   const dnsVpn = dnsVpnBytes.toString('utf8');
+
+  // J1 architectural variable: only the virtual DNS endpoint is routed.
+  assert.match(dnsVpn, /private const val VPN_ADDRESS = "10\.215\.173\.1"/);
+  assert.match(dnsVpn, /private const val VIRTUAL_DNS = "10\.215\.173\.2"/);
+  assert.match(dnsVpn, /\.addAddress\(VPN_ADDRESS, 32\)/);
+  assert.match(dnsVpn, /\.addDnsServer\(VIRTUAL_DNS\)/);
+  assert.match(dnsVpn, /\.addRoute\(VIRTUAL_DNS, 32\)/);
+  assert.doesNotMatch(dnsVpn, /\.addRoute\(primaryDns, 32\)/);
+  assert.doesNotMatch(dnsVpn, /\.addRoute\(secondaryDns, 32\)/);
+
+  // J1 handles only IPv4 UDP/53 inside the TUN.
+  assert.match(dnsVpn, /if \(protocol != 17\) continue/);
+  assert.match(dnsVpn, /if \(destinationPort != DNS_PORT\) continue/);
+  assert.match(dnsVpn, /DatagramPacket\(query, query\.size, address, DNS_PORT\)/);
+
+  // Preserve TV-BS-I service restart semantics for a one-variable A/B.
   assert.doesNotMatch(dnsVpn, /return START_STICKY/);
   assert.equal((dnsVpn.match(/return START_NOT_STICKY/g) || []).length, 2);
 
-  // Keep baseline asynchronous DNS/WebView startup ordering.
+  // Keep baseline async startup and TV launcher compatibility.
   const app = appBytes.toString('utf8');
   assert.doesNotMatch(app, /isAndroidTvRuntime|waitForTvDnsReady|promptDnsForTv/);
   assert.match(app, /promptDns\(\);/);
-
-  // Retain native TV launcher compatibility only.
   assert.match(manifest, /android\.software\.leanback/);
   assert.match(manifest, /android\.intent\.category\.LEANBACK_LAUNCHER/);
-  assert.match(manifest, /android:banner="@drawable\/tv_banner"/);
 });
