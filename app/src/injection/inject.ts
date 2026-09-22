@@ -1,3 +1,4 @@
+import { buildAppSiteOverrides } from './app-site-overrides';
 import { buildBridgeRuntime } from './bridge-runtime';
 import { buildCastShim } from './cast-shim';
 import {
@@ -22,6 +23,7 @@ export function buildInjectedJavaScript(
     tvMode?: boolean;
   } = {},
 ): string {
+  const appSiteOverrides = buildAppSiteOverrides();
   const castShim = buildCastShim();
   const pipShim = buildPictureInPictureShim(
     options.pictureInPictureMode ?? 'disabled',
@@ -42,8 +44,29 @@ export function buildInjectedJavaScript(
     mediaProxyScheme: options.mediaProxyScheme,
   });
 
-  // Cast shim FIRST — must be on window before any page JS runs.
+  // Block popup/new-window advertising before any page JS can register
+  // its own opener. The native WebView layer also rejects onOpenWindow.
+  const popupBlocker = `
+(() => {
+  const blockedOpen = () => null;
+  try {
+    Object.defineProperty(window, 'open', {
+      value: blockedOpen,
+      writable: false,
+      configurable: false,
+    });
+  } catch {
+    try { window.open = blockedOpen; } catch {}
+  }
+})();
+`;
+
+  // Popup blocker + app DOM overrides run before the remote site scripts.
   return `
+${popupBlocker}
+
+${appSiteOverrides}
+
 ${castShim}
 
 ${pipShim}
