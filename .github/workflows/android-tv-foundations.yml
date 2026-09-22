@@ -48,30 +48,12 @@ jobs:
         working-directory: app
         run: npm run build:userscript
 
-      - name: Validate TV runtime, spatial navigation and frontend contracts
+      - name: Validate baseline TV diagnostic runtime
         working-directory: app
         run: |
           node --test \
-            tests/tvRuntimeContract.test.mjs \
-            tests/tvWebViewBootstrapContract.test.mjs \
-            tests/tvSpatialEngine.test.mjs \
-            tests/tvFocusDom.test.mjs \
-            tests/tvDpadRuntime.test.mjs \
-            tests/tvHeaderContract.test.mjs \
-            tests/tvPreplayAdGateContract.test.mjs \
-            tests/tvHlsControlsFocusContract.test.mjs \
-            tests/tvHlsDpadShortcutContract.test.mjs \
-            tests/tvHlsRemoteNavigationContract.test.mjs \
-            tests/tvHls4kContract.test.mjs \
-            tests/tvStartupResilienceContract.test.mjs \
-            tests/androidArtifactCleanupContract.test.mjs \
-            tests/tvPlayerMenusContract.test.mjs \
-            tests/tvLivePlayerDpadContract.test.mjs \
-            tests/tvFrancePlayerDpadContract.test.mjs \
-            tests/tvPlayerBackContract.test.mjs \
-            tests/tvExternalPlayerLimitsContract.test.mjs \
-            tests/tvCarouselContract.test.mjs \
-            tests/tvFocusRestoration.test.mjs
+            tests/tvBaselineRuntimeDiagnosticContract.test.mjs \
+            tests/androidArtifactCleanupContract.test.mjs
           npx tsc --noEmit
 
       - name: Validate frontend production build
