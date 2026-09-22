@@ -17,22 +17,26 @@ async function importTypeScript(relativePath) {
   return import(`data:text/javascript;base64,${Buffer.from(outputText).toString('base64')}`);
 }
 
-test('TV runtime policy only accepts Android devices reported as TV', async () => {
+test('TV runtime policy accepts Android TV from Platform.isTV or uiMode', async () => {
   const { resolveAndroidTvRuntime } = await importTypeScript(
     'src/platform/tvRuntimePolicy.ts',
   );
 
   assert.equal(resolveAndroidTvRuntime('android', true), true);
-  assert.equal(resolveAndroidTvRuntime('android', false), false);
-  assert.equal(resolveAndroidTvRuntime('ios', true), false);
-  assert.equal(resolveAndroidTvRuntime('ios', false), false);
+  assert.equal(resolveAndroidTvRuntime('android', false, 'tv'), true);
+  assert.equal(resolveAndroidTvRuntime('android', false, 'TV'), true);
+  assert.equal(resolveAndroidTvRuntime('android', false, 'normal'), false);
+  assert.equal(resolveAndroidTvRuntime('ios', true, 'tv'), false);
+  assert.equal(resolveAndroidTvRuntime('ios', false, 'tv'), false);
 });
 
-test('TV runtime wrapper uses React Native Platform.isTV without heuristics', async () => {
+test('TV runtime wrapper uses native Android TV signals without screen heuristics', async () => {
   const source = await text('src/platform/tvRuntime.ts');
 
   assert.match(source, /Platform\.OS/);
   assert.match(source, /Platform\.isTV/);
+  assert.match(source, /Platform\.constants/);
+  assert.match(source, /uiMode/);
   assert.doesNotMatch(source, /Dimensions|screenWidth|innerWidth|userAgent|PixelRatio/);
 });
 
