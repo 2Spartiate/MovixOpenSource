@@ -20,29 +20,57 @@ import { isAndroidTvRuntime } from './platform/tvRuntime';
 const { DnsModule } = NativeModules;
 
 const TV_DNS_READY_TIMEOUT_MS = 5000;
+const TV_DNS_STOP_TIMEOUT_MS = 3000;
 const TV_DNS_READY_POLL_MS = 100;
-const TV_DNS_POST_READY_GRACE_MS = 250;
+const TV_DNS_POST_READY_GRACE_MS = 500;
 
 const delay = (ms: number) => new Promise<void>(resolve => setTimeout(resolve, ms));
 
-async function waitForTvDnsReady(): Promise<boolean> {
+async function waitForTvDnsState(expected: boolean, timeoutMs: number): Promise<boolean> {
   if (Platform.OS !== 'android' || !DnsModule || !isAndroidTvRuntime()) {
     return false;
   }
 
-  const deadline = Date.now() + TV_DNS_READY_TIMEOUT_MS;
+  const deadline = Date.now() + timeoutMs;
   while (Date.now() < deadline) {
     try {
-      if (await DnsModule.isEnabled()) {
-        // isActive flips immediately before the DNS forwarding thread starts.
-        // Give the slower TV runtime one short grace period before network use.
-        await delay(TV_DNS_POST_READY_GRACE_MS);
+      if ((await DnsModule.isEnabled()) === expected) {
         return true;
       }
     } catch {}
     await delay(TV_DNS_READY_POLL_MS);
   }
   return false;
+}
+
+async function restartTvDnsFromCleanState(): Promise<boolean> {
+  if (Platform.OS !== 'android' || !DnsModule || !isAndroidTvRuntime()) {
+    return false;
+  }
+
+  try {
+    // DnsVpnService is START_STICKY and can outlive/restart independently from
+    // the React activity. Do not trust the static isActive flag across TV task
+    // kills: always rebuild the tunnel from a known clean state.
+    await DnsModule.disable();
+  } catch {}
+
+  await waitForTvDnsState(false, TV_DNS_STOP_TIMEOUT_MS);
+  await delay(TV_DNS_READY_POLL_MS);
+
+  try {
+    await DnsModule.enable('1.1.1.1', '1.0.0.1');
+  } catch {
+    return false;
+  }
+
+  const ready = await waitForTvDnsState(true, TV_DNS_READY_TIMEOUT_MS);
+  if (!ready) return false;
+
+  // isActive is published immediately before startDnsForwarding(). A slower TV
+  // needs a short grace period before the first WebView DNS lookup.
+  await delay(TV_DNS_POST_READY_GRACE_MS);
+  return true;
 }
 
 function promptDnsForTv(): Promise<void> {
@@ -68,8 +96,14 @@ function promptDnsForTv(): Promise<void> {
                 await AsyncStorage.setItem('dns_enabled', 'false');
                 return;
               }
+
+              // First obtain Android's VPN consent. Once granted, immediately
+              // recreate the TV tunnel from a clean state. This intentionally
+              // mirrors the only lifecycle that proved healthy on hardware:
+              // permission/setup -> process restart -> fresh VPN start.
               await DnsModule.enable('1.1.1.1', '1.0.0.1');
-              const ready = await waitForTvDnsReady();
+              await waitForTvDnsState(true, TV_DNS_READY_TIMEOUT_MS);
+              const ready = await restartTvDnsFromCleanState();
               await AsyncStorage.setItem('dns_enabled', ready ? 'true' : 'false');
             } catch {
               await AsyncStorage.setItem('dns_enabled', 'false');
@@ -152,36 +186,40 @@ export default function App() {
           } catch {}
         }
 
-        if (nativeEnabled) {
+        if (Platform.OS === 'android' && isAndroidTvRuntime()) {
+          // TV-only lifecycle. Recreate the DNS tunnel on every launch instead
+          // of trusting a sticky service/static flag left by the previous task.
+          if (stored === null) {
+            await promptDnsForTv();
+          } else if (stored === 'true') {
+            const ready = await restartTvDnsFromCleanState();
+            await AsyncStorage.setItem('dns_enabled', ready ? 'true' : 'false');
+          } else {
+            // Respect an explicit TV opt-out and stop any sticky service that
+            // Android may have resurrected after the task was killed.
+            if (nativeEnabled && DnsModule) {
+              try {
+                await DnsModule.disable();
+                await waitForTvDnsState(false, TV_DNS_STOP_TIMEOUT_MS);
+              } catch {}
+            }
+          }
+          setDnsSettled(true);
+        } else if (nativeEnabled) {
           if (stored !== 'true') {
             await AsyncStorage.setItem('dns_enabled', 'true');
           }
           setDnsSettled(true);
         } else if (stored === 'true' && DnsModule && Platform.OS === 'android') {
-          if (isAndroidTvRuntime()) {
-            // TV-only: after a process kill the VPN service is restarted, but
-            // DnsModule.enable() resolves before DnsVpnService is actually ready.
-            // Keep handheld Android on the original fast path.
-            try {
-              await DnsModule.enable('1.1.1.1', '1.0.0.1');
-              await waitForTvDnsReady();
-            } catch {}
-          } else {
-            DnsModule.enable('1.1.1.1', '1.0.0.1').catch(() => {});
-          }
+          // Original handheld Android behavior.
+          DnsModule.enable('1.1.1.1', '1.0.0.1').catch(() => {});
           setDnsSettled(true);
         } else if (stored === 'true') {
           await AsyncStorage.setItem('dns_enabled', 'false');
           setDnsSettled(true);
         } else if (stored === null) {
-          if (isAndroidTvRuntime()) {
-            // TV-only first launch: do not mount AddressProvider/WebView until
-            // the VPN permission flow has completed and DNS forwarding is live.
-            await promptDnsForTv();
-          } else {
-            promptDns();
-            // Original phone/tablet behavior: do not block startup on the DNS prompt.
-          }
+          // Original phone/tablet behavior: do not block startup on the DNS prompt.
+          promptDns();
           setDnsSettled(true);
         } else {
           setDnsSettled(true);
