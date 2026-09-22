@@ -9,7 +9,7 @@ test('main Embla carousel exposes focus-driven cards with no arrow chrome', asyn
   const source = await text('../src/components/EmblaCarousel.tsx');
   assert.match(source, /data-tv-focus-group="carousel-row"/);
   assert.match(source, /to=\{detailPath\}[\s\S]{0,140}data-tv-focus[\s\S]{0,100}data-tv-card/);
-  assert.match(source, /data-tv-ignore-focus[\s\S]{0,100}data-tv-favorite-overlay/);
+  assert.doesNotMatch(source, /data-tv-favorite-overlay/);
   assert.match(source, /const handleTVCardFocus = useCallback/);
   assert.match(source, /emblaApi\.scrollTo\(index/);
   assert.doesNotMatch(source, /data-tv-carousel-arrow|<ChevronLeft/);
@@ -37,10 +37,10 @@ for (const [name, path] of [
   });
 }
 
-test('search cards make the card primary and favorites secondary on TV', async () => {
+test('search cards expose the card itself and no longer render favorite controls', async () => {
   const source = await text('../src/components/SearchCard.tsx');
   assert.match(source, /data-tv-card/);
-  assert.match(source, /data-tv-favorite-overlay/);
+  assert.doesNotMatch(source, /data-tv-favorite-overlay|watchlistCache|addToWatchlist/);
 });
 
 test('TV bootstrap only hides the remaining favorite overlay chrome', async () => {
