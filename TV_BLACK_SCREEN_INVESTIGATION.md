@@ -1212,3 +1212,99 @@ This is the first proposed solution that accounts for the complete observed sequ
   - Do not wait for `isActive` or `isReady` before mounting AddressProvider/WebView.
   - Do not restart or resync the VPN.
   - This preserves J2A's observed `launch 1 OK / launch 2 OK` behavior while directly testing whether the manual Retry success can be reproduced internally for launch 3+.
+
+
+---
+
+## TV-BS-J3B — exact J2A baseline + one automatic full-chain recovery
+
+- TEST ID: TV-BS-J3B
+- DATE: 2026-09-22
+- AUTHORITATIVE BASE: TV-BS-J2A.
+- PURPOSE:
+  - Preserve J2A's proven hardware benefits (launch 1 OK, launch 2 OK) and change only the behavior after the complete WebView mirror chain fails.
+  - Reproduce once, internally and automatically, the same full recovery sequence that the user's manual "Réessayer" click already proves successful.
+
+### Exact frozen J2A runtime
+
+- `App.tsx`: `5fbe28710abf29ed78a478e1ca6bdf364f82b71a`
+- `DnsModule.kt`: `0a4dfcda8717826b6d68eff4ed2295fa5f12fb92`
+- `DnsVpnService.kt`: `95201edbeb0cf8fe97f9ab3f3a11ddf4e0b2fff0`
+- `WebViewBrowser.tsx`: `c42d8b9e33dd01af93ddadbf9f89ba432255784a`
+- `MirrorErrorScreen.tsx`: `39854aee4c3fda0915629de455059f61486c557e`
+- `inject.ts`: `4df61dd53d5bd8d9cb30368905aa20aac261d142`
+- `addressResolver.ts`: `37e8b3cc355a024a01259f4476cef330febc9fd1`
+
+Therefore:
+- no J2B/J3A readiness wait;
+- no `isReady` bridge;
+- no VPN restart/resync;
+- virtual DNS J1 architecture retained;
+- J2A 8-worker concurrent UDP forwarding retained;
+- address resolver algorithm itself unchanged.
+
+### Unique product-level change
+
+`BrowserScreen.tsx` blob:
+- `eae4e3a602a4f9ab6429f1d5dd73049566547cd4`
+
+When the full current URL chain has failed:
+
+1. If no automatic recovery has yet been attempted in this BrowserScreen lifetime:
+   - mark the one-shot recovery as attempted;
+   - guard against duplicate simultaneous WebView error events;
+   - call `refresh()`, which reruns `resolveAddressConfig()`;
+   - reset `mirrorIndex` to 0;
+   - increment `webViewGeneration`, forcing a genuinely new WebView instance even if the refreshed primary URL is textually identical;
+   - do **not** show the fallback yet.
+2. If the new complete chain fails again:
+   - show the normal `MirrorErrorScreen`.
+3. Manual "Réessayer" remains available after a genuine second failure.
+
+This intentionally avoids:
+- retry loops;
+- a hidden repeated click mechanism;
+- per-mirror resolver refreshes;
+- VPN timing changes;
+- resolver-internal behavior changes.
+
+### Source / CI
+
+- SOURCE COMMIT:
+  - `5a4dcd148465abfc700497b85105cd56011709de`
+  - message: `fix(tv): retry full address chain once on failure`
+- CI:
+  - workflow: Android TV foundations
+  - run ID: `35770259863`
+  - conclusion: PASS
+  - J3B diagnostic contract: PASS
+  - frontend production build: PASS
+  - Android standalone build: PASS
+  - merged TV/mobile manifest contract: PASS
+  - standalone JS bundle packaged: PASS
+- GITHUB ARTIFACT:
+  - ID: `10713957328`
+  - name: `movix-google-tv-standalone-apk`
+  - artifact ZIP digest: `sha256:399675fed5fd4f677b6f30afe0b33bb416298605c3df1eff3f0302f5bcf4ade1`
+- APK:
+  - file: `app-release.apk`
+  - size: `72,593,530 bytes`
+  - SHA-256: `1fb525ce0c52e5c931d5b4fa44a333faf8fbb84ce57d90126340b53ae6054a90`
+
+### Hardware protocol
+
+1. Install TV-BS-J3B.
+2. Leave Movix DNS/VPN enabled normally.
+3. Record launch 1.
+4. Perform at least **8 complete kill/relaunch cycles**.
+5. For each launch record:
+   - OK,
+   - shell-only,
+   - visible fallback,
+   - black.
+6. Do not alter VPN state.
+7. Important discriminator:
+   - if launch 3+ succeeds without a visible fallback, the automatic full-chain recovery successfully reproduces the proven manual Retry path;
+   - if a fallback still appears, press "Réessayer" once and report whether that manual second-stage retry still succeeds.
+
+- USER HARDWARE RESULT: **PENDING**
