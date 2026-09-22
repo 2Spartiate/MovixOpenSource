@@ -441,41 +441,15 @@ const Header: React.FC = () => {
           <div className="max-w-[1400px] 2xl:max-w-[1600px] mx-auto">
             <div className="flex items-center h-16 px-4 md:px-6 lg:px-8 gap-3 md:gap-5 lg:gap-3 xl:gap-5 max-[360px]:gap-1 max-[360px]:px-2">
 
-              {/* Logo */}
-              <Link
-                to="/"
+              {/* Marque purement visuelle : aucune navigation ni cible D-pad. */}
+              <div
                 data-tv-ignore-focus
                 data-tv-header-logo
-                className="text-2xl md:text-3xl font-extrabold flex items-center hover:scale-105 transition-transform duration-300 flex-shrink-0"
-                onClick={(e) => {
-                  if (location.pathname === '/') {
-                    e.preventDefault();
-                    const lenis = (window as any).lenis;
-                    if (lenis) {
-                      lenis.scrollTo(0, { duration: 1.2 });
-                    } else {
-                      window.scrollTo({ top: 0, behavior: 'smooth' });
-                    }
-                  }
-                }}
+                aria-label="MOVIX"
+                className="text-2xl md:text-3xl font-extrabold flex items-center flex-shrink-0 select-none"
               >
                 <span className="text-red-600 tracking-wider">MOVIX</span>
-              </Link>
-
-              <a
-                href="https://t.me/movix_site"
-                data-tv-ignore-focus
-                data-tv-header-telegram
-                target="_blank"
-                rel="noopener noreferrer"
-                aria-label={t('telegram.joinTelegram')}
-                title={t('telegram.joinTelegram')}
-                className="pointer-events-auto inline-flex h-11 w-11 shrink-0 items-center justify-center p-2 text-sky-400 transition-colors duration-150 hover:text-sky-300 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-sky-400 motion-reduce:transition-none"
-              >
-                <svg viewBox="0 0 24 24" fill="currentColor" className="h-5 w-5 shrink-0" aria-hidden="true">
-                  <path d="M9.78 18.65l.28-4.23 7.68-6.92c.34-.31-.07-.46-.52-.19l-9.48 5.99-4.1-1.28c-.88-.25-.89-.86.2-1.3l15.97-6.16c.73-.33 1.43.18 1.15 1.3L18.24 18.8c-.19.92-.73 1.14-1.48.71l-4.14-3.06-1.99 1.93c-.23.23-.42.42-.85.42z" />
-                </svg>
-              </a>
+              </div>
 
               {/* Desktop Nav: 3 items principaux + Explorer */}
               <nav className="hidden lg:flex items-center gap-1">
