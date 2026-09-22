@@ -20,6 +20,7 @@ export function buildInjectedJavaScript(
     journalConsoleEnabled?: boolean;
     mediaProxyScheme?: string | null;
     tvMode?: boolean;
+    tvDpadEnabled?: boolean;
   } = {},
 ): string {
   const castShim = buildCastShim();
@@ -28,7 +29,7 @@ export function buildInjectedJavaScript(
   );
   const playbackAwakeShim = buildPlaybackAwakeShim();
   const tvBootstrap = options.tvMode ? buildTvBootstrap() : '';
-  const tvDpadRuntime = options.tvMode
+  const tvDpadRuntime = options.tvMode && options.tvDpadEnabled !== false
     ? buildTvDpadRuntime(
         `(${findNextFocusTarget.toString()})`,
         buildTvDomDiscoveryRuntime(),
