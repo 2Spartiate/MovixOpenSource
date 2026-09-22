@@ -18,25 +18,6 @@ import { loadNetworkJournalPreference } from './services/networkJournal';
 
 const { DnsModule } = NativeModules;
 
-const ANDROID_DNS_READY_TIMEOUT_MS = 5000;
-const ANDROID_DNS_READY_POLL_MS = 100;
-
-async function waitForAndroidDnsForwarderReady(): Promise<boolean> {
-  const deadline = Date.now() + ANDROID_DNS_READY_TIMEOUT_MS;
-
-  while (Date.now() < deadline) {
-    try {
-      if (await DnsModule.isReady()) {
-        return true;
-      }
-    } catch {}
-
-    await new Promise(resolve => setTimeout(resolve, ANDROID_DNS_READY_POLL_MS));
-  }
-
-  return false;
-}
-
 function promptDns() {
   Alert.alert(
     'DNS Cloudflare 1.1.1.1',
@@ -111,10 +92,7 @@ export default function App() {
           }
           setDnsSettled(true);
         } else if (stored === 'true' && DnsModule && Platform.OS === 'android') {
-          try {
-            await DnsModule.enable('1.1.1.1', '1.0.0.1');
-            await waitForAndroidDnsForwarderReady();
-          } catch {}
+          DnsModule.enable('1.1.1.1', '1.0.0.1').catch(() => {});
           setDnsSettled(true);
         } else if (stored === 'true') {
           await AsyncStorage.setItem('dns_enabled', 'false');

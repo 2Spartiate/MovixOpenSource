@@ -18,7 +18,6 @@ import java.util.concurrent.Executors
 class DnsVpnService : VpnService() {
 
     private var vpnInterface: ParcelFileDescriptor? = null
-    @Volatile
     private var isRunning = false
     private var dnsThread: Thread? = null
     private var dnsExecutor: ExecutorService? = null
@@ -31,12 +30,7 @@ class DnsVpnService : VpnService() {
 
         var primaryDns: String = "1.1.1.1"
         var secondaryDns: String = "1.0.0.1"
-        @Volatile
         var isActive: Boolean = false
-            private set
-
-        @Volatile
-        var isReady: Boolean = false
             private set
     }
 
@@ -79,7 +73,6 @@ class DnsVpnService : VpnService() {
             if (vpnInterface != null) {
                 isRunning = true
                 isActive = true
-                isReady = false
                 startDnsForwarding()
             }
         } catch (e: Exception) {
@@ -97,12 +90,7 @@ class DnsVpnService : VpnService() {
             val executor = Executors.newFixedThreadPool(DNS_WORKER_COUNT)
             dnsExecutor = executor
 
-            // The forwarder itself is now armed: the TUN fd is acquired,
-            // streams are open and the DNS worker pool is available.
-            isReady = true
-
-            try {
-                while (isRunning) {
+            while (isRunning) {
                 try {
                     val length = input.read(buffer)
                     if (length <= 0) continue
@@ -141,19 +129,17 @@ class DnsVpnService : VpnService() {
                             // une interface et un pool de workers neufs.
                         }
                     }
-                    } catch (_: Exception) {
-                        if (!isRunning) break
-                    }
+                } catch (_: Exception) {
+                    if (!isRunning) break
                 }
-            } finally {
-                isReady = false
-                executor.shutdownNow()
-                if (dnsExecutor === executor) {
-                    dnsExecutor = null
-                }
-                try { input.close() } catch (_: Exception) {}
-                try { output.close() } catch (_: Exception) {}
             }
+
+            executor.shutdownNow()
+            if (dnsExecutor === executor) {
+                dnsExecutor = null
+            }
+            try { input.close() } catch (_: Exception) {}
+            try { output.close() } catch (_: Exception) {}
         }.also { it.start() }
     }
 
@@ -242,7 +228,6 @@ class DnsVpnService : VpnService() {
 
     private fun stopVpn() {
         isRunning = false
-        isReady = false
         isActive = false
         dnsThread?.interrupt()
         dnsThread = null

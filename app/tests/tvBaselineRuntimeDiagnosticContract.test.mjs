@@ -12,13 +12,14 @@ function gitBlobSha(buffer) {
   return createHash('sha1').update(header).update(buffer).digest('hex');
 }
 
-test('TV-BS-J3A gates relaunch on truthful DNS forwarder readiness', async () => {
+test('TV-BS-J3B restores exact J2A networking and adds one BrowserScreen recovery', async () => {
   const [
     appBytes,
     webViewBytes,
     browserBytes,
     mirrorBytes,
     injectBytes,
+    resolverBytes,
     dnsModuleBytes,
     dnsVpnBytes,
     manifest,
@@ -28,60 +29,48 @@ test('TV-BS-J3A gates relaunch on truthful DNS forwarder readiness', async () =>
     bytes('src/screens/BrowserScreen.tsx'),
     bytes('src/components/MirrorErrorScreen.tsx'),
     bytes('src/injection/inject.ts'),
+    bytes('src/services/addressResolver.ts'),
     bytes('android/app/src/main/java/com/movix/app/dns/DnsModule.kt'),
     bytes('android/app/src/main/java/com/movix/app/dns/DnsVpnService.kt'),
     text('android/app/src/main/AndroidManifest.xml'),
   ]);
 
-  assert.equal(gitBlobSha(appBytes), 'c5a981ff24a91cdaac34d9c27096638c8419d32b');
+  // J2A networking/startup is restored exactly.
+  assert.equal(gitBlobSha(appBytes), '5fbe28710abf29ed78a478e1ca6bdf364f82b71a');
+  assert.equal(gitBlobSha(dnsModuleBytes), '0a4dfcda8717826b6d68eff4ed2295fa5f12fb92');
+  assert.equal(gitBlobSha(dnsVpnBytes), '95201edbeb0cf8fe97f9ab3f3a11ddf4e0b2fff0');
+
+  // Other frozen baseline runtime stays untouched.
   assert.equal(gitBlobSha(webViewBytes), 'c42d8b9e33dd01af93ddadbf9f89ba432255784a');
-  assert.equal(gitBlobSha(browserBytes), 'e7a7aae7f7754c49880b166006debff6b25efdbb');
   assert.equal(gitBlobSha(mirrorBytes), '39854aee4c3fda0915629de455059f61486c557e');
   assert.equal(gitBlobSha(injectBytes), '4df61dd53d5bd8d9cb30368905aa20aac261d142');
-  assert.equal(gitBlobSha(dnsModuleBytes), 'd595e7f048266ab19f9b90e6fbf129f948e16e28');
-  assert.equal(gitBlobSha(dnsVpnBytes), '8f580bdfd2fd59f48683effc097d0637550fbeef');
+  assert.equal(gitBlobSha(resolverBytes), '37e8b3cc355a024a01259f4476cef330febc9fd1');
 
+  // The only product-level change is BrowserScreen's one-shot full recovery.
+  assert.equal(gitBlobSha(browserBytes), 'eae4e3a602a4f9ab6429f1d5dd73049566547cd4');
+  const browser = browserBytes.toString('utf8');
+  assert.match(browser, /const autoRecoveryAttemptedRef = useRef\(false\)/);
+  assert.match(browser, /const autoRecoveryInFlightRef = useRef\(false\)/);
+  assert.match(browser, /if \(!autoRecoveryAttemptedRef\.current\)/);
+  assert.match(browser, /autoRecoveryAttemptedRef\.current = true/);
+  assert.match(browser, /await refresh\(\)/);
+  assert.match(browser, /setMirrorIndex\(0\)/);
+  assert.match(browser, /setWebViewGeneration\(generation => generation \+ 1\)/);
+  assert.match(browser, /key=\{\`\$\{activeUrl\}:\$\{webViewGeneration\}\`\}/);
+
+  // A second complete-chain failure must still surface the real fallback.
+  assert.match(browser, /setAllMirrorsFailed\(true\)/);
+
+  // No J2B/J3A readiness gating survives.
   const app = appBytes.toString('utf8');
-  const dnsModule = dnsModuleBytes.toString('utf8');
+  assert.doesNotMatch(app, /waitForAndroidDnsReady|waitForAndroidDnsForwarderReady|DnsModule\.isReady/);
+
+  // J1/J2A tunnel properties remain.
   const dnsVpn = dnsVpnBytes.toString('utf8');
-
-  // Initial state detection may still use isEnabled; readiness polling must not.
-  assert.match(app, /nativeEnabled = await DnsModule\.isEnabled\(\)/);
-  assert.match(app, /async function waitForAndroidDnsForwarderReady\(\): Promise<boolean>/);
-  assert.match(app, /if \(await DnsModule\.isReady\(\)\)/);
-  assert.match(app, /await waitForAndroidDnsForwarderReady\(\);/);
-  assert.match(app, /ANDROID_DNS_READY_TIMEOUT_MS = 5000/);
-  assert.match(app, /ANDROID_DNS_READY_POLL_MS = 100/);
-
-  // Native bridge exposes a distinct signal.
-  assert.match(dnsModule, /fun isReady\(promise: Promise\)/);
-  assert.match(dnsModule, /promise\.resolve\(DnsVpnService\.isReady\)/);
-
-  // Cross-thread lifecycle flags have explicit visibility.
-  assert.match(dnsVpn, /@Volatile\s+private var isRunning = false/);
-  assert.match(dnsVpn, /@Volatile\s+var isActive: Boolean = false/);
-  assert.match(dnsVpn, /@Volatile\s+var isReady: Boolean = false/);
-
-  // Forwarder readiness ordering: executor assigned -> ready -> blocking read loop.
-  const executorAssigned = dnsVpn.indexOf('dnsExecutor = executor');
-  const readyTrue = dnsVpn.indexOf('isReady = true', executorAssigned);
-  const readLoop = dnsVpn.indexOf('while (isRunning)', readyTrue);
-  assert.ok(executorAssigned >= 0 && readyTrue > executorAssigned && readLoop > readyTrue);
-
-  // Readiness is cleared on thread exit and explicit stop.
-  assert.match(dnsVpn, /finally \{\s+isReady = false/);
-  assert.match(dnsVpn, /private fun stopVpn\(\) \{\s+isRunning = false\s+isReady = false\s+isActive = false/);
-
-  // Preserve J1/J2A networking architecture.
   assert.match(dnsVpn, /private const val VIRTUAL_DNS = "10\.215\.173\.2"/);
-  assert.match(dnsVpn, /\.addRoute\(VIRTUAL_DNS, 32\)/);
-  assert.doesNotMatch(dnsVpn, /\.addRoute\(primaryDns, 32\)|\.addRoute\(secondaryDns, 32\)/);
   assert.match(dnsVpn, /private const val DNS_WORKER_COUNT = 8/);
   assert.match(dnsVpn, /Executors\.newFixedThreadPool\(DNS_WORKER_COUNT\)/);
-  assert.match(dnsVpn, /if \(destinationPort != DNS_PORT\) continue/);
-  assert.doesNotMatch(dnsVpn, /return START_STICKY/);
+  assert.doesNotMatch(dnsVpn, /\.addRoute\(primaryDns, 32\)|\.addRoute\(secondaryDns, 32\)/);
 
-  // First install remains non-blocking.
-  assert.match(app, /stored === null[\s\S]*promptDns\(\);[\s\S]*setDnsSettled\(true\);/);
   assert.match(manifest, /android\.intent\.category\.LEANBACK_LAUNCHER/);
 });

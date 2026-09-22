@@ -50,6 +50,9 @@ export default function BrowserScreen() {
   const [dnsEnabled, setDnsEnabled] = useState(false);
   const [settingsVisible, setSettingsVisible] = useState(false);
   const [isPictureInPictureActive, setIsPictureInPictureActive] = useState(false);
+  const [webViewGeneration, setWebViewGeneration] = useState(0);
+  const autoRecoveryAttemptedRef = useRef(false);
+  const autoRecoveryInFlightRef = useRef(false);
 
   const activeUrl = urlChain[mirrorIndex] ?? '';
 
@@ -109,15 +112,35 @@ export default function BrowserScreen() {
   }, []);
 
   const onWebViewError = useCallback(
-    (description: string) => {
+    async (description: string) => {
       console.warn('[BrowserScreen] WebView error', description, 'on', activeUrl);
+
+      if (autoRecoveryInFlightRef.current) {
+        return;
+      }
+
       if (mirrorIndex + 1 < urlChain.length) {
         setMirrorIndex(i => i + 1);
-      } else {
-        setAllMirrorsFailed(true);
+        return;
       }
+
+      if (!autoRecoveryAttemptedRef.current) {
+        autoRecoveryAttemptedRef.current = true;
+        autoRecoveryInFlightRef.current = true;
+        try {
+          await refresh();
+          setAllMirrorsFailed(false);
+          setMirrorIndex(0);
+          setWebViewGeneration(generation => generation + 1);
+        } finally {
+          autoRecoveryInFlightRef.current = false;
+        }
+        return;
+      }
+
+      setAllMirrorsFailed(true);
     },
-    [activeUrl, mirrorIndex, urlChain.length],
+    [activeUrl, mirrorIndex, refresh, urlChain.length],
   );
 
   const closeSettings = useCallback(() => {
@@ -153,7 +176,7 @@ export default function BrowserScreen() {
     }]}>
       <View style={styles.webViewContainer}>
         <WebViewBrowser
-          key={activeUrl}
+          key={`${activeUrl}:${webViewGeneration}`}
           ref={webViewRef}
           url={activeUrl}
           onNavigationStateChange={onNavigationStateChange}
