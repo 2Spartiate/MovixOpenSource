@@ -10,7 +10,7 @@ test('Android workflow deletes older Movix APK/AAB artifacts before uploading a 
   assert.match(workflow, /actions:\s*write/);
   assert.match(workflow, /Delete previous Movix Android APK\/AAB artifacts/);
   assert.match(workflow, /actions\/artifacts\?per_page=100&page=/);
-  assert.match(workflow, /test\("\^movix\.\*\(apk\|aab\)"; "i"\)/);
+  assert.match(workflow, /test\("\(\^\|\[-_\]\)\(apk\|aab\)\(\[-_\]\|\$\)"; "i"\)/);
   assert.match(workflow, /\.workflow_run\.id != \$current_run/);
   assert.match(workflow, /gh api --method DELETE/);
 
