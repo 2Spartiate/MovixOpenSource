@@ -61,9 +61,13 @@ export function buildInjectedJavaScript(
 })();
 `;
 
-  // Popup blocker + app DOM overrides run before the remote site scripts.
+  // Popup blocker runs first. TV marker must exist before the live-site
+  // overrides inspect the document, otherwise their first pass could mistake
+  // a Google TV WebView for a handheld runtime.
   return `
 ${popupBlocker}
+
+${tvBootstrap}
 
 ${appSiteOverrides}
 
@@ -74,8 +78,6 @@ ${pipShim}
 ${playbackAwakeShim}
 
 ${bridge}
-
-${tvBootstrap}
 
 ${tvDpadRuntime}
 
