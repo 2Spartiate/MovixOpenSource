@@ -1332,3 +1332,95 @@ This intentionally avoids:
 - NEXT ANALYSIS:
   - Inspect the first-install `promptDns()` / VPN permission callback path only.
   - Preserve J3B/J2A behavior for all subsequent launches.
+
+
+---
+
+## TV-BS-J3C — J3B preserved + first-install VPN decision awaited
+
+- TEST ID: TV-BS-J3C
+- DATE: 2026-09-22
+- BASE: TV-BS-J3B.
+- PURPOSE:
+  - Preserve J3B's hardware-proven relaunch behavior (launch 2+ directly OK).
+  - Fix only the remaining first-launch partial state by preventing the first address resolution from starting while Android VPN consent is still in progress.
+
+### Unique runtime change
+
+Only `App.tsx` changed.
+
+`promptDns()` now returns a `Promise<void>` that resolves only after:
+- "Non merci":
+  - `dns_enabled=false` has been persisted; or
+- "Activer":
+  - `DnsModule.enable(...)` has completed;
+  - on Android first consent, that Promise is resolved only after `onActivityResult(... RESULT_OK ...)` starts the VPN service;
+  - `dns_enabled=true` has been persisted;
+  - failures persist `dns_enabled=false`.
+
+For `stored === null` only:
+- the app now `await promptDns()`;
+- only then sets DNS settled / exits bootstrap;
+- therefore `AddressProvider` and its initial `resolveAddressConfig()` cannot mount before the first DNS/VPN choice has completed.
+
+The Android prompt is explicitly non-cancelable for this first-install bootstrap so the Promise cannot remain unresolved due to dismissal.
+
+### Frozen J3B/J2A behavior
+
+- Stored-enabled Android relaunch path remains fire-and-forget exactly as in J2A/J3B.
+- No `isActive` or `isReady` startup gating.
+- J3B one-shot full-chain automatic recovery remains unchanged.
+- Virtual DNS remains `10.215.173.2/32`.
+- 8-worker concurrent UDP DNS relay remains unchanged.
+- `addressResolver.ts` remains unchanged.
+- No VPN restart/resync.
+- No WebView runtime change.
+
+### Source / CI
+
+- SOURCE COMMIT:
+  - `7a4c0853b22d0994e94dcc0f1a9212b935322217`
+  - message: `fix(tv): await first-install VPN decision`
+- `App.tsx` blob:
+  - `07df8edb713d852fa3a81e60de34a2b4f2c382cd`
+- J3B BrowserScreen blob preserved:
+  - `eae4e3a602a4f9ab6429f1d5dd73049566547cd4`
+- J2A DNS module blob preserved:
+  - `0a4dfcda8717826b6d68eff4ed2295fa5f12fb92`
+- J2A DNS VPN blob preserved:
+  - `95201edbeb0cf8fe97f9ab3f3a11ddf4e0b2fff0`
+- CI:
+  - workflow: Android TV foundations
+  - run ID: `35774216324`
+  - conclusion: PASS
+  - J3C diagnostic contract: PASS
+  - frontend production build: PASS
+  - Android standalone build: PASS
+  - merged TV/mobile manifest contract: PASS
+  - standalone JS bundle packaged: PASS
+- GITHUB ARTIFACT:
+  - ID: `10714869775`
+  - name: `movix-google-tv-standalone-apk`
+  - artifact ZIP digest: `sha256:f4cb82d2fca0d004879fb463dbb6094d5cd305729238b3351cb419c667adbe37`
+- APK:
+  - file: `app-release.apk`
+  - size: `72,593,674 bytes`
+  - SHA-256: `b3326c766a40b6c1961d96ed95b893b50f1dcfd9f9e0a23780ca5f846eda2348`
+
+### Hardware protocol
+
+1. For the decisive first-launch test, revoke/reset Movix so Android actually presents the VPN authorization flow again; merely killing the app is not enough.
+2. Launch J3C from that fresh first-consent state.
+3. Choose "Activer" and complete Android VPN authorization.
+4. Record whether launch 1 is:
+   - OK,
+   - shell-only,
+   - fallback,
+   - black.
+5. Then perform at least 5 complete kill/relaunch cycles without touching VPN state.
+6. Expected:
+   - launch 1 should now be directly OK if first-consent overlap was the last defect;
+   - launch 2+ should remain directly OK as in J3B.
+7. If launch 1 is still shell-only while 2+ remain OK, the next isolation must focus on the short interval between `DnsModule.enable()` resolving and the VPN service becoming actually usable, but only on the first-consent path.
+
+- USER HARDWARE RESULT: **PENDING**
