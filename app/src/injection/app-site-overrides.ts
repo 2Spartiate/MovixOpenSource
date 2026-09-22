@@ -264,7 +264,8 @@ export function buildAppSiteOverrides(): string {
     if (window.MOVIX_TV !== true) return;
 
     const api = window.__MOVIX_TV_FOCUS || (window.__MOVIX_TV_FOCUS = {});
-    api.navigationInProgressUntil = performance.now() + 1400;
+    api.preferContentAfterNavigation = true;
+    api.navigationInProgressUntil = performance.now() + 5000;
 
     requestAnimationFrame(() => {
       try {
