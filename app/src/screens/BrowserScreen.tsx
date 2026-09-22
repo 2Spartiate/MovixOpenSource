@@ -13,28 +13,20 @@ import {
 } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import type { WebViewNavigation } from 'react-native-webview';
-import AsyncStorage from '@react-native-async-storage/async-storage';
 
 import WebViewBrowser, { type WebViewBrowserRef } from '../components/WebViewBrowser';
-import BrowserToolbar from '../components/BrowserToolbar';
-import IOSBrowserToolbar from '../components/ios/IOSBrowserToolbar';
 import { NativeGlassSurface } from '../components/ios/NativeGlassSurface';
 import MiniPill from '../components/MiniPill';
 import MirrorErrorScreen from '../components/MirrorErrorScreen';
 import { setLocalPlaybackAwake } from '../services/playbackAwake';
 import { setPictureInPicturePlaybackActive } from '../services/pictureInPicture';
-import { useBrowserUIPrefs } from '../hooks/useBrowserUIPrefs';
 import { useAddress } from '../context/AddressContext';
 import SettingsScreen from './SettingsScreen';
 
 export default function BrowserScreen() {
   const insets = useSafeAreaInsets();
   const webViewRef = useRef<WebViewBrowserRef>(null);
-  const { prefs: uiPrefs } = useBrowserUIPrefs();
   const { config, isLoading, refresh } = useAddress();
-
-  const navBarHidden = !uiPrefs.showNavBar;
-  const toolbarHidden = !uiPrefs.showUrlBar && !uiPrefs.showNavBar;
 
   const urlChain = useMemo(() => {
     if (!config) return [];
@@ -44,10 +36,6 @@ export default function BrowserScreen() {
   const [mirrorIndex, setMirrorIndex] = useState(0);
   const [allMirrorsFailed, setAllMirrorsFailed] = useState(false);
   const [canGoBack, setCanGoBack] = useState(false);
-  const [canGoForward, setCanGoForward] = useState(false);
-  const [loading, setLoading] = useState(true);
-  const [currentUrl, setCurrentUrl] = useState('');
-  const [dnsEnabled, setDnsEnabled] = useState(false);
   const [settingsVisible, setSettingsVisible] = useState(false);
   const [isPictureInPictureActive, setIsPictureInPictureActive] = useState(false);
   const [webViewGeneration, setWebViewGeneration] = useState(0);
@@ -55,12 +43,6 @@ export default function BrowserScreen() {
   const autoRecoveryInFlightRef = useRef(false);
 
   const activeUrl = urlChain[mirrorIndex] ?? '';
-
-  useEffect(() => {
-    AsyncStorage.getItem('dns_enabled').then(val => {
-      setDnsEnabled(val === 'true');
-    });
-  }, []);
 
   useEffect(() => {
     if (Platform.OS !== 'android') return;
@@ -84,13 +66,10 @@ export default function BrowserScreen() {
     const subscription = AppState.addEventListener('change', nextState => {
       if (nextState === 'active') {
         webViewRef.current?.refreshCastShimStatus();
-        AsyncStorage.getItem('dns_enabled').then(val => {
-          setDnsEnabled(val === 'true');
-        });
       }
     });
     return () => subscription.remove();
-  }, [activeUrl]);
+  }, []);
 
   useEffect(() => () => {
     setPictureInPicturePlaybackActive(false);
@@ -106,9 +85,6 @@ export default function BrowserScreen() {
 
   const onNavigationStateChange = useCallback((state: WebViewNavigation) => {
     setCanGoBack(state.canGoBack);
-    setCanGoForward(state.canGoForward);
-    setLoading(state.loading ?? false);
-    if (state.url) setCurrentUrl(state.url);
   }, []);
 
   const onWebViewError = useCallback(
@@ -145,9 +121,6 @@ export default function BrowserScreen() {
 
   const closeSettings = useCallback(() => {
     setSettingsVisible(false);
-    AsyncStorage.getItem('dns_enabled').then(val => {
-      setDnsEnabled(val === 'true');
-    });
   }, []);
 
   const onRetry = useCallback(async () => {
@@ -185,41 +158,8 @@ export default function BrowserScreen() {
         />
       </View>
 
-      {!isPictureInPictureActive && !toolbarHidden && (
-        <View style={{ paddingBottom: insets.bottom }}>
-          {Platform.OS === 'ios' ? (
-            <IOSBrowserToolbar
-              canGoBack={canGoBack}
-              canGoForward={canGoForward}
-              loading={loading}
-              currentUrl={currentUrl}
-              dnsEnabled={dnsEnabled}
-              showUrlBar={uiPrefs.showUrlBar}
-              showNavBar={uiPrefs.showNavBar}
-              onGoBack={() => webViewRef.current?.goBack()}
-              onGoForward={() => webViewRef.current?.goForward()}
-              onReload={() => webViewRef.current?.reload()}
-              onHome={() => webViewRef.current?.loadUrl(activeUrl)}
-              onSettings={() => setSettingsVisible(true)}
-            />
-          ) : (
-            <BrowserToolbar
-              canGoBack={canGoBack}
-              canGoForward={canGoForward}
-              loading={loading}
-              currentUrl={currentUrl}
-              dnsEnabled={dnsEnabled}
-              showUrlBar={uiPrefs.showUrlBar}
-              showNavBar={uiPrefs.showNavBar}
-              onGoBack={() => webViewRef.current?.goBack()}
-              onGoForward={() => webViewRef.current?.goForward()}
-              onReload={() => webViewRef.current?.reload()}
-              onHome={() => webViewRef.current?.loadUrl(activeUrl)}
-              onSettings={() => setSettingsVisible(true)}
-            />
-          )}
-        </View>
-      )}
+      {/* Chrome navigateur supprimé : le WebView occupe tout l'écran.
+          Le bouton flottant conserve l'accès aux paramètres sans barre basse. */}
 
       <Modal
         visible={!isPictureInPictureActive && settingsVisible}
@@ -251,7 +191,7 @@ export default function BrowserScreen() {
         </View>
       </Modal>
 
-      {!isPictureInPictureActive && navBarHidden && (
+      {!isPictureInPictureActive && (
         <MiniPill onPress={() => setSettingsVisible(true)} />
       )}
     </View>
