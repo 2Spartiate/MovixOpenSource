@@ -36,7 +36,7 @@ class DnsVpnService : VpnService() {
         intent?.getStringExtra(EXTRA_SECONDARY_DNS)?.let { secondaryDns = it }
 
         startVpn()
-        return START_STICKY
+        return START_NOT_STICKY
     }
 
     private fun startVpn() {
