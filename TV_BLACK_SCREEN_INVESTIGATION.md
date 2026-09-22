@@ -616,3 +616,35 @@ Initial remote HEAD at journal creation: `97c62bedba930f0830f461fdca138fc057c48e
 - NEXT FOCUS:
   - VPN/TUN DNS forwarding behavior itself and its interaction with Android/Chromium resolver state.
   - Inspect exact packet classes routed to the TUN and limitations of the current forwarder (UDP-only, destination assumptions, protect() result ignored) before changing code.
+
+
+---
+
+## Architectural finding after TV-BS-I — current tunnel is IP-scoped, not port-scoped DNS-only
+
+- DATE: 2026-09-22
+- ANDROID API FACT:
+  - `VpnService.Builder.addRoute(address, prefixLength)` installs an IP-prefix route. It does not filter by transport protocol or port.
+- CURRENT MOVIX CONFIG:
+  - `addDnsServer(primaryDns)` / `addDnsServer(secondaryDns)`
+  - `addRoute(primaryDns, 32)` / `addRoute(secondaryDns, 32)`
+  - Therefore **all IP traffic whose destination is 1.1.1.1 or 1.0.0.1** is sent into the TUN, not only DNS/53.
+- CURRENT FORWARDER:
+  - assumes everything arriving through the TUN is DNS solely because the routes point at Cloudflare IPs;
+  - accepts only IPv4 UDP packets (`protocol == 17`);
+  - does not verify destination UDP port 53 before treating the payload as DNS;
+  - silently ignores TCP, including legitimate DNS-over-TCP fallback;
+  - ignores the Boolean result of `protect(socket)`.
+- CONSEQUENCE:
+  - The current comment "Tout ce qui arrive ici est du DNS (grâce aux routes spécifiques)" is technically false.
+  - Any non-DNS traffic to the Cloudflare IPs, and any DNS-over-TCP traffic, cannot be handled correctly by this forwarder.
+- LEADING NEXT DIRECTION:
+  - Stop routing the real Cloudflare resolver IPs into the TUN.
+  - Expose a virtual DNS address inside the VPN (example: `10.215.173.2`) with a /32 route only to that virtual address.
+  - Android sends configured DNS traffic to that virtual address.
+  - Movix parses only DNS packets addressed to the virtual endpoint and forwards them to real upstream Cloudflare sockets protected from the VPN.
+  - The actual upstream `1.1.1.1:53` / `1.0.0.1:53` sockets then travel directly over the underlying network and are not VPN routes.
+  - Add explicit validation for protocol/port and support DNS TCP separately or via an alternative resolver implementation.
+- STATUS:
+  - TV-BS-I rules out START_STICKY as primary cause.
+  - The next product-level experiment should target the tunnel architecture itself, preferably in isolated checkpoints so virtual-DNS routing and TCP/protect hardening are not conflated.
