@@ -63,21 +63,16 @@ export function buildAppSiteOverrides(): string {
     for (let depth = 0; node && depth < 9; depth += 1, node = node.parentElement) {
       if (!(node instanceof HTMLElement)) continue;
 
+      const classes = String(node.className || '');
       const classList = node.classList;
       const explicitRow =
         node.hasAttribute('data-tv-carousel-row') ||
         classList?.contains('content-row-container') ||
         classList?.contains('group/carousel') ||
-        classList?.contains('embla') ||
-        Boolean(node.querySelector('[class*="embla"]'));
+        classes.includes('embla__viewport') ||
+        classes.includes('embla__container');
 
-      const detailLinkCount = node.querySelectorAll
-        ? Array.from(node.querySelectorAll('a[href]')).filter(looksLikePosterCardLink).length
-        : 0;
-
-      if (explicitRow || detailLinkCount >= 3) {
-        return node;
-      }
+      if (explicitRow) return node;
     }
     return null;
   };
