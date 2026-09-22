@@ -40,12 +40,13 @@ test('explicit arrow consumers and sliders are protected', () => {
   assert.equal(shouldSpatialNavigationHandleSnapshot({ tagName: 'div', role: 'slider' }), false);
 });
 
-test('runtime only prevents default after a successful move', () => {
+test('runtime consumes eligible D-pad arrows even at a spatial graph edge', () => {
   const runtime = buildTvDpadRuntime('(function () { return null; })', '/* dom discovery */');
-  const noTarget = runtime.indexOf('if (!moved) return false;');
-  const prevent = runtime.indexOf('event.preventDefault();');
-  assert.ok(noTarget >= 0);
-  assert.ok(prevent > noTarget);
+  const move = runtime.indexOf('api.moveFocus(direction);');
+  const prevent = runtime.indexOf('event.preventDefault();', move);
+  assert.ok(move >= 0);
+  assert.ok(prevent > move);
+  assert.doesNotMatch(runtime, /if \(!moved\) return false/);
 });
 
 test('runtime handles four D-pad arrows and scrolls only after focus selection', () => {

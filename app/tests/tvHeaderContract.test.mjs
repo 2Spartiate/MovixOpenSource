@@ -5,10 +5,18 @@ import test from 'node:test';
 const root = new URL('../', import.meta.url);
 const text = path => readFile(new URL(path, root), 'utf8');
 
-test('TV header contracts use stable semantic markers', async () => {
+test('MOVIX header brand is visual-only and Telegram header action is removed', async () => {
   const header = await text('../src/components/Header.tsx');
-  assert.match(header, /to="\/"[\s\S]{0,120}data-tv-ignore-focus[\s\S]{0,120}data-tv-header-logo/);
-  assert.match(header, /href="https:\/\/t\.me\/movix_site"[\s\S]{0,160}data-tv-ignore-focus[\s\S]{0,160}data-tv-header-telegram/);
+  assert.match(
+    header,
+    /<div[\s\S]{0,220}data-tv-ignore-focus[\s\S]{0,160}data-tv-header-logo/,
+  );
+  assert.match(header, />MOVIX<\/span>/);
+  assert.doesNotMatch(header, /data-tv-header-telegram|https:\/\/t\.me\/movix_site/);
+  assert.doesNotMatch(
+    header,
+    /<Link[\s\S]{0,220}data-tv-header-logo/,
+  );
   assert.match(header, /ref=\{searchInputRef\}[\s\S]{0,120}data-tv-primary-focus="search"[\s\S]{0,120}type="text"/);
 });
 
