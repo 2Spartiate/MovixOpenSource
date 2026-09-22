@@ -26,6 +26,7 @@ import { setPictureInPicturePlaybackActive } from '../services/pictureInPicture'
 import { useBrowserUIPrefs } from '../hooks/useBrowserUIPrefs';
 import { useAddress } from '../context/AddressContext';
 import { isAndroidTvRuntime } from '../platform/tvRuntime';
+import { TV_PRODUCT_FEATURES_ENABLED } from '../platform/tvRuntimePolicy';
 import SettingsScreen from './SettingsScreen';
 
 export default function BrowserScreen() {
@@ -82,7 +83,7 @@ export default function BrowserScreen() {
         return true;
       }
       if (canGoBack) {
-        if (isTV) {
+        if (isTV && TV_PRODUCT_FEATURES_ENABLED) {
           webViewRef.current?.injectJavaScript(`
             (() => {
               const event = new Event('movix-tv-back', { cancelable: true });
@@ -143,7 +144,7 @@ export default function BrowserScreen() {
     (description: string) => {
       console.warn('[BrowserScreen] WebView error', description, 'on', activeUrl);
 
-      if (isTV && activeUrl) {
+      if (isTV && TV_PRODUCT_FEATURES_ENABLED && activeUrl) {
         const attempts = tvFailureRetriesRef.current.get(activeUrl) ?? 0;
         if (attempts < 2) {
           const nextAttempt = attempts + 1;
@@ -206,6 +207,7 @@ export default function BrowserScreen() {
           ref={webViewRef}
           url={activeUrl}
           isTV={isTV}
+          tvFeaturesEnabled={TV_PRODUCT_FEATURES_ENABLED}
           onNavigationStateChange={onNavigationStateChange}
           onLoadSuccess={onWebViewLoadSuccess}
           onError={onWebViewError}
