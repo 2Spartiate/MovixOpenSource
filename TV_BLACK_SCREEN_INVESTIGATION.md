@@ -706,3 +706,36 @@ Initial remote HEAD at journal creation: `97c62bedba930f0830f461fdca138fc057c48e
   - If the recurring third-launch black state disappears, routing the real Cloudflare resolver IPs into the TUN was materially involved.
   - If the same sequence persists, virtual routing alone is insufficient; next isolate DNS/TCP and `protect(socket)` behavior.
 - USER HARDWARE RESULT: **PENDING**
+
+
+---
+
+## TV-BS-J1 hardware result — black screen eliminated, fallback remains
+
+- DATE OF HARDWARE RESULT: 2026-09-22
+- APK: TV-BS-J1
+- APK SOURCE COMMIT: `9d8ba492b5aa3f21190622e7cd4c096dc3a38002`
+- APK SHA-256: `778510f0388152ac5bd1abfa8074efaba2ac670f51636a3795d56b5345bd8ae3`
+- UNIQUE TEST VARIABLE:
+  - real Cloudflare IP routes removed from the TUN;
+  - virtual DNS endpoint `10.215.173.2/32` used instead;
+  - UDP destination port 53 explicitly validated.
+- USER HARDWARE OBSERVATION:
+  1. First launch: Movix logo + structural shell only.
+  2. Second launch after kill: everything works correctly.
+  3. Third and subsequent launches: normal Movix fallback appears instead of a black WebView.
+  4. On fallback, pressing "Réessayer" immediately makes Movix work.
+- FACTUAL CONSEQUENCE:
+  - TV-BS-J1 materially changes the failure mode.
+  - The recurring black WebView state seen in H/I is eliminated under the observed hardware sequence.
+  - Therefore routing the real Cloudflare resolver IPs themselves into the TUN was materially involved in the black-screen failure.
+  - A remaining DNS/network readiness failure still exists, because launch 1 is partial and launch 3+ reaches fallback before a manual retry succeeds.
+- IMPORTANT INTERPRETATION:
+  - J1 separates two issues:
+    A. black-screen/TUN pathology: strongly improved by virtual DNS routing;
+    B. resolver readiness / first-attempt reliability: still unresolved.
+  - The fact that fallback -> Retry succeeds without changing VPN state shows the remaining problem is likely a transient DNS/request timing or missing DNS transport case rather than a permanently broken tunnel.
+- LEADING NEXT STEP:
+  - Keep J1 architecture.
+  - Add DNS-over-TCP support and enforce/check `protect(socket)` results in a separate checkpoint if possible.
+  - Also consider an automatic one-shot retry only after the network/DNS layer is proven correct; do not hide a resolver defect with UI retries prematurely.
