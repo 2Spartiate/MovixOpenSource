@@ -4,7 +4,6 @@ import useEmblaCarousel from 'embla-carousel-react';
 import { Star, Calendar, Trash, Trash2, ChevronRight } from 'lucide-react';
 import { PrefetchLink as Link } from '@/routing/PrefetchLink';
 import { motion } from 'framer-motion';
-import { toast } from 'sonner';
 import { useTranslation } from 'react-i18next';
 import { encodeId } from '../utils/idEncoder';
 import { useTmdbImages, prefetchTmdbImages } from '../hooks/useTmdbImages';
@@ -146,7 +145,6 @@ const CarouselCard = React.memo<{
   itemId: string;
   detailPath: string;
   priority: boolean;
-  initialStarred: boolean;
   progressData: { percentage: number; position: number; duration: number };
   isHistory: boolean;
   showRanking: boolean;
@@ -158,7 +156,6 @@ const CarouselCard = React.memo<{
   index,
   detailPath,
   priority,
-  initialStarred,
   progressData,
   isHistory,
   showRanking,
@@ -167,7 +164,6 @@ const CarouselCard = React.memo<{
   onTVFocus,
 }) => {
   const { t } = useTranslation();
-  const [starred, setStarred] = useState(initialStarred);
   const title = item.title || item.name || '';
   const isCollection = (item as any).media_type === 'collection';
 
@@ -188,41 +184,6 @@ const CarouselCard = React.memo<{
   // (cas fréquent : la liste retourne déjà le poster FR si la requête liste
   // était en `language=fr-FR`).
   const posterSrc = posterUrl ?? `https://image.tmdb.org/t/p/w342${item.poster_path}`;
-
-  const toggleWatchlist = useCallback((e: React.MouseEvent) => {
-    e.preventDefault();
-    e.stopPropagation();
-    const key = isCollection ? 'watchlist_collections' : `watchlist_${item.media_type}`;
-    const list = JSON.parse(localStorage.getItem(key) || '[]');
-    const exists = list.some((m: any) => m.id === item.id);
-    if (exists) {
-      localStorage.setItem(key, JSON.stringify(list.filter((m: any) => m.id !== item.id)));
-      setStarred(false);
-      toast.success(`${title} ${t('lists.removedFromList')}`, { duration: 2000 });
-    } else {
-      const newItem = isCollection
-        ? {
-            id: item.id,
-            name: item.name || title,
-            poster_path: item.poster_path,
-            backdrop_path: (item as any).backdrop_path,
-            overview: item.overview,
-            type: 'collection',
-            addedAt: new Date().toISOString(),
-          }
-        : {
-            id: item.id,
-            type: item.media_type,
-            title,
-            poster_path: item.poster_path,
-            addedAt: new Date().toISOString(),
-          };
-      list.unshift(newItem);
-      localStorage.setItem(key, JSON.stringify(list));
-      setStarred(true);
-      toast.success(`${title} ${t('lists.addedToList')}`, { duration: 2000 });
-    }
-  }, [item, title, t, isCollection]);
 
   const year = (item as any).release_date || (item as any).first_air_date
     ? new Date((item as any).release_date || (item as any).first_air_date).getFullYear()
@@ -255,7 +216,7 @@ const CarouselCard = React.memo<{
         {/* Top-right action: remove (history) or watchlist (normal) — natif <button>
             avec title= pour le tooltip (zéro overhead vs Radix Tooltip qui mountait
             un portal par card sur hover). active:scale-* remplace whileTap. */}
-        {isHistory && onRemoveItem ? (
+        {isHistory && onRemoveItem && (
           <button
             type="button"
             data-tv-ignore-focus
@@ -270,29 +231,6 @@ const CarouselCard = React.memo<{
             className="absolute top-2 right-2 z-20 p-2 rounded-full bg-red-600/95 hover:bg-red-600 active:scale-[0.85] text-white transition-[colors,transform] duration-150"
           >
             <Trash className="w-3.5 h-3.5" />
-          </button>
-        ) : (
-          <button
-            type="button"
-            data-tv-ignore-focus
-            data-tv-favorite-overlay
-            onClick={toggleWatchlist}
-            title={starred ? t('profile.removeFromWatchlist') : t('profile.addToWatchlist')}
-            aria-label={starred ? t('profile.removeFromWatchlist') : t('profile.addToWatchlist')}
-            className={`absolute top-2 right-2 z-20 p-2 rounded-full active:scale-[0.7] transition-[opacity,background-color,transform] duration-200 md:opacity-0 md:group-hover:opacity-100 ${starred ? 'bg-yellow-500/40 border border-yellow-400/50' : 'bg-black/65 hover:bg-black/80'}`}
-          >
-            {/* initial={false} : pas de spring au mount (jusqu'à 30 cards par row révélée
-                au scroll) ; le pop ne joue qu'au passage à starred via les keyframes */}
-            <motion.div
-              initial={false}
-              animate={starred ? { scale: [0.3, 1], rotate: [-45, 0] } : { scale: 1, rotate: 0 }}
-              transition={{ type: 'spring', stiffness: 500, damping: 15 }}
-            >
-              <Star
-                className={`w-4 h-4 transition-colors duration-150 ${starred ? 'text-yellow-400' : 'text-white'}`}
-                fill={starred ? 'currentColor' : 'none'}
-              />
-            </motion.div>
           </button>
         )}
 
@@ -423,19 +361,6 @@ const EmblaCarousel: React.FC<EmblaCarouselProps> = ({
   });
   const rowRef = useRef<HTMLDivElement>(null);
   const { items: allowedItems } = useAgeRestrictedContent(items);
-
-  // Cache watchlists once using useMemo to avoid repeated localStorage access
-  const watchlistMovies = useMemo(() => {
-    try { return JSON.parse(localStorage.getItem('watchlist_movie') || '[]'); } catch { return []; }
-  }, []);
-
-  const watchlistTV = useMemo(() => {
-    try { return JSON.parse(localStorage.getItem('watchlist_tv') || '[]'); } catch { return []; }
-  }, []);
-
-  const watchlistCollections = useMemo(() => {
-    try { return JSON.parse(localStorage.getItem('watchlist_collections') || '[]'); } catch { return []; }
-  }, []);
 
   // Limite le nombre d'items pour éviter de surcharger le DOM (max 30 items par carousel)
   const limitedItems = useMemo(() => allowedItems.slice(0, 30), [allowedItems]);
@@ -722,15 +647,6 @@ const EmblaCarousel: React.FC<EmblaCarouselProps> = ({
               {limitedItems.map((item, index) => {
                 const itemId = `carousel-${item.id}-${item.media_type}-${index}`;
                 const detailPath = item.media_type === 'collection' ? `/collection/${item.id}` : `/${item.media_type}/${encodeId(item.id)}`;
-                const initialStarred = (() => {
-                  const list = (item as any).media_type === 'collection'
-                    ? watchlistCollections
-                    : item.media_type === 'movie'
-                      ? watchlistMovies
-                      : watchlistTV;
-                  return Array.isArray(list) && list.some((media: any) => media.id === item.id);
-                })();
-
                 // Lookup mémoïsé : progressMap pré-calculée 1× par changement
                 // d'items. Sur un re-render non lié (hover, progression),
                 // on récupère ici la même référence d'objet → CarouselCard memo
@@ -745,7 +661,6 @@ const EmblaCarousel: React.FC<EmblaCarouselProps> = ({
                     itemId={itemId}
                     detailPath={detailPath}
                     priority={index < priorityCount}
-                    initialStarred={initialStarred}
                     progressData={progressData}
                     isHistory={isHistory}
                     showRanking={showRanking}
