@@ -648,3 +648,61 @@ Initial remote HEAD at journal creation: `97c62bedba930f0830f461fdca138fc057c48e
 - STATUS:
   - TV-BS-I rules out START_STICKY as primary cause.
   - The next product-level experiment should target the tunnel architecture itself, preferably in isolated checkpoints so virtual-DNS routing and TCP/protect hardening are not conflated.
+
+
+---
+
+## TV-BS-J1 — virtual DNS endpoint inside TUN
+
+- TEST ID: TV-BS-J1
+- DATE: 2026-09-22
+- BASE: TV-BS-I.
+- PURPOSE:
+  - Test whether routing the real Cloudflare IPs themselves into the TUN is the source of the Google TV failure.
+- UNIQUE RUNTIME CHANGE:
+  - `DnsVpnService.kt` now exposes virtual DNS `10.215.173.2` inside the VPN.
+  - VPN interface remains `10.215.173.1/32`.
+  - Android DNS server is now `10.215.173.2`.
+  - The only TUN route is `10.215.173.2/32`.
+  - Removed TUN routes to real upstream resolvers `1.1.1.1/32` and `1.0.0.1/32`.
+  - Upstream DNS forwarding still uses protected sockets to `1.1.1.1:53`, then `1.0.0.1:53`.
+  - J1 remains IPv4 UDP-only, but now explicitly verifies destination port 53 before parsing a packet as DNS.
+- INTENTIONALLY NOT CHANGED YET:
+  - no DNS-over-TCP support;
+  - no `protect(socket)` Boolean enforcement;
+  - no WebView/App startup changes;
+  - no UI/product behavior changes;
+  - preserves TV-BS-I `START_NOT_STICKY` semantics to keep J1 one-variable relative to I.
+- NEW VPN BLOB:
+  - `DnsVpnService.kt`: `4d5d5405a80c96c5a1d9e6c99e91683f39969d31`
+- APK SOURCE COMMIT:
+  - `9d8ba492b5aa3f21190622e7cd4c096dc3a38002`
+  - message: `diag(tv): route DNS through virtual TUN endpoint`
+- CI:
+  - workflow: Android TV foundations
+  - run ID: `35760946245`
+  - conclusion: PASS
+  - J1 diagnostic contract: PASS
+  - frontend production build: PASS
+  - standalone Android APK build: PASS
+  - merged TV/mobile manifest contract: PASS
+  - standalone JS bundle packaged: PASS
+- GITHUB ARTIFACT:
+  - ID: `10710725065`
+  - name: `movix-google-tv-standalone-apk`
+  - artifact ZIP digest: `sha256:e6e1f45caa096efa73dd472dcbaa94a0457a3303a40d7fb5f08daa3121c6754d`
+- APK:
+  - file: `app-release.apk`
+  - size: `72,593,302 bytes`
+  - SHA-256: `778510f0388152ac5bd1abfa8074efaba2ac670f51636a3795d56b5345bd8ae3`
+- HARDWARE PROTOCOL:
+  1. Install TV-BS-J1.
+  2. Leave Movix DNS/VPN enabled normally.
+  3. Record first launch as full / shell-only / fallback / black.
+  4. Perform at least five complete kill/relaunch cycles with VPN left enabled.
+  5. Record whether images/posters, search and normal navigation work on every successful launch.
+  6. If black appears, first record it with VPN ON; then disconnect VPN once and record whether fallback appears; if fallback appears, press Retry once while VPN remains OFF and record the result.
+- EXPECTED DISCRIMINATOR:
+  - If the recurring third-launch black state disappears, routing the real Cloudflare resolver IPs into the TUN was materially involved.
+  - If the same sequence persists, virtual routing alone is insufficient; next isolate DNS/TCP and `protect(socket)` behavior.
+- USER HARDWARE RESULT: **PENDING**
