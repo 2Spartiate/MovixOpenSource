@@ -1,7 +1,7 @@
 import React from 'react';
 import { PrefetchLink as Link } from '@/routing/PrefetchLink';
 import { motion } from 'framer-motion';
-import { ChevronLeft, ChevronRight, ImageOff } from 'lucide-react';
+import { ImageOff } from 'lucide-react';
 import ContentRowSkeleton from './skeletons/ContentRowSkeleton';
 import { encodeId } from '../utils/idEncoder';
 import { useAgeRestrictedContent } from '../hooks/useAgeRestrictedContent';
@@ -27,7 +27,7 @@ interface ContentRowProps {
   isLoading?: boolean;
 }
 
-export const ContentRow: React.FC<ContentRowProps> = ({ title, items, mediaType: _mediaType, onLoadMore, isLoading }) => {
+export const ContentRow: React.FC<ContentRowProps> = ({ title, items, mediaType: _mediaType, onLoadMore: _onLoadMore, isLoading }) => {
   const { items: allowedItems } = useAgeRestrictedContent(items);
   if (isLoading) {
     return <ContentRowSkeleton />;
@@ -44,16 +44,6 @@ export const ContentRow: React.FC<ContentRowProps> = ({ title, items, mediaType:
     <div className="mb-8" data-tv-focus-group="carousel-row" data-tv-carousel-row>
       <h2 className="text-2xl font-bold mb-4">{title}</h2>
       <div className="relative">
-        <button 
-          data-tv-ignore-focus
-          data-tv-carousel-arrow
-          className="absolute left-0 top-0 bottom-0 z-10 hidden md:flex items-center justify-center w-16 
-          bg-gradient-to-r from-black/50 to-transparent hover:from-black/80 transition-all duration-300 group"
-          onClick={() => onLoadMore('left')}
-        >
-          <ChevronLeft className="w-8 h-8 text-white transform transition-transform duration-300 group-hover:-translate-x-1" />
-        </button>
-
         <div className="flex overflow-x-auto scrollbar-hide space-x-4">
           {validItems.map((item, index) => (
             <Link 
@@ -89,16 +79,7 @@ export const ContentRow: React.FC<ContentRowProps> = ({ title, items, mediaType:
             </Link>
           ))}
         </div>
-        
-        <button 
-          data-tv-ignore-focus
-          data-tv-carousel-arrow
-          className="absolute right-0 top-0 bottom-0 z-10 hidden md:flex items-center justify-center w-16 
-          bg-gradient-to-l from-black/50 to-transparent hover:from-black/80 transition-all duration-300 group"
-          onClick={() => onLoadMore('right')}
-        >
-          <ChevronRight className="w-8 h-8 text-white transform transition-transform duration-300 group-hover:translate-x-1" />
-        </button>
+
       </div>
     </div>
   );
