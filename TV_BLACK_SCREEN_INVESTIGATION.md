@@ -1308,3 +1308,27 @@ This intentionally avoids:
    - if a fallback still appears, press "Réessayer" once and report whether that manual second-stage retry still succeeds.
 
 - USER HARDWARE RESULT: **PENDING**
+
+
+---
+
+## TV-BS-J3B hardware result — repeated relaunches fixed, first-install partial remains
+
+- DATE OF HARDWARE RESULT: 2026-09-22
+- APK: TV-BS-J3B
+- APK SOURCE COMMIT: `5a4dcd148465abfc700497b85105cd56011709de`
+- APK SHA-256: `1fb525ce0c52e5c931d5b4fa44a333faf8fbb84ce57d90126340b53ae6054a90`
+- USER HARDWARE OBSERVATION:
+  1. First launch: structural shell only.
+  2. Second and subsequent complete kill/relaunch cycles: OK directly.
+  3. No recurring fallback from launch 2 onward under the observed sequence.
+- FACTUAL CONSEQUENCE:
+  - Restoring exact J2A networking and adding one automatic full-chain recovery fixes the previous launch-3+ failure mode.
+  - The remaining defect is isolated to first-launch / first-VPN-consent timing.
+  - This is materially different from J2A, where launch 3+ required manual Retry.
+- USER INTERPRETATION TO VERIFY:
+  - On first launch, the app remains alive/backgrounded while the Android VPN permission/configuration UI is being handled.
+  - `resolveAddressConfig()` may therefore run before the VPN is fully usable on this first-consent path.
+- NEXT ANALYSIS:
+  - Inspect the first-install `promptDns()` / VPN permission callback path only.
+  - Preserve J3B/J2A behavior for all subsequent launches.
