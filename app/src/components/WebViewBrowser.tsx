@@ -33,7 +33,6 @@ import {
 import { buildInjectedJavaScript } from '../injection/inject';
 import type { PictureInPictureShimMode } from '../injection/picture-in-picture-shim';
 import { CONFIG } from '../config';
-import { isAndroidTvRuntime } from '../platform/tvRuntime';
 
 export interface WebViewBrowserRef {
   goBack: () => void;
@@ -236,18 +235,10 @@ const WebViewBrowser = forwardRef<WebViewBrowserRef, WebViewBrowserProps>(
       isNetworkJournalEnabled,
     );
     useEffect(() => subscribeNetworkJournal(setJournalConsole), []);
-    const isTV = useMemo(() => isAndroidTvRuntime(), []);
-    const injectedJS = useMemo(() => {
-      const base = injectedJavaScriptFor(journalConsole);
-      if (!isTV) return base;
-
-      // Diagnostic TV-only probe: expose the TV marker and change absolutely
-      // nothing else. No CSS, no focus runtime, no DOM mutation.
-      return `
-window.MOVIX_TV = true;
-${base}
-`;
-    }, [journalConsole, isTV]);
+    const injectedJS = useMemo(
+      () => injectedJavaScriptFor(journalConsole),
+      [journalConsole],
+    );
 
     // Sur iOS, laisser WKWebView annoncer la version réelle de WebKit et de
     // l'appareil : un User-Agent Safari figé peut perturber Turnstile.
