@@ -1179,3 +1179,36 @@ This is the first proposed solution that accounts for the complete observed sequ
   - If fallback still occurs but Retry succeeds, native readiness alone is insufficient and the next correction is one bounded retry inside `resolveAddressConfig()` before hardcoded fallback.
   - If first launch regresses while later launches improve, inspect first-install prompt timing separately rather than altering the proven J1/J2A tunnel architecture.
 - USER HARDWARE RESULT: **PENDING**
+
+
+---
+
+## TV-BS-J3A hardware result — truthful readiness still regresses J2A
+
+- DATE OF HARDWARE RESULT: 2026-09-22
+- APK: TV-BS-J3A
+- APK SOURCE COMMIT: `40d06422b5e43008577f8c0fccec39675006162e`
+- APK SHA-256: `d3b4c17e4c0b873b6d967a5a868a60b8ce86e3e7219975ae08364132ccd0bbf9`
+- USER HARDWARE OBSERVATION:
+  1. First launch: structural shell only.
+  2. Second and subsequent launches: fallback.
+  3. On fallback, pressing "Réessayer" succeeds.
+- FACTUAL CONSEQUENCE:
+  - Replacing premature `isActive` gating with truthful `isReady` gating does **not** restore the J2A launch behavior.
+  - J3A reproduces the same broad regression introduced by J2B:
+    - J2A: launch 1 OK, launch 2 OK, launch 3+ fallback -> Retry OK.
+    - J2B/J3A: launch 1 partial, launch 2+ fallback -> Retry OK.
+  - Therefore the remaining problem is **not solved by delaying AddressProvider/WebView startup until after VPN/forwarder readiness**.
+  - The startup gating itself is now demonstrated to be harmful on this TV, regardless of whether the gated signal is `isActive` or the more accurate `isReady`.
+- EXPERIMENTAL CORRECTION:
+  - J2A is the best observed networking baseline and should have remained frozen while investigating only the launch-3+ failure.
+  - J2B/J3A changed the startup timing and therefore lost J2A's proven benefits on launches 1 and 2.
+- NEXT CLEAN A/B:
+  - Return **exactly** to the J2A runtime behavior for App/DNS startup and the J2A native virtual-DNS/concurrent-forwarder implementation.
+  - Change only `resolveAddressConfig()`:
+    - on transient failure of the Rentry fetch, retry once after a short bounded delay;
+    - on transient failure of discovered `address.json`, retry once after a short bounded delay;
+    - only then fall back to `HARDCODED_FALLBACK`.
+  - Do not wait for `isActive` or `isReady` before mounting AddressProvider/WebView.
+  - Do not restart or resync the VPN.
+  - This preserves J2A's observed `launch 1 OK / launch 2 OK` behavior while directly testing whether the manual Retry success can be reproduced internally for launch 3+.
