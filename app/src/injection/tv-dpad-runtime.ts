@@ -155,9 +155,25 @@ ${domDiscoveryRuntime}
     if (api.restoreLastFocus()) return true;
 
     const elements = api.getTVFocusableElements();
+    const contentCard = elements.find(element => element.hasAttribute('data-tv-card'));
+
+    if (api.preferContentAfterNavigation) {
+      if (contentCard) {
+        api.preferContentAfterNavigation = false;
+        api.navigationInProgressUntil = 0;
+        return focusWithoutJank(contentCard);
+      }
+
+      if (performance.now() < Number(api.navigationInProgressUntil || 0)) {
+        return false;
+      }
+
+      api.preferContentAfterNavigation = false;
+    }
+
     const target =
       elements.find(element => element.hasAttribute('data-tv-autofocus')) ||
-      elements.find(element => element.hasAttribute('data-tv-card')) ||
+      contentCard ||
       elements.find(element => element.hasAttribute('data-tv-primary-focus')) ||
       elements[0];
 
@@ -250,11 +266,11 @@ ${domDiscoveryRuntime}
     const remainingNavigationMs =
       Number(api.navigationInProgressUntil || 0) - performance.now();
 
-    if (remainingNavigationMs > 0) {
+    if (remainingNavigationMs > 0 && api.preferContentAfterNavigation) {
       api.focusRecoveryTimer = setTimeout(() => {
         api.focusRecoveryTimer = null;
         scheduleFocusRecovery();
-      }, Math.min(Math.max(remainingNavigationMs, 80), 1500));
+      }, Math.min(Math.max(remainingNavigationMs, 80), 250));
       return;
     }
 
