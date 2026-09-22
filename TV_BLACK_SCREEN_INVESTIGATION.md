@@ -346,3 +346,32 @@ Initial remote HEAD at journal creation: `97c62bedba930f0830f461fdca138fc057c48e
     2. VPN ON -> verify whether content turns/stays black after a clean app relaunch.
     3. VPN OFF -> verify rendering returns after a clean app relaunch.
   - If OFF=works / ON=black / OFF=works reproduces, treat VPN path as causally demonstrated at the system level and move to isolating the specific VPN implementation defect.
+
+
+---
+
+## TV-BS-G hardware follow-up — VPN REQUIRED FOR INITIAL PATH, BUT RETRY LOADS WITHOUT VPN
+
+- DATE OF HARDWARE RESULT: 2026-09-22
+- APK: exact same TV-BS-G APK
+- TEST RUNTIME COMMIT: `29ffab4ee454c4e18bfb6bcfa24ac6aefbe5f67f`
+- APK SHA-256: `dad600b805ed64a91e008d675af6425a6f58ae19016d620e03ddfae79c0957f9`
+- USER HARDWARE OBSERVATION:
+  1. Kill/relaunch Movix.
+  2. Movix VPN starts automatically.
+  3. User disables the VPN from Android system settings.
+  4. App shows the normal Movix-unavailable fallback screen.
+  5. User presses the fallback refresh/retry action.
+  6. Movix then loads correctly while the VPN remains OFF.
+- RELATED HISTORICAL OBSERVATION:
+  - This resembles the earlier TEST D behavior where one launch after the first kill rendered perfectly before later launches returned to black.
+- INTERPRETATION:
+  - The VPN/DNS path appears necessary for at least part of the initial resolution/bootstrap path, but a continuously active VPN is not necessary for the already-resolved/retried WebView session to render Movix.
+  - This strongly suggests separating:
+    A. bootstrap/domain resolution/discovery,
+    B. steady-state WebView traffic.
+  - A plausible failure mode is that the local DNS VPN is useful for A but harmful to B on Google TV.
+  - This is not yet proven to be DNS-cache reuse specifically; retry behavior, hostname/address selection, WebView network-process state, or a cached redirect can produce the same observation.
+- NEXT CODE ANALYSIS:
+  - Inspect fallback/retry implementation and address-resolution flow to determine what state changes between first load and retry.
+  - Compare TV and handheld paths for WebView/network initialization and Android VPN behavior before designing the next one-variable APK.
