@@ -97,7 +97,7 @@ export function buildAppSiteOverrides(): string {
         focusTarget.setAttribute('data-tv-card-proxy', '');
         focusTarget.setAttribute('data-tv-focus', '');
         focusTarget.setAttribute('data-tv-card', '');
-        focusTarget.setAttribute('data-tv-focus-id', `media:${path}`);
+        focusTarget.setAttribute('data-tv-focus-id', 'media:' + path);
         focusTarget.setAttribute('role', 'button');
         focusTarget.setAttribute('tabindex', '0');
 
@@ -107,7 +107,7 @@ export function buildAppSiteOverrides(): string {
       } else {
         link.setAttribute('data-tv-focus', '');
         link.setAttribute('data-tv-card', '');
-        link.setAttribute('data-tv-focus-id', `media:${path}`);
+        link.setAttribute('data-tv-focus-id', 'media:' + path);
         link.setAttribute('tabindex', '0');
       }
 
