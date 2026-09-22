@@ -859,3 +859,66 @@ Initial remote HEAD at journal creation: `97c62bedba930f0830f461fdca138fc057c48e
   - Do not change first-install prompt behavior.
   - Do not add UI retry automation.
   - This re-tests DNS readiness gating on top of the corrected J1/J2A virtual-DNS architecture, where the prior black-screen TUN pathology has already been removed.
+
+
+---
+
+## TV-BS-J2B — gate Android relaunch on actual DNS VPN readiness
+
+- TEST ID: TV-BS-J2B
+- DATE: 2026-09-22
+- BASE: TV-BS-J2A.
+- PURPOSE:
+  - Test whether the remaining third-launch fallback is caused by AddressProvider/WebView starting before the DNS VPN service is actually active.
+- UNIQUE RUNTIME CHANGE:
+  - `DnsVpnService.kt` remains byte-for-byte identical to J2A.
+  - On Android only, when persisted `dns_enabled === "true"` but native `DnsModule.isEnabled()` is false:
+    1. await `DnsModule.enable("1.1.1.1", "1.0.0.1")`;
+    2. poll `DnsModule.isEnabled()` every 100 ms;
+    3. wait until it reports true, with a hard 5-second timeout;
+    4. only then mark DNS settled / allow AddressProvider + BrowserScreen to mount.
+- INTENTIONALLY NOT CHANGED:
+  - first-install DNS prompt remains non-blocking;
+  - no manual DNS restart/resync;
+  - no post-ready grace delay;
+  - no WebView changes;
+  - no UI retry automation;
+  - J1 virtual DNS endpoint remains `10.215.173.2/32`;
+  - J2A 8-worker UDP/53 concurrency remains unchanged;
+  - no DNS-over-TCP support added.
+- APP BLOB:
+  - `App.tsx`: `2ccebcaee11394baa0c2c34db7b8bcb8ea038b30`
+- FROZEN VPN BLOB:
+  - `DnsVpnService.kt`: `95201edbeb0cf8fe97f9ab3f3a11ddf4e0b2fff0`
+- APK SOURCE COMMIT:
+  - `dd01dfe4c1debb53ad7ba534f092a06131457773`
+  - message: `diag(tv): await DNS readiness before relaunch`
+- CI:
+  - workflow: Android TV foundations
+  - run ID: `35765380367`
+  - conclusion: PASS
+  - J2B diagnostic contract: PASS
+  - frontend production build: PASS
+  - standalone Android APK: PASS
+  - merged TV/mobile manifest contract: PASS
+  - standalone JS bundle packaged: PASS
+- GITHUB ARTIFACT:
+  - ID: `10711614658`
+  - name: `movix-google-tv-standalone-apk`
+  - artifact ZIP digest: `sha256:d7cb27740a2fff5b68a0470d4e7c0b318bdf94667282f4c72931fa90075bcbdb`
+- APK:
+  - file: `app-release.apk`
+  - size: `72,593,538 bytes`
+  - SHA-256: `22327fde1f4389f480ab7dc32b542f78b56dfaf8dbcd349050df3734ced4bad3`
+- HARDWARE PROTOCOL:
+  1. Install TV-BS-J2B.
+  2. Leave Movix DNS/VPN enabled normally.
+  3. Record first launch.
+  4. Perform at least five complete kill/relaunch cycles.
+  5. Record every launch independently as full success / partial / fallback / black.
+  6. Do not press Retry unless fallback appears.
+  7. If fallback appears, press Retry once without changing VPN state and record whether it succeeds.
+- EXPECTED DISCRIMINATOR:
+  - If launches 3+ now succeed directly, the remaining J2A fallback was a DNS-service readiness race.
+  - If fallback persists unchanged, `isActive` is not a sufficient readiness signal and the next diagnostic should validate actual DNS query success rather than merely service state.
+- USER HARDWARE RESULT: **PENDING**
