@@ -5,7 +5,7 @@ import test from 'node:test';
 const root = new URL('../', import.meta.url);
 const text = path => readFile(new URL(path, root), 'utf8');
 
-test('diagnostic build differs from original runtime only by TV marker injection', async () => {
+test('diagnostic build keeps the original app runtime plus marker-only TV mode', async () => {
   const [app, webView, browser, inject, manifest] = await Promise.all([
     text('src/App.tsx'),
     text('src/components/WebViewBrowser.tsx'),
@@ -14,7 +14,6 @@ test('diagnostic build differs from original runtime only by TV marker injection
     text('android/app/src/main/AndroidManifest.xml'),
   ]);
 
-  assert.doesNotMatch(app, /waitForAndroidDnsActive|activateDnsForStartup/);
   assert.doesNotMatch(browser, /isAndroidTvRuntime|tvFailureRetriesRef|movix-tv-back/);
   assert.doesNotMatch(inject, /buildTvBootstrap|buildTvDpadRuntime|popupBlocker/);
 
@@ -25,6 +24,23 @@ test('diagnostic build differs from original runtime only by TV marker injection
   assert.match(manifest, /android\.software\.leanback/);
   assert.match(manifest, /android\.intent\.category\.LEANBACK_LAUNCHER/);
   assert.match(manifest, /android:banner="@drawable\/tv_banner"/);
+
+  // Only the TV startup path waits for VPN/DNS readiness.
+  assert.match(app, /async function waitForTvDnsReady\(\): Promise<boolean>/);
+  assert.match(app, /if \(isAndroidTvRuntime\(\)\) \{/);
+  assert.match(app, /await DnsModule\.enable\('1\.1\.1\.1', '1\.0\.0\.1'\)/);
+  assert.match(app, /await waitForTvDnsReady\(\)/);
+  assert.match(app, /await promptDnsForTv\(\)/);
+
+  // Phone/tablet path remains the original non-blocking implementation.
+  assert.match(
+    app,
+    /else \{\s*DnsModule\.enable\('1\.1\.1\.1', '1\.0\.0\.1'\)\.catch\(\(\) => \{\}\);\s*\}/,
+  );
+  assert.match(
+    app,
+    /else \{\s*promptDns\(\);\s*\/\/ Original phone\/tablet behavior/,
+  );
 });
 
 test('original WebView behavior remains otherwise intact', async () => {
