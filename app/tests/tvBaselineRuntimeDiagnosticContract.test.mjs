@@ -25,11 +25,14 @@ test('diagnostic build keeps the original app runtime plus marker-only TV mode',
   assert.match(manifest, /android\.intent\.category\.LEANBACK_LAUNCHER/);
   assert.match(manifest, /android:banner="@drawable\/tv_banner"/);
 
-  // Only the TV startup path waits for VPN/DNS readiness.
-  assert.match(app, /async function waitForTvDnsReady\(\): Promise<boolean>/);
-  assert.match(app, /if \(isAndroidTvRuntime\(\)\) \{/);
+  // Only the TV startup path rebuilds the sticky VPN/DNS tunnel.
+  assert.match(app, /async function restartTvDnsFromCleanState\(\): Promise<boolean>/);
+  assert.match(app, /await DnsModule\.disable\(\)/);
+  assert.match(app, /await waitForTvDnsState\(false, TV_DNS_STOP_TIMEOUT_MS\)/);
   assert.match(app, /await DnsModule\.enable\('1\.1\.1\.1', '1\.0\.0\.1'\)/);
-  assert.match(app, /await waitForTvDnsReady\(\)/);
+  assert.match(app, /await waitForTvDnsState\(true, TV_DNS_READY_TIMEOUT_MS\)/);
+  assert.match(app, /const ready = await restartTvDnsFromCleanState\(\)/);
+  assert.match(app, /if \(Platform\.OS === 'android' && isAndroidTvRuntime\(\)\)/);
   assert.match(app, /await promptDnsForTv\(\)/);
 
   // Phone/tablet path remains the original non-blocking implementation.
