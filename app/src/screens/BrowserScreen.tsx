@@ -55,8 +55,17 @@ export default function BrowserScreen() {
   const [dnsEnabled, setDnsEnabled] = useState(false);
   const [settingsVisible, setSettingsVisible] = useState(false);
   const [isPictureInPictureActive, setIsPictureInPictureActive] = useState(false);
+  const tvFailureRetriesRef = useRef(new Map<string, number>());
+  const tvRetryTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   const activeUrl = urlChain[mirrorIndex] ?? '';
+
+  useEffect(() => () => {
+    if (tvRetryTimerRef.current !== null) {
+      clearTimeout(tvRetryTimerRef.current);
+      tvRetryTimerRef.current = null;
+    }
+  }, []);
 
   useEffect(() => {
     AsyncStorage.getItem('dns_enabled').then(val => {
@@ -124,16 +133,39 @@ export default function BrowserScreen() {
     if (state.url) setCurrentUrl(state.url);
   }, []);
 
+  const onWebViewLoadSuccess = useCallback(() => {
+    if (!activeUrl) return;
+    tvFailureRetriesRef.current.delete(activeUrl);
+    setAllMirrorsFailed(false);
+  }, [activeUrl]);
+
   const onWebViewError = useCallback(
     (description: string) => {
       console.warn('[BrowserScreen] WebView error', description, 'on', activeUrl);
+
+      if (isTV && activeUrl) {
+        const attempts = tvFailureRetriesRef.current.get(activeUrl) ?? 0;
+        if (attempts < 2) {
+          const nextAttempt = attempts + 1;
+          tvFailureRetriesRef.current.set(activeUrl, nextAttempt);
+          if (tvRetryTimerRef.current !== null) {
+            clearTimeout(tvRetryTimerRef.current);
+          }
+          tvRetryTimerRef.current = setTimeout(() => {
+            tvRetryTimerRef.current = null;
+            webViewRef.current?.reload();
+          }, nextAttempt === 1 ? 700 : 1500);
+          return;
+        }
+      }
+
       if (mirrorIndex + 1 < urlChain.length) {
         setMirrorIndex(i => i + 1);
       } else {
         setAllMirrorsFailed(true);
       }
     },
-    [activeUrl, mirrorIndex, urlChain.length],
+    [activeUrl, isTV, mirrorIndex, urlChain.length],
   );
 
   const closeSettings = useCallback(() => {
@@ -146,6 +178,7 @@ export default function BrowserScreen() {
   const onRetry = useCallback(async () => {
     setAllMirrorsFailed(false);
     setMirrorIndex(0);
+    tvFailureRetriesRef.current.clear();
     await refresh();
   }, [refresh]);
 
@@ -174,6 +207,7 @@ export default function BrowserScreen() {
           url={activeUrl}
           isTV={isTV}
           onNavigationStateChange={onNavigationStateChange}
+          onLoadSuccess={onWebViewLoadSuccess}
           onError={onWebViewError}
           onPictureInPictureModeChange={onPictureInPictureModeChange}
         />
