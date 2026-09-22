@@ -235,3 +235,51 @@ Initial remote HEAD at journal creation: `97c62bedba930f0830f461fdca138fc057c48e
 29 aff146cf1e0b20dd62af638cb645edd5a40d69b9 diag(tv): restore baseline App.tsx
 30 82dd1d13029b4bbfca25887d3c0516aaedff6154 test(tv): lock D-pad isolation build contract
 ```
+
+
+---
+
+## TV-BS-G build record — READY FOR HARDWARE TEST
+
+- TEST ID: TV-BS-G
+- DATE: 2026-09-22
+- BRANCH: `agent/google-tv-roadmap-v1`
+- BASE COMMIT FOR SCIENTIFIC A/B: `ade4b2cc14045b2e72b74644631153d910265636`
+- JOURNAL CHECKPOINT BEFORE RUNTIME CHANGE: `18feefb4c3be2504f3e7791584d98d8bf1d04946`
+- TEST RUNTIME COMMIT: `29ffab4ee454c4e18bfb6bcfa24ac6aefbe5f67f`
+- WORKFLOW RUN: `35712651080` — SUCCESS
+- ARTIFACT ID: `10687510792`
+- ARTIFACT NAME: `movix-google-tv-standalone-apk`
+- APK SIZE: `72594150` bytes
+- APK SHA-256: `dad600b805ed64a91e008d675af6425a6f58ae19016d620e03ddfae79c0957f9`
+- HYPOTHÈSE: `window.MOVIX_TV = true` is necessary for the TEST D sequence `black → first kill perfect → later black`.
+- VARIABLE UNIQUE MODIFIÉE: remove the MOVIX_TV marker while preserving TEST D DNS-ready timing.
+- EXACT RUNTIME BLOBS VERIFIED BY CI:
+  - `app/src/App.tsx` = `ca2ef5ccbbbe8b9282d935e59235ceee000ce2b1` — exact TEST D blob.
+  - `app/src/components/WebViewBrowser.tsx` = `c42d8b9e33dd01af93ddadbf9f89ba432255784a` — exact hardware-PASS baseline-runtime blob.
+  - `app/src/screens/BrowserScreen.tsx` = `e7a7aae7f7754c49880b166006debff6b25efdbb`.
+  - `app/src/components/MirrorErrorScreen.tsx` = `39854aee4c3fda0915629de455059f61486c557e`.
+  - `app/src/injection/inject.ts` = `4df61dd53d5bd8d9cb30368905aa20aac261d142`.
+- CI VALIDATION:
+  - A/B blob contract: PASS.
+  - TypeScript: PASS.
+  - frontend production build: PASS.
+  - Android standalone release build: PASS.
+  - merged TV/mobile manifest contract: PASS.
+  - standalone JS bundle packaged: PASS.
+  - old Android artifact cleanup: PASS.
+  - APK upload: PASS.
+- COMPORTEMENT ATTENDU: this test distinguishes whether MOVIX_TV is necessary for the TEST D launch sequence.
+- PROTOCOLE MATÉRIEL:
+  1. Clear **all application data** so the starting condition matches TEST D.
+  2. Install/launch this APK.
+  3. Complete the normal VPN permission/setup flow; do not manually resync or restart the VPN.
+  4. Record first-launch WebView result.
+  5. Kill the app completely; relaunch; record result.
+  6. Repeat complete kill/relaunch at least three more times, recording each launch.
+  7. Report images/search/video behavior if any launch renders.
+- RÉSULTAT UTILISATEUR: **PENDING — no hardware conclusion before user test.**
+- INTERPRÉTATION: **PENDING.**
+- HYPOTHÈSES EXCLUES: none additionally until hardware result exists.
+- HYPOTHÈSES ENCORE OUVERTES: MOVIX_TV marker, WebView/Chromium persisted state, VPN/DNS state, startup race, cache/service-worker state.
+- PROCHAIN TEST RECOMMANDÉ: **do not choose until TV-BS-G hardware result is recorded.**
