@@ -78,6 +78,8 @@ export function buildAppSiteOverrides(): string {
   };
 
   const markPosterCards = () => {
+    if (window.MOVIX_TV !== true) return;
+
     const detailLinks = Array.from(document.querySelectorAll('a[href]'))
       .filter(looksLikePosterCardLink);
 
@@ -87,6 +89,7 @@ export function buildAppSiteOverrides(): string {
         classes.includes('absolute') &&
         (classes.includes('inset-0') || classes.includes('inset-x-0'));
 
+      const path = linkPath(link);
       let focusTarget = link;
 
       if (isTransparentOverlay && link.parentElement instanceof HTMLElement) {
@@ -94,6 +97,7 @@ export function buildAppSiteOverrides(): string {
         focusTarget.setAttribute('data-tv-card-proxy', '');
         focusTarget.setAttribute('data-tv-focus', '');
         focusTarget.setAttribute('data-tv-card', '');
+        focusTarget.setAttribute('data-tv-focus-id', `media:${path}`);
         focusTarget.setAttribute('role', 'button');
         focusTarget.setAttribute('tabindex', '0');
 
@@ -103,6 +107,7 @@ export function buildAppSiteOverrides(): string {
       } else {
         link.setAttribute('data-tv-focus', '');
         link.setAttribute('data-tv-card', '');
+        link.setAttribute('data-tv-focus-id', `media:${path}`);
         link.setAttribute('tabindex', '0');
       }
 
