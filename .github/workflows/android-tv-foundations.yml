@@ -136,7 +136,7 @@ jobs:
               .artifacts[]
               | select(
                   (.workflow_run.id != $current_run)
-                  and (.name | test("(^|[-_])(apk|aab)([-_]|$)"; "i"))
+                  and (.name | test("^movix-google-tv-(standalone|debug)-(apk|aab)$"; "i"))
                 )
               | "\(.id)|\(.name)|\(.workflow_run.id)"
             ' <<<"${response}" >> "${ARTIFACTS_FILE}"
