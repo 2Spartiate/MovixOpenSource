@@ -828,3 +828,34 @@ Initial remote HEAD at journal creation: `97c62bedba930f0830f461fdca138fc057c48e
   - Keep J2A unchanged.
   - Add DNS-over-TCP support as TV-BS-J2B, still limited to the virtual DNS endpoint and port 53.
   - Do not add automatic UI retry yet; the remaining failure should be fixed at the resolver/transport layer if possible.
+
+
+---
+
+## Post-J2A code-path finding — remaining fallback matches DNS startup race
+
+- DATE: 2026-09-22
+- VERIFIED CODE PATH:
+  - In `App.tsx`, when `dns_enabled === "true"` but `DnsModule.isEnabled()` is false on Android:
+    - `DnsModule.enable("1.1.1.1", "1.0.0.1").catch(() => {})` is fired without await.
+    - `setDnsSettled(true)` is called immediately.
+    - `setReady(true)` follows in `finally`, so `AddressProvider` / `BrowserScreen` can mount while the VPN is still starting.
+  - In `DnsModule.kt`, `enable()` with already-granted VPN permission calls `startVpnService(...)` and then immediately `promise.resolve(true)`.
+  - That Promise therefore confirms only that Android service start was requested, NOT that `DnsVpnService.startVpn()` has completed `Builder.establish()` and set `isActive = true`.
+- INTERPRETATION OF J2A HARDWARE:
+  - Launch 1 OK and launch 2 OK show J2A's concurrent virtual-DNS relay materially improved resolver performance.
+  - Launch 3+ fallback followed by immediate successful Retry is strongly compatible with a startup race:
+    - first address/WebView attempt can run before DNS VPN is actually active;
+    - by the time fallback is shown and Retry is pressed, the service has finished establishing the tunnel.
+- CORRECTION TO PREVIOUS NEXT-STEP ORDER:
+  - Do NOT add DNS-over-TCP next.
+  - Raw TCP inside a TUN requires proper TCP termination/state handling; it is not a small equivalent of the UDP forwarding code and should not be introduced without evidence it is needed.
+- NEXT CLEAN A/B:
+  - Keep J2A networking architecture and concurrency frozen.
+  - On the stored-enabled / native-disabled Android relaunch path only:
+    1. call `DnsModule.enable(...)`;
+    2. poll `DnsModule.isEnabled()` until true with a bounded timeout;
+    3. only then mark DNS settled / mount the address+WebView path.
+  - Do not change first-install prompt behavior.
+  - Do not add UI retry automation.
+  - This re-tests DNS readiness gating on top of the corrected J1/J2A virtual-DNS architecture, where the prior black-screen TUN pathology has already been removed.
