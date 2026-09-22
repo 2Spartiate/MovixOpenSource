@@ -1,10 +1,7 @@
-import React, { useState, useCallback } from 'react';
+import React from 'react';
 import { PrefetchLink as Link } from '@/routing/PrefetchLink';
-import { useTranslation } from 'react-i18next';
 import { Star, Calendar } from 'lucide-react';
 import { motion } from 'framer-motion';
-import { toast } from 'sonner';
-import { Tooltip, TooltipTrigger, TooltipContent } from './ui/tooltip';
 import { encodeId } from '../utils/idEncoder';
 import { useAgeRestrictedContent } from '../hooks/useAgeRestrictedContent';
 
@@ -23,63 +20,12 @@ interface SearchResult {
 
 const POSTER_FALLBACK = `data:image/svg+xml,${encodeURIComponent('<svg width="500" height="750" xmlns="http://www.w3.org/2000/svg"><rect width="100%" height="100%" fill="#111"/><text x="50%" y="50%" fill="#444" font-size="36" font-family="sans-serif" text-anchor="middle" dy=".3em">MOVIX</text></svg>')}`;
 
-// Module-level watchlist id cache, keyed by media_type. Previously each
-// SearchGridCard / SearchListCard ran `JSON.parse(localStorage[...])` inside
-// its useState initializer on every mount — with 60 results × a 200-item
-// watchlist that's ~12k operations during the initial paint of a search
-// page, repeated every time `index` shifts in the React key. Now the parse
-// happens at most once per media_type per browsing session (or after a
-// toggle / cross-tab change). — perf
-/*
- * `backdrop-blur` a été retiré des pastilles et du bouton watchlist de ces
- * cartes. Un flou d'arrière-plan force une couche de composition et un
- * repaint de la zone derrière l'élément ; multiplié par les deux ou trois
- * éléments de chaque carte et par les vingt cartes d'une grille, c'est ce qui
- * faisait ramer le défilement des pages de genre. Les fonds ont été assombris
- * d'autant : à l'œil, la différence ne se voit pas.
- */
-
 /**
  * Nombre de cartes qui jouent l'animation d'apparition. Les grilles de genre et
  * de recherche en affichent une vingtaine d'un coup ; animer les dernières ne
  * se voit pas et coûte autant que d'animer les premières.
  */
 const ANIMATED_CARD_COUNT = 12;
-
-const watchlistCache: Record<string, Set<number> | undefined> = {};
-
-const getWatchlistIds = (mediaType: 'movie' | 'tv'): Set<number> => {
-    const cached = watchlistCache[mediaType];
-    if (cached) return cached;
-    try {
-        const raw = localStorage.getItem(`watchlist_${mediaType}`) || '[]';
-        const list = JSON.parse(raw) as Array<{ id: number }>;
-        const set = new Set(list.map((m) => m.id));
-        watchlistCache[mediaType] = set;
-        return set;
-    } catch {
-        const empty = new Set<number>();
-        watchlistCache[mediaType] = empty;
-        return empty;
-    }
-};
-
-const invalidateWatchlistCache = (mediaType: 'movie' | 'tv') => {
-    delete watchlistCache[mediaType];
-};
-
-// Listen for cross-tab storage updates so the cache doesn't go stale.
-type GlobalWithFlag = Window & { __movixWatchlistCacheRegistered?: boolean };
-if (typeof window !== 'undefined') {
-    const w = window as GlobalWithFlag;
-    if (!w.__movixWatchlistCacheRegistered) {
-        w.__movixWatchlistCacheRegistered = true;
-        window.addEventListener('storage', (e) => {
-            if (e.key === 'watchlist_movie') invalidateWatchlistCache('movie');
-            else if (e.key === 'watchlist_tv') invalidateWatchlistCache('tv');
-        });
-    }
-}
 
 // ─── Grid Card ──────────────────────────────────────────────────────────────
 
@@ -91,32 +37,7 @@ interface GridCardProps {
 }
 
 export const SearchGridCard: React.FC<GridCardProps> = React.memo(({ item, index, movieLabel, serieLabel }) => {
-    const { t } = useTranslation();
     const { items: allowedItems } = useAgeRestrictedContent([item]);
-    const [starred, setStarred] = useState(() => getWatchlistIds(item.media_type).has(item.id));
-
-    const title = item.title || item.name || '';
-
-    const toggle = useCallback((e: React.MouseEvent) => {
-        e.preventDefault();
-        e.stopPropagation();
-        const key = `watchlist_${item.media_type}`;
-        const list = JSON.parse(localStorage.getItem(key) || '[]');
-        const exists = list.some((m: { id: number }) => m.id === item.id);
-        if (exists) {
-            localStorage.setItem(key, JSON.stringify(list.filter((m: { id: number }) => m.id !== item.id)));
-            setStarred(false);
-            toast.success(`${title} ${t('lists.removedFromList')}`, { duration: 2000 });
-        } else {
-            list.push({ id: item.id, type: item.media_type, title, poster_path: item.poster_path, addedAt: new Date().toISOString() });
-            localStorage.setItem(key, JSON.stringify(list));
-            setStarred(true);
-            toast.success(`${title} ${t('lists.addedToList')}`, { duration: 2000 });
-        }
-        // Bust the module cache so other cards (and remounts) read fresh.
-        invalidateWatchlistCache(item.media_type);
-    }, [item, title, t]);
-
     if (allowedItems.length === 0) return null;
 
     return (
@@ -134,34 +55,6 @@ export const SearchGridCard: React.FC<GridCardProps> = React.memo(({ item, index
             <span className="absolute top-2 left-2 z-10 px-2 py-1 rounded-lg bg-black/75 text-[10px] font-semibold uppercase tracking-wider text-white/80">
                 {item.media_type === 'tv' ? serieLabel : movieLabel}
             </span>
-
-            {/* Watchlist button */}
-            <Tooltip>
-                <TooltipTrigger asChild>
-                    <motion.button
-                        data-tv-ignore-focus
-                        data-tv-favorite-overlay
-                        onClick={toggle}
-                        whileTap={{ scale: 0.7 }}
-                        className={`absolute top-2 right-2 z-20 p-2 rounded-full transition-all duration-200 md:opacity-0 md:group-hover:opacity-100 ${starred ? 'bg-yellow-500/25 border border-yellow-400/30' : 'bg-black/55 hover:bg-black/70'}`}
-                    >
-                        <motion.div
-                            key={starred ? 'on' : 'off'}
-                            initial={{ scale: 0.3, rotate: -45 }}
-                            animate={{ scale: 1, rotate: 0 }}
-                            transition={{ type: 'spring', stiffness: 500, damping: 15 }}
-                        >
-                            <Star
-                                className={`w-4 h-4 transition-colors duration-150 ${starred ? 'text-yellow-400' : 'text-white'}`}
-                                fill={starred ? 'currentColor' : 'none'}
-                            />
-                        </motion.div>
-                    </motion.button>
-                </TooltipTrigger>
-                <TooltipContent>
-                    {starred ? t('profile.removeFromWatchlist') : t('profile.addToWatchlist')}
-                </TooltipContent>
-            </Tooltip>
 
             {/* Poster
                 w342 et non w500 : une carte de grille fait ~200 px de large,
@@ -229,33 +122,8 @@ interface ListCardProps {
     noDescLabel: string;
 }
 
-export const SearchListCard: React.FC<ListCardProps> = React.memo(({ item, index, movieLabel, serieLabel, watchlistLabel, removeLabel, noDescLabel }) => {
-    const { t } = useTranslation();
+export const SearchListCard: React.FC<ListCardProps> = React.memo(({ item, index, movieLabel, serieLabel, noDescLabel }) => {
     const { items: allowedItems } = useAgeRestrictedContent([item]);
-    const [starred, setStarred] = useState(() => getWatchlistIds(item.media_type).has(item.id));
-
-    const title = item.title || item.name || '';
-
-    const toggle = useCallback((e: React.MouseEvent) => {
-        e.preventDefault();
-        e.stopPropagation();
-        const key = `watchlist_${item.media_type}`;
-        const list = JSON.parse(localStorage.getItem(key) || '[]');
-        const exists = list.some((m: { id: number }) => m.id === item.id);
-        if (exists) {
-            localStorage.setItem(key, JSON.stringify(list.filter((m: { id: number }) => m.id !== item.id)));
-            setStarred(false);
-            toast.success(`${title} ${t('lists.removedFromList')}`, { duration: 2000 });
-        } else {
-            list.push({ id: item.id, type: item.media_type, title, poster_path: item.poster_path, addedAt: new Date().toISOString() });
-            localStorage.setItem(key, JSON.stringify(list));
-            setStarred(true);
-            toast.success(`${title} ${t('lists.addedToList')}`, { duration: 2000 });
-        }
-        // Bust the module cache so other cards (and remounts) read fresh.
-        invalidateWatchlistCache(item.media_type);
-    }, [item, title, t]);
-
     if (allowedItems.length === 0) return null;
 
     return (
@@ -302,37 +170,7 @@ export const SearchListCard: React.FC<ListCardProps> = React.memo(({ item, index
                             {item.overview || noDescLabel}
                         </p>
                     </div>
-                    <div className="flex items-center gap-2 mt-2">
-                        <Tooltip>
-                            <TooltipTrigger asChild>
-                                <motion.button
-                                    data-tv-ignore-focus
-                                    data-tv-favorite-overlay
-                                    onClick={toggle}
-                                    whileTap={{ scale: 0.85 }}
-                                    className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg transition-all duration-200 relative z-10 ${starred ? 'bg-yellow-500/10 border border-yellow-400/20' : 'bg-white/5 hover:bg-white/10'}`}
-                                >
-                                    <motion.div
-                                        key={starred ? 'on' : 'off'}
-                                        initial={{ scale: 0.3, rotate: -45 }}
-                                        animate={{ scale: 1, rotate: 0 }}
-                                        transition={{ type: 'spring', stiffness: 500, damping: 15 }}
-                                    >
-                                        <Star
-                                            className={`w-4 h-4 transition-colors duration-150 ${starred ? 'text-yellow-400' : 'text-white opacity-60'}`}
-                                            fill={starred ? 'currentColor' : 'none'}
-                                        />
-                                    </motion.div>
-                                    <span className={`text-xs hidden md:inline transition-colors duration-150 ${starred ? 'text-yellow-400/80' : 'text-white/60'}`}>
-                                        {starred ? removeLabel : watchlistLabel}
-                                    </span>
-                                </motion.button>
-                            </TooltipTrigger>
-                            <TooltipContent>
-                                {starred ? t('profile.removeFromWatchlist') : t('profile.addToWatchlist')}
-                            </TooltipContent>
-                        </Tooltip>
-                    </div>
+
                 </div>
             </Link>
         </motion.div>
