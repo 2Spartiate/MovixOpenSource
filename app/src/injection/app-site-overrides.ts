@@ -140,6 +140,21 @@ export function buildAppSiteOverrides(): string {
     document.querySelectorAll('footer').forEach((footer) => footer.remove());
   };
 
+  const disableTvSmoothScroll = () => {
+    if (window.MOVIX_TV !== true) return;
+
+    const lenis = window.lenis;
+    if (lenis && typeof lenis.destroy === 'function') {
+      try { lenis.destroy(); } catch {}
+      try { delete window.lenis; } catch {}
+    } else if (lenis && typeof lenis.stop === 'function') {
+      try { lenis.stop(); } catch {}
+    }
+
+    document.documentElement.style.scrollBehavior = 'auto';
+    if (document.body) document.body.style.scrollBehavior = 'auto';
+  };
+
   const skipPostAdThanks = () => {
     const dialogs = Array.from(document.querySelectorAll('[role="dialog"]'));
     dialogs.forEach((dialog) => {
@@ -179,6 +194,7 @@ export function buildAppSiteOverrides(): string {
     removeFooter();
     removeCarouselArrows();
     markCarouselCards();
+    disableTvSmoothScroll();
     skipPostAdThanks();
   };
 
