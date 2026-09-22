@@ -18,16 +18,18 @@ import { loadNetworkJournalPreference } from './services/networkJournal';
 
 const { DnsModule } = NativeModules;
 
-function promptDns() {
-  Alert.alert(
+function promptDns(): Promise<void> {
+  return new Promise(resolve => {
+    Alert.alert(
     'DNS Cloudflare 1.1.1.1',
     'Activer le DNS Cloudflare pour une navigation plus rapide et sécurisée ?\n\n(Recommandé)',
     [
       {
         text: 'Non merci',
         style: 'cancel',
-        onPress: () => {
-          AsyncStorage.setItem('dns_enabled', 'false');
+        onPress: async () => {
+          await AsyncStorage.setItem('dns_enabled', 'false');
+          resolve();
         },
       },
       {
@@ -56,11 +58,15 @@ function promptDns() {
             }
           } catch {
             await AsyncStorage.setItem('dns_enabled', 'false');
+          } finally {
+            resolve();
           }
         },
       },
     ],
+    { cancelable: false },
   );
+  });
 }
 
 export default function App() {
@@ -98,11 +104,10 @@ export default function App() {
           await AsyncStorage.setItem('dns_enabled', 'false');
           setDnsSettled(true);
         } else if (stored === null) {
-          promptDns();
-          // Mark settled on next tick — we don't block on user's DNS answer.
-          // The update check is cheap and will still run after; its dialog
-          // stacks on top of the DNS prompt on Android without issue now
-          // that it's a proper Modal, not Alert.alert.
+          // First install only: do not mount AddressProvider/BrowserScreen
+          // until the DNS choice — and Android VPN permission flow, if chosen —
+          // has completed. Subsequent launches keep the proven J3B/J2A timing.
+          await promptDns();
           setDnsSettled(true);
         } else {
           setDnsSettled(true);
