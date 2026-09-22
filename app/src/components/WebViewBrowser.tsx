@@ -7,7 +7,7 @@ import React, {
   useRef,
   useState,
 } from 'react';
-import { Alert, Linking, Platform } from 'react-native';
+import { Platform } from 'react-native';
 import { WebView, type WebViewNavigation } from 'react-native-webview';
 import type {
   WebViewErrorEvent,
@@ -33,8 +33,6 @@ import {
 import { buildInjectedJavaScript } from '../injection/inject';
 import type { PictureInPictureShimMode } from '../injection/picture-in-picture-shim';
 import { CONFIG } from '../config';
-import { isAndroidTvRuntime } from '../platform/tvRuntime';
-import { buildTvRenderDiagnostic } from '../injection/tv-render-diagnostic';
 
 export interface WebViewBrowserRef {
   goBack: () => void;
@@ -47,7 +45,9 @@ export interface WebViewBrowserRef {
 
 interface WebViewBrowserProps {
   url: string;
+  isTV: boolean;
   onNavigationStateChange?: (state: WebViewNavigation) => void;
+  onLoadSuccess?: () => void;
   onError?: (error: string) => void;
   onPictureInPictureModeChange?: (active: boolean) => void;
 }
@@ -86,18 +86,24 @@ const BASE_INJECTION_OPTIONS = {
   mediaProxyScheme: Platform.OS === 'ios' ? 'movix-media' : null,
 } as const;
 
-// Construit une fois par état de capture, pas à chaque rendu : le script
-// injecté est volumineux, et son contenu ne dépend que de ce booléen.
-const INJECTED_JS_BY_JOURNAL_STATE = new Map<boolean, string>();
+// Construit une fois par combinaison journal/TV, pas à chaque rendu : le
+// script injecté est volumineux. Ne jamais réutiliser un script téléphone sur
+// TV (ou inversement), car le bootstrap TV fait partie du document initial.
+const INJECTED_JS_BY_RUNTIME_STATE = new Map<string, string>();
 
-function injectedJavaScriptFor(journalConsoleEnabled: boolean): string {
-  const cached = INJECTED_JS_BY_JOURNAL_STATE.get(journalConsoleEnabled);
+function injectedJavaScriptFor(
+  journalConsoleEnabled: boolean,
+  isTV: boolean,
+): string {
+  const cacheKey = `${journalConsoleEnabled ? 'journal' : 'quiet'}:${isTV ? 'tv' : 'handheld'}`;
+  const cached = INJECTED_JS_BY_RUNTIME_STATE.get(cacheKey);
   if (cached !== undefined) return cached;
   const built = buildInjectedJavaScript({
     ...BASE_INJECTION_OPTIONS,
     journalConsoleEnabled,
+    tvMode: isTV,
   });
-  INJECTED_JS_BY_JOURNAL_STATE.set(journalConsoleEnabled, built);
+  INJECTED_JS_BY_RUNTIME_STATE.set(cacheKey, built);
   return built;
 }
 
@@ -110,21 +116,43 @@ function isUsableHttpUrl(value: unknown): value is string {
   );
 }
 
-function isSameOrigin(a: string, b: string): boolean {
+function isSameDocumentUrl(left: string, right: string): boolean {
   try {
-    return new URL(a).origin === new URL(b).origin;
+    const a = new URL(left);
+    const b = new URL(right);
+    a.hash = '';
+    b.hash = '';
+    return a.href === b.href;
   } catch {
-    return false;
+    return left === right;
   }
 }
 
+function isTopLevelFailure(
+  nativeEvent: { url?: unknown; isTopFrame?: unknown },
+  currentTopLevelUrl: string,
+): boolean {
+  if (typeof nativeEvent.isTopFrame === 'boolean') {
+    return nativeEvent.isTopFrame;
+  }
+
+  const eventUrl = nativeEvent.url;
+  // Some main-frame Android errors do not expose isTopFrame. In that case an
+  // exact document URL is our safe fallback. Subresource 403/404 errors must
+  // never evict a healthy Movix mirror.
+  if (isUsableHttpUrl(eventUrl)) {
+    return isSameDocumentUrl(eventUrl, currentTopLevelUrl);
+  }
+
+  // Unknown/no URL: keep the historical conservative behavior.
+  return true;
+}
+
 const WebViewBrowser = forwardRef<WebViewBrowserRef, WebViewBrowserProps>(
-  ({ url, onNavigationStateChange, onError, onPictureInPictureModeChange }, ref) => {
+  ({ url, isTV, onNavigationStateChange, onLoadSuccess, onError, onPictureInPictureModeChange }, ref) => {
     const webViewRef = useRef<WebView>(null);
     const topLevelUrlRef = useRef(url);
     const navigationGenerationRef = useRef(0);
-    const isTV = useMemo(() => isAndroidTvRuntime(), []);
-    const tvDiagnosticAlertShownRef = useRef(false);
 
     React.useEffect(() => {
       topLevelUrlRef.current = url;
@@ -176,49 +204,6 @@ const WebViewBrowser = forwardRef<WebViewBrowserRef, WebViewBrowserProps>(
     }));
 
     const onMessage = useCallback((event: WebViewMessageEvent) => {
-      if (isTV && event.nativeEvent.data.startsWith('MOVIX_TV_DIAG:')) {
-        try {
-          const diagnostic = JSON.parse(
-            event.nativeEvent.data.slice('MOVIX_TV_DIAG:'.length),
-          );
-          if (
-            diagnostic?.phase === 'after-5000ms'
-            && !tvDiagnosticAlertShownRef.current
-          ) {
-            tvDiagnosticAlertShownRef.current = true;
-            const rootStyle = diagnostic.rootStyle
-              ? `${diagnostic.rootStyle.display}/${diagnostic.rootStyle.visibility}/${diagnostic.rootStyle.opacity}`
-              : 'n/a';
-            const rootRect = diagnostic.rootRect
-              ? `${diagnostic.rootRect.width}x${diagnostic.rootRect.height}`
-              : 'n/a';
-            const uaData = diagnostic.uaData
-              ? `${diagnostic.uaData.platform ?? '?'} mobile=${String(diagnostic.uaData.mobile)}`
-              : 'n/a';
-            Alert.alert(
-              'TV render diagnostic',
-              [
-                `readyState: ${diagnostic.readyState}`,
-                `root: ${String(diagnostic.rootExists)} children=${diagnostic.rootChildren}`,
-                `root style: ${rootStyle} size=${rootRect}`,
-                `body children: ${diagnostic.bodyChildren}`,
-                `SW: controlled=${String(diagnostic.serviceWorkerControlled)} registrations=${diagnostic.serviceWorkerRegistrations ?? '?'}`,
-                `UA data: ${uaData}`,
-                `errors: ${diagnostic.errorCount ?? 0}`,
-                diagnostic.lastError
-                  ? `last error: ${diagnostic.lastError.message ?? JSON.stringify(diagnostic.lastError)}`
-                  : 'last error: none',
-                diagnostic.bodyText
-                  ? `text: ${diagnostic.bodyText}`
-                  : 'text: <empty>',
-              ].join('\n'),
-              [{ text: 'OK' }],
-            );
-          }
-        } catch {}
-        return;
-      }
-
       const isTopFrame = typeof event.nativeEvent.isTopFrame === 'boolean'
         ? event.nativeEvent.isTopFrame
         : undefined;
@@ -237,29 +222,21 @@ const WebViewBrowser = forwardRef<WebViewBrowserRef, WebViewBrowserProps>(
         isTopFrame: isTopFrame,
         navigationGeneration: navigationGenerationRef.current,
       });
-    }, [isTV, url]);
+    }, [url]);
 
-    // `window.open` et les liens `target="_blank"` : sans ce gestionnaire,
-    // react-native-webview recharge la cible dans le WebView courant, ce qui
-    // fait entrer les pop-ups publicitaires dans l'application. Seules les
-    // fenêtres de même origine que la page Movix restent internes ; tout le
-    // reste part vers le navigateur par défaut du système.
-    const onOpenWindow = useCallback((event: WebViewOpenWindowEvent) => {
-      const targetUrl = event.nativeEvent.targetUrl;
-      if (!isUsableHttpUrl(targetUrl)) return;
-      if (isSameOrigin(targetUrl, topLevelUrlRef.current)) {
-        webViewRef.current?.injectJavaScript(
-          `window.location.href = ${JSON.stringify(targetUrl)}; true;`,
-        );
-        return;
-      }
-      Linking.openURL(targetUrl).catch(() => {
-        // Aucun gestionnaire système : la pop-up est simplement abandonnée.
-      });
+    // Reject every new-window request. This catches target="_blank" links and
+    // popup attempts from iframes even if a site script bypasses the injected
+    // window.open shim. Same-tab navigation continues through the normal
+    // WebView navigation path.
+    const onOpenWindow = useCallback((_event: WebViewOpenWindowEvent) => {
+      // Intentionally ignored.
     }, []);
 
     const onHttpError = useCallback(
       (event: any) => {
+        if (!isTopLevelFailure(event.nativeEvent, topLevelUrlRef.current)) {
+          return;
+        }
         onError?.(
           `HTTP ${event.nativeEvent.statusCode}: ${event.nativeEvent.url}`,
         );
@@ -269,6 +246,9 @@ const WebViewBrowser = forwardRef<WebViewBrowserRef, WebViewBrowserProps>(
 
     const onWebViewError = useCallback(
       (event: WebViewErrorEvent) => {
+        if (!isTopLevelFailure(event.nativeEvent, topLevelUrlRef.current)) {
+          return;
+        }
         onError?.(event.nativeEvent.description);
       },
       [onError],
@@ -282,11 +262,10 @@ const WebViewBrowser = forwardRef<WebViewBrowserRef, WebViewBrowserProps>(
       isNetworkJournalEnabled,
     );
     useEffect(() => subscribeNetworkJournal(setJournalConsole), []);
-    const injectedJS = useMemo(() => {
-      const base = injectedJavaScriptFor(journalConsole);
-      if (!isTV) return base;
-      return `${buildTvRenderDiagnostic()}\n${base}`;
-    }, [journalConsole, isTV]);
+    const injectedJS = useMemo(
+      () => injectedJavaScriptFor(journalConsole, isTV),
+      [journalConsole, isTV],
+    );
 
     // Sur iOS, laisser WKWebView annoncer la version réelle de WebKit et de
     // l'appareil : un User-Agent Safari figé peut perturber Turnstile.
@@ -315,8 +294,11 @@ const WebViewBrowser = forwardRef<WebViewBrowserRef, WebViewBrowserProps>(
         }}
         // Navigation
         onNavigationStateChange={onNavigationStateChange}
-        // Pop-ups : hors origine Movix -> navigateur système
+        onLoad={() => onLoadSuccess?.()}
+        // Keep multiple-window support enabled so target="_blank" is surfaced
+        // through onOpenWindow instead of replacing the current WebView.
         setSupportMultipleWindows={true}
+        javaScriptCanOpenWindowsAutomatically={false}
         onOpenWindow={onOpenWindow}
         // Errors
         onError={onWebViewError}
