@@ -38,11 +38,11 @@ test('diagnostic build keeps the original app runtime plus marker-only TV mode',
   // Phone/tablet path remains the original non-blocking implementation.
   assert.match(
     app,
-    /else \{\s*DnsModule\.enable\('1\.1\.1\.1', '1\.0\.0\.1'\)\.catch\(\(\) => \{\}\);\s*\}/,
+    /Original handheld Android behavior\.\s*DnsModule\.enable\('1\.1\.1\.1', '1\.0\.0\.1'\)\.catch\(\(\) => \{\}\);/,
   );
   assert.match(
     app,
-    /else \{\s*promptDns\(\);\s*\/\/ Original phone\/tablet behavior/,
+    /Original phone\/tablet behavior: do not block startup on the DNS prompt\.\s*promptDns\(\);/,
   );
 });
 
