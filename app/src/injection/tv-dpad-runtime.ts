@@ -263,21 +263,25 @@ ${domDiscoveryRuntime}
   const scheduleFocusRecovery = () => {
     if (!pageFocusIsEmpty() || api.focusRecoveryRaf || api.focusRecoveryTimer) return;
 
-    const remainingNavigationMs =
-      Number(api.navigationInProgressUntil || 0) - performance.now();
-
-    if (remainingNavigationMs > 0 && api.preferContentAfterNavigation) {
-      api.focusRecoveryTimer = setTimeout(() => {
-        api.focusRecoveryTimer = null;
-        scheduleFocusRecovery();
-      }, Math.min(Math.max(remainingNavigationMs, 80), 250));
-      return;
-    }
-
     api.focusRecoveryRaf = requestAnimationFrame(() => {
       api.focusRecoveryRaf = null;
       if (!pageFocusIsEmpty()) return;
-      if (!api.restoreLastFocus()) api.ensureInitialFocus();
+
+      // Check immediately on every recovery pass. ensureInitialFocus() will
+      // take the first media card as soon as it exists, but deliberately
+      // refuses to fall back to the header search while a SPA route is still
+      // mounting its content.
+      if (api.restoreLastFocus() || api.ensureInitialFocus()) return;
+
+      const remainingNavigationMs =
+        Number(api.navigationInProgressUntil || 0) - performance.now();
+
+      if (remainingNavigationMs > 0 && api.preferContentAfterNavigation) {
+        api.focusRecoveryTimer = setTimeout(() => {
+          api.focusRecoveryTimer = null;
+          scheduleFocusRecovery();
+        }, Math.min(Math.max(remainingNavigationMs, 80), 250));
+      }
     });
   };
 
