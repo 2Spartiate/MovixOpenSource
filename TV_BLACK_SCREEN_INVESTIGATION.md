@@ -588,3 +588,31 @@ Initial remote HEAD at journal creation: `97c62bedba930f0830f461fdca138fc057c48e
   - If repeated black states disappear but first-launch-like partial loads recur, sticky service recreation is strongly implicated in the black-screen failure while DNS readiness remains a separate issue.
   - If the same `partial -> perfect -> black...` sequence persists, sticky recreation alone is not causal and the next diagnostic should instrument/validate `protect(socket)` and DNS forwarding state without broad product changes.
 - USER HARDWARE RESULT: **PENDING**
+
+
+---
+
+## TV-BS-I hardware result — START_NOT_STICKY does not change failure sequence
+
+- DATE OF HARDWARE RESULT: 2026-09-22
+- APK: TV-BS-I
+- APK SOURCE COMMIT: `750fecf99b3a31210b62c49fbf173a23a5612ea8`
+- APK SHA-256: `ad1af2cb8f6b828f19a5e7739ad3b57bd5f0e524b4e96735ba91e300f44b8ac4`
+- UNIQUE TEST VARIABLE:
+  - `DnsVpnService.onStartCommand()`: normal return `START_STICKY` -> `START_NOT_STICKY`.
+- USER HARDWARE OBSERVATION:
+  1. First launch: Movix logo + structural shell only; content images/assets do not complete.
+  2. Second launch after kill: everything works correctly.
+  3. Third and subsequent launches after kill: WebView content is black.
+  4. In black state, manually disconnecting the VPN alone causes the normal "Movix injoignable" fallback.
+  5. While VPN remains disconnected, pressing "Réessayer" on that fallback makes Movix render correctly.
+- FACTUAL CONSEQUENCE:
+  - Changing `START_STICKY` to `START_NOT_STICKY` does not materially alter the repeated-launch sequence.
+  - Android sticky service recreation is therefore demoted as the primary cause.
+- IMPORTANT STATE TRANSITION:
+  - VPN ON + stale/black WebView -> VPN OFF => WebView emits network failure and fallback appears.
+  - VPN OFF + fallback "Réessayer" => address resolution is rerun and a fresh WebView load succeeds.
+  - Therefore "VPN OFF works" is specifically dependent on rebuilding/retrying the network/navigation state; merely dropping the VPN underneath the existing black WebView does not instantly restore the document.
+- NEXT FOCUS:
+  - VPN/TUN DNS forwarding behavior itself and its interaction with Android/Chromium resolver state.
+  - Inspect exact packet classes routed to the TUN and limitations of the current forwarder (UDP-only, destination assumptions, protect() result ignored) before changing code.
