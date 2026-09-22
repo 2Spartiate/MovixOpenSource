@@ -15,40 +15,37 @@ import UpdateDialog from './components/UpdateDialog';
 import { useAppUpdate } from './hooks/useAppUpdate';
 import { AddressProvider, useAddress } from './context/AddressContext';
 import { loadNetworkJournalPreference } from './services/networkJournal';
+import { isAndroidTvRuntime } from './platform/tvRuntime';
 
 const { DnsModule } = NativeModules;
 
-const DNS_BOOT_TIMEOUT_MS = 5000;
-const DNS_BOOT_POLL_MS = 100;
+const TV_DNS_READY_TIMEOUT_MS = 5000;
+const TV_DNS_READY_POLL_MS = 100;
+const TV_DNS_POST_READY_GRACE_MS = 250;
 
 const delay = (ms: number) => new Promise<void>(resolve => setTimeout(resolve, ms));
 
-async function waitForAndroidDnsActive(): Promise<boolean> {
-  if (Platform.OS !== 'android' || !DnsModule) return false;
+async function waitForTvDnsReady(): Promise<boolean> {
+  if (Platform.OS !== 'android' || !DnsModule || !isAndroidTvRuntime()) {
+    return false;
+  }
 
-  const deadline = Date.now() + DNS_BOOT_TIMEOUT_MS;
+  const deadline = Date.now() + TV_DNS_READY_TIMEOUT_MS;
   while (Date.now() < deadline) {
     try {
-      if (await DnsModule.isEnabled()) return true;
+      if (await DnsModule.isEnabled()) {
+        // isActive flips immediately before the DNS forwarding thread starts.
+        // Give the slower TV runtime one short grace period before network use.
+        await delay(TV_DNS_POST_READY_GRACE_MS);
+        return true;
+      }
     } catch {}
-    await delay(DNS_BOOT_POLL_MS);
+    await delay(TV_DNS_READY_POLL_MS);
   }
   return false;
 }
 
-async function activateDnsForStartup(): Promise<boolean> {
-  if (!DnsModule) return false;
-
-  const enabled = await DnsModule.enable('1.1.1.1', '1.0.0.1');
-  if (Platform.OS === 'ios') return enabled === true;
-
-  // DnsModule.enable() starts the Android service, but the promise may resolve
-  // before DnsVpnService.establish() has published isActive=true. Do not mount
-  // the address resolver/WebView until the VPN DNS route is actually ready.
-  return waitForAndroidDnsActive();
-}
-
-function promptDns(): Promise<void> {
+function promptDnsForTv(): Promise<void> {
   return new Promise(resolve => {
     Alert.alert(
       'DNS Cloudflare 1.1.1.1',
@@ -67,15 +64,13 @@ function promptDns(): Promise<void> {
           style: 'default',
           onPress: async () => {
             try {
-              const dnsActivated = await activateDnsForStartup();
-              await AsyncStorage.setItem('dns_enabled', dnsActivated ? 'true' : 'false');
-              if (Platform.OS === 'ios' && !dnsActivated) {
-                Alert.alert(
-                  'Activation DNS requise',
-                  'La configuration est installée. Active-la manuellement dans Réglages > Général > VPN et gestion de l’appareil > DNS.',
-                  [{ text: 'Compris' }],
-                );
+              if (!DnsModule) {
+                await AsyncStorage.setItem('dns_enabled', 'false');
+                return;
               }
+              await DnsModule.enable('1.1.1.1', '1.0.0.1');
+              const ready = await waitForTvDnsReady();
+              await AsyncStorage.setItem('dns_enabled', ready ? 'true' : 'false');
             } catch {
               await AsyncStorage.setItem('dns_enabled', 'false');
             } finally {
@@ -87,6 +82,51 @@ function promptDns(): Promise<void> {
       { cancelable: false },
     );
   });
+}
+
+function promptDns() {
+  Alert.alert(
+    'DNS Cloudflare 1.1.1.1',
+    'Activer le DNS Cloudflare pour une navigation plus rapide et sécurisée ?\n\n(Recommandé)',
+    [
+      {
+        text: 'Non merci',
+        style: 'cancel',
+        onPress: () => {
+          AsyncStorage.setItem('dns_enabled', 'false');
+        },
+      },
+      {
+        text: 'Activer',
+        style: 'default',
+        onPress: async () => {
+          try {
+            if (!DnsModule) {
+              await AsyncStorage.setItem('dns_enabled', 'false');
+              return;
+            }
+
+            if (Platform.OS === 'ios') {
+              const dnsActivated = await DnsModule.enable('1.1.1.1', '1.0.0.1');
+              await AsyncStorage.setItem('dns_enabled', dnsActivated ? 'true' : 'false');
+              if (!dnsActivated) {
+                Alert.alert(
+                  'Activation DNS requise',
+                  'La configuration est installée. Active-la manuellement dans Réglages > Général > VPN et gestion de l’appareil > DNS.',
+                  [{ text: 'Compris' }],
+                );
+              }
+            } else {
+              await DnsModule.enable('1.1.1.1', '1.0.0.1');
+              await AsyncStorage.setItem('dns_enabled', 'true');
+            }
+          } catch {
+            await AsyncStorage.setItem('dns_enabled', 'false');
+          }
+        },
+      },
+    ],
+  );
 }
 
 export default function App() {
@@ -118,20 +158,30 @@ export default function App() {
           }
           setDnsSettled(true);
         } else if (stored === 'true' && DnsModule && Platform.OS === 'android') {
-          try {
-            const dnsActivated = await activateDnsForStartup();
-            await AsyncStorage.setItem('dns_enabled', dnsActivated ? 'true' : 'false');
-          } catch {
-            await AsyncStorage.setItem('dns_enabled', 'false');
+          if (isAndroidTvRuntime()) {
+            // TV-only: after a process kill the VPN service is restarted, but
+            // DnsModule.enable() resolves before DnsVpnService is actually ready.
+            // Keep handheld Android on the original fast path.
+            try {
+              await DnsModule.enable('1.1.1.1', '1.0.0.1');
+              await waitForTvDnsReady();
+            } catch {}
+          } else {
+            DnsModule.enable('1.1.1.1', '1.0.0.1').catch(() => {});
           }
           setDnsSettled(true);
         } else if (stored === 'true') {
           await AsyncStorage.setItem('dns_enabled', 'false');
           setDnsSettled(true);
         } else if (stored === null) {
-          // First launch: wait for the user's VPN/DNS decision and, on Android,
-          // for DnsVpnService.isActive before mounting AddressProvider.
-          await promptDns();
+          if (isAndroidTvRuntime()) {
+            // TV-only first launch: do not mount AddressProvider/WebView until
+            // the VPN permission flow has completed and DNS forwarding is live.
+            await promptDnsForTv();
+          } else {
+            promptDns();
+            // Original phone/tablet behavior: do not block startup on the DNS prompt.
+          }
           setDnsSettled(true);
         } else {
           setDnsSettled(true);

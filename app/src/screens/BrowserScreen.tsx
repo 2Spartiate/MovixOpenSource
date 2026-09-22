@@ -25,8 +25,6 @@ import { setLocalPlaybackAwake } from '../services/playbackAwake';
 import { setPictureInPicturePlaybackActive } from '../services/pictureInPicture';
 import { useBrowserUIPrefs } from '../hooks/useBrowserUIPrefs';
 import { useAddress } from '../context/AddressContext';
-import { isAndroidTvRuntime } from '../platform/tvRuntime';
-import { TV_PRODUCT_FEATURES_ENABLED } from '../platform/tvRuntimePolicy';
 import SettingsScreen from './SettingsScreen';
 
 export default function BrowserScreen() {
@@ -34,13 +32,9 @@ export default function BrowserScreen() {
   const webViewRef = useRef<WebViewBrowserRef>(null);
   const { prefs: uiPrefs } = useBrowserUIPrefs();
   const { config, isLoading, refresh } = useAddress();
-  const isTV = useMemo(() => isAndroidTvRuntime(), []);
 
-  // The embedded browser address bar is intentionally hidden on every device.
-  // Navigation controls may remain enabled independently through showNavBar.
-  const effectiveShowUrlBar = false;
   const navBarHidden = !uiPrefs.showNavBar;
-  const toolbarHidden = !effectiveShowUrlBar && !uiPrefs.showNavBar;
+  const toolbarHidden = !uiPrefs.showUrlBar && !uiPrefs.showNavBar;
 
   const urlChain = useMemo(() => {
     if (!config) return [];
@@ -56,17 +50,8 @@ export default function BrowserScreen() {
   const [dnsEnabled, setDnsEnabled] = useState(false);
   const [settingsVisible, setSettingsVisible] = useState(false);
   const [isPictureInPictureActive, setIsPictureInPictureActive] = useState(false);
-  const tvFailureRetriesRef = useRef(new Map<string, number>());
-  const tvRetryTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   const activeUrl = urlChain[mirrorIndex] ?? '';
-
-  useEffect(() => () => {
-    if (tvRetryTimerRef.current !== null) {
-      clearTimeout(tvRetryTimerRef.current);
-      tvRetryTimerRef.current = null;
-    }
-  }, []);
 
   useEffect(() => {
     AsyncStorage.getItem('dns_enabled').then(val => {
@@ -83,25 +68,14 @@ export default function BrowserScreen() {
         return true;
       }
       if (canGoBack) {
-        if (isTV && TV_PRODUCT_FEATURES_ENABLED) {
-          webViewRef.current?.injectJavaScript(`
-            (() => {
-              const event = new Event('movix-tv-back', { cancelable: true });
-              window.dispatchEvent(event);
-              if (!event.defaultPrevented) window.history.back();
-            })();
-            true;
-          `);
-        } else {
-          webViewRef.current?.goBack();
-        }
+        webViewRef.current?.goBack();
         return true;
       }
       return false;
     });
 
     return () => handler.remove();
-  }, [canGoBack, isTV, settingsVisible]);
+  }, [canGoBack, settingsVisible]);
 
   useEffect(() => {
     const subscription = AppState.addEventListener('change', nextState => {
@@ -134,39 +108,16 @@ export default function BrowserScreen() {
     if (state.url) setCurrentUrl(state.url);
   }, []);
 
-  const onWebViewLoadSuccess = useCallback(() => {
-    if (!activeUrl) return;
-    tvFailureRetriesRef.current.delete(activeUrl);
-    setAllMirrorsFailed(false);
-  }, [activeUrl]);
-
   const onWebViewError = useCallback(
     (description: string) => {
       console.warn('[BrowserScreen] WebView error', description, 'on', activeUrl);
-
-      if (isTV && TV_PRODUCT_FEATURES_ENABLED && activeUrl) {
-        const attempts = tvFailureRetriesRef.current.get(activeUrl) ?? 0;
-        if (attempts < 2) {
-          const nextAttempt = attempts + 1;
-          tvFailureRetriesRef.current.set(activeUrl, nextAttempt);
-          if (tvRetryTimerRef.current !== null) {
-            clearTimeout(tvRetryTimerRef.current);
-          }
-          tvRetryTimerRef.current = setTimeout(() => {
-            tvRetryTimerRef.current = null;
-            webViewRef.current?.reload();
-          }, nextAttempt === 1 ? 700 : 1500);
-          return;
-        }
-      }
-
       if (mirrorIndex + 1 < urlChain.length) {
         setMirrorIndex(i => i + 1);
       } else {
         setAllMirrorsFailed(true);
       }
     },
-    [activeUrl, isTV, mirrorIndex, urlChain.length],
+    [activeUrl, mirrorIndex, urlChain.length],
   );
 
   const closeSettings = useCallback(() => {
@@ -179,7 +130,6 @@ export default function BrowserScreen() {
   const onRetry = useCallback(async () => {
     setAllMirrorsFailed(false);
     setMirrorIndex(0);
-    tvFailureRetriesRef.current.clear();
     await refresh();
   }, [refresh]);
 
@@ -206,10 +156,7 @@ export default function BrowserScreen() {
           key={activeUrl}
           ref={webViewRef}
           url={activeUrl}
-          isTV={isTV}
-          tvFeaturesEnabled={TV_PRODUCT_FEATURES_ENABLED}
           onNavigationStateChange={onNavigationStateChange}
-          onLoadSuccess={onWebViewLoadSuccess}
           onError={onWebViewError}
           onPictureInPictureModeChange={onPictureInPictureModeChange}
         />
@@ -224,7 +171,7 @@ export default function BrowserScreen() {
               loading={loading}
               currentUrl={currentUrl}
               dnsEnabled={dnsEnabled}
-              showUrlBar={effectiveShowUrlBar}
+              showUrlBar={uiPrefs.showUrlBar}
               showNavBar={uiPrefs.showNavBar}
               onGoBack={() => webViewRef.current?.goBack()}
               onGoForward={() => webViewRef.current?.goForward()}
@@ -239,7 +186,7 @@ export default function BrowserScreen() {
               loading={loading}
               currentUrl={currentUrl}
               dnsEnabled={dnsEnabled}
-              showUrlBar={effectiveShowUrlBar}
+              showUrlBar={uiPrefs.showUrlBar}
               showNavBar={uiPrefs.showNavBar}
               onGoBack={() => webViewRef.current?.goBack()}
               onGoForward={() => webViewRef.current?.goForward()}
