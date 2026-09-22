@@ -465,3 +465,29 @@ Initial remote HEAD at journal creation: `97c62bedba930f0830f461fdca138fc057c48e
   - Stable rendering with VPN enabled strongly identifies the removed TV-only DNS-before-WebView sequencing as the causal regression.
   - Continued black screen means startup ordering alone is insufficient and the next test must isolate another VPN/WebView interaction without changing native VPN code gratuitously.
 - USER HARDWARE RESULT: **PENDING**
+
+
+---
+
+## TV-BS-H hardware result — sequence persists with exact baseline startup ordering
+
+- DATE OF HARDWARE RESULT: 2026-09-22
+- APK: TV-BS-H
+- APK SOURCE COMMIT: `6dbd88159e725add934eb4595f226dea5378eda5`
+- APK SHA-256: `1ff14effc12f1b83cbf5036eb4d171918b5c55ce4812c013ee8d904a0e6f2f1a`
+- USER HARDWARE OBSERVATION:
+  1. First launch: Movix renders, but images/posters are missing.
+  2. After first complete kill/relaunch: Movix renders correctly, including images.
+  3. After second complete kill/relaunch (third launch) and subsequent relaunches: WebView content is black.
+  4. When the user manually disconnects the Movix VPN at Android/Google TV level while in the black-screen state, Movix renders correctly.
+- FACTUAL CONSEQUENCE:
+  - Restoring exact baseline `App.tsx` startup ordering did NOT eliminate the recurring black-screen sequence.
+  - Therefore the TV-only "wait for VPN ready before WebView mount" modification is **not sufficient to explain the regression** and is demoted as primary cause.
+  - The black-screen state still tracks the active VPN state strongly: manual VPN disconnect restores rendering.
+- IMPORTANT CONTROL GAP:
+  - The historical hardware-PASS test of `c543106` established that the baseline runtime could render on this TV, but it did not establish the same repeated multi-kill sequence under today's protocol.
+  - A strict repeated-kill retest of the exact historical control is now scientifically valuable before changing native VPN code.
+- WORKING HYPOTHESIS:
+  - Focus shifts from React/WebView startup ordering to Android VPN service lifecycle / TUN state across app process kills and relaunches, or to a Google TV-specific interaction between that persistent DNS-only VPN and Chromium/WebView networking.
+- NEXT ANALYSIS:
+  - Inspect service lifecycle semantics (`START_STICKY`, `onDestroy`, `onRevoke`, static `isActive`) and whether repeated app kills can leave/recreate VPN/TUN state differently from handheld Android.
