@@ -64,6 +64,7 @@ jobs:
             tests/tvHlsRemoteNavigationContract.test.mjs \
             tests/tvHls4kContract.test.mjs \
             tests/tvStartupResilienceContract.test.mjs \
+            tests/androidArtifactCleanupContract.test.mjs \
             tests/tvPlayerMenusContract.test.mjs \
             tests/tvLivePlayerDpadContract.test.mjs \
             tests/tvFrancePlayerDpadContract.test.mjs \
