@@ -68,6 +68,11 @@ function getPictureInPictureShimMode(): PictureInPictureShimMode {
   return 'disabled';
 }
 
+// Diagnostic A/B: the TV bootstrap stays active, but the spatial D-pad/focus
+// runtime is disabled to isolate whether it interferes with React's async DOM
+// construction on Google TV. Flip back to true only after the hardware test.
+const TV_DPAD_ENABLED = false;
+
 const BASE_INJECTION_OPTIONS = {
   pictureInPictureMode: getPictureInPictureShimMode(),
   mediaProxyRoutingEnabled:
@@ -95,13 +100,14 @@ function injectedJavaScriptFor(
   journalConsoleEnabled: boolean,
   isTV: boolean,
 ): string {
-  const cacheKey = `${journalConsoleEnabled ? 'journal' : 'quiet'}:${isTV ? 'tv' : 'handheld'}`;
+  const cacheKey = `${journalConsoleEnabled ? 'journal' : 'quiet'}:${isTV ? 'tv' : 'handheld'}:${isTV && TV_DPAD_ENABLED ? 'dpad' : 'no-dpad'}`;
   const cached = INJECTED_JS_BY_RUNTIME_STATE.get(cacheKey);
   if (cached !== undefined) return cached;
   const built = buildInjectedJavaScript({
     ...BASE_INJECTION_OPTIONS,
     journalConsoleEnabled,
     tvMode: isTV,
+    tvDpadEnabled: isTV ? TV_DPAD_ENABLED : false,
   });
   INJECTED_JS_BY_RUNTIME_STATE.set(cacheKey, built);
   return built;
