@@ -23,11 +23,10 @@ export default function MirrorErrorScreen({ telegramUrl, onRetry }: Props) {
         { paddingTop: insets.top, paddingBottom: insets.bottom },
       ]}>
       <View style={styles.content}>
-        <Text style={styles.title}>Connexion à Movix impossible</Text>
+        <Text style={styles.title}>Movix injoignable</Text>
         <Text style={styles.body}>
-          L'application n'a pas réussi à charger Movix sur cette connexion.
-          Le DNS/VPN peut encore être en cours d'initialisation. Réessaie d'abord ;
-          si le problème persiste, consulte le canal Telegram pour le lien officiel.
+          Tous les domaines Movix semblent bloqués ou hors ligne. Rejoins le
+          canal Telegram pour récupérer le nouveau lien officiel.
         </Text>
 
         <TouchableOpacity
