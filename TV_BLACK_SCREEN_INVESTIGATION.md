@@ -949,3 +949,161 @@ Initial remote HEAD at journal creation: `97c62bedba930f0830f461fdca138fc057c48e
 - NEXT ACTION REQUESTED BY USER:
   - Re-read the complete experiment history before making another code change.
   - Derive a solution that explains the entire observed sequence rather than stacking more local patches.
+
+
+---
+
+## Full-series synthesis after TV-BS-J2B — leading root cause and target solution
+
+- DATE: 2026-09-22
+- SCOPE:
+  - Re-read the complete A -> J2B hardware sequence together with the current runtime/native code.
+  - No new runtime change in this checkpoint.
+
+### What the experiments now establish
+
+1. **TV product code is not the primary cause.**
+   - D-pad isolation did not remove the failure.
+   - Removing the MOVIX_TV marker did not remove the VPN-linked failure.
+   - Exact-baseline App/WebView startup ordering in H still reproduced the repeated-launch sequence.
+
+2. **The old TUN routing architecture was genuinely defective.**
+   - H/I with routes to real Cloudflare IPs produced the severe black-WebView state.
+   - J1 replaced those routes with virtual DNS `10.215.173.2/32`.
+   - Hardware result changed from black to a controlled fallback.
+   - Therefore the virtual-DNS architecture should be retained.
+
+3. **Serial DNS forwarding was a second real defect.**
+   - J1 launch 1 was shell-only.
+   - J2A changed only UDP DNS handling from serial blocking to 8 concurrent workers.
+   - J2A launch 1 and launch 2 became fully healthy.
+   - Therefore J2A concurrency should be retained.
+
+4. **The remaining failure is a first-attempt-after-service-start problem.**
+   - J2A: launch 3+ -> fallback -> Retry -> immediate success, with no VPN-state change.
+   - J2B tried to solve this by waiting for `DnsModule.isEnabled() === true`.
+   - J2B became worse: launch 1 shell-only, launch 2+ fallback, Retry still immediate success.
+   - Therefore `isEnabled/isActive` is not real DNS-forwarder readiness.
+
+### Concrete code-level race
+
+Current `DnsVpnService.startVpn()` does:
+
+```
+vpnInterface = builder.establish()
+
+if (vpnInterface != null) {
+    isRunning = true
+    isActive = true
+    startDnsForwarding()
+}
+```
+
+But `startDnsForwarding()` only then creates/starts a new thread, and **inside that new thread** it still has to:
+
+- obtain the TUN file descriptor;
+- create `FileInputStream`;
+- create `FileOutputStream`;
+- allocate the packet buffer;
+- create the fixed DNS worker pool;
+- assign `dnsExecutor`;
+- enter the read loop.
+
+Therefore `isActive == true` currently means only:
+
+> the TUN was established and a forwarding thread is about to be requested.
+
+It does **not** mean:
+
+> the app is already reading and answering DNS packets.
+
+This explains why J2B can be worse than J2A: J2B deliberately resumes JS/address resolution immediately when this premature flag flips, potentially tightening the race against the not-yet-scheduled forwarding thread.
+
+### Why Retry is so reliable
+
+The fallback Retry path:
+
+- unmounts/recreates the WebView path;
+- reruns `AddressContext.refresh()`;
+- reruns `resolveAddressConfig()`;
+- therefore performs a second real network/address attempt later in time.
+
+By then the DNS reader and worker pool are actually running, so the same VPN state succeeds without any manual VPN change.
+
+### Address resolver magnifies the transient
+
+`resolveAddressConfig()` is byte-for-byte unchanged from the historical baseline (`37e8b3cc355a024a01259f4476cef330febc9fd1`).
+
+It is fail-fast:
+
+- one transient failure fetching Rentry -> immediately return hardcoded `https://movix.tax`;
+- one transient failure fetching discovered `/address.json` -> immediately return the same hardcoded fallback;
+- no internal retry/backoff exists before committing to the hardcoded address.
+
+Therefore a very short DNS-startup race can be promoted into a visible full-app fallback. Manual "Réessayer" effectively supplies the missing second attempt.
+
+### Checked and rejected side hypothesis: subresource HTTP errors
+
+Movix uses `react-native-webview 13.12.5`.
+
+Its Android native `RNCWebViewClient.onReceivedHttpError()` dispatches the React `onHttpError` event only when `request.isForMainFrame()` is true. Therefore image/CDN HTTP errors are not sufficient to explain BrowserScreen switching the whole app to mirror/fallback state in this version.
+
+### Target solution
+
+Use **J2A as the networking base**, not J2B.
+
+#### Primary fix — make native readiness truthful
+
+- Remove premature `isActive = true` from `startVpn()`.
+- Start the DNS forwarding thread first.
+- Inside the forwarding thread, only set the ready/active signal after:
+  - TUN fd acquired;
+  - input/output streams created;
+  - worker executor created/assigned;
+  - forwarding loop is ready to consume packets.
+- Clear readiness in a `finally` path if the forwarding thread exits.
+- Prefer a distinct `isReady` signal if preserving `isActive` as "TUN established" is useful.
+- Mark cross-thread lifecycle flags (`isRunning`, readiness state) volatile/otherwise safely synchronized.
+
+Then the App may gate the stored-enabled/native-restart path on **forwarder-ready**, not merely TUN-established.
+
+#### Secondary resilience — resolver retry before hardcoded fallback
+
+Even with correct readiness, `resolveAddressConfig()` should not commit to the hardcoded fallback after one transient network error.
+
+Recommended behavior:
+
+- retry Rentry once after a short bounded backoff on network/timeout failure;
+- retry discovered `address.json` once after a short bounded backoff;
+- only then return `HARDCODED_FALLBACK`;
+- do not loop indefinitely.
+
+This reproduces the proven-successful manual Retry behavior internally while still surfacing a genuine persistent outage.
+
+### Architecture to keep
+
+- virtual DNS endpoint `10.215.173.2/32`;
+- real Cloudflare IPs outside the TUN;
+- explicit UDP destination port 53 filtering;
+- 8-worker concurrent UDP forwarding;
+- no forced VPN disable/enable restart;
+- no START_STICKY dependency;
+- no MOVIX_TV/D-pad workaround for this networking problem.
+
+### Do not add yet
+
+- DNS-over-TCP TUN implementation: no hardware evidence currently requires it, and proper TCP handling is stateful/non-trivial.
+- blind post-ready sleep: replace timing guesses with a truthful readiness signal.
+- automatic UI-level fallback click: retry belongs in the resolver/network layer, not as a hidden UI hack.
+- bootstrap-then-disable-VPN architecture: successful VPN-off retry proves cached/resolved state can work temporarily, not that future Movix/CDN/video hostnames will remain resolvable without the custom DNS.
+
+### Recommended implementation sequence
+
+1. Revert J2B App gating back to J2A behavior.
+2. Fix native forwarder readiness semantics and cross-thread visibility.
+3. Gate Android restart path on that truthful readiness.
+4. Hardware test 8-10 consecutive kill/relaunch cycles.
+5. If any transient fallback remains, add one bounded resolver retry before hardcoded fallback.
+6. Only after stable networking, reintroduce TV product features checkpoint-by-checkpoint.
+
+This is the first proposed solution that accounts for the complete observed sequence without contradicting any of A -> J2B.
