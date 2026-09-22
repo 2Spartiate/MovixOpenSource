@@ -7,7 +7,7 @@ import React, {
   useRef,
   useState,
 } from 'react';
-import { Linking, Platform } from 'react-native';
+import { Alert, Linking, Platform } from 'react-native';
 import { WebView, type WebViewNavigation } from 'react-native-webview';
 import type {
   WebViewErrorEvent,
@@ -33,6 +33,8 @@ import {
 import { buildInjectedJavaScript } from '../injection/inject';
 import type { PictureInPictureShimMode } from '../injection/picture-in-picture-shim';
 import { CONFIG } from '../config';
+import { isAndroidTvRuntime } from '../platform/tvRuntime';
+import { buildTvRenderDiagnostic } from '../injection/tv-render-diagnostic';
 
 export interface WebViewBrowserRef {
   goBack: () => void;
@@ -121,10 +123,12 @@ const WebViewBrowser = forwardRef<WebViewBrowserRef, WebViewBrowserProps>(
     const webViewRef = useRef<WebView>(null);
     const topLevelUrlRef = useRef(url);
     const navigationGenerationRef = useRef(0);
+    const isTV = useMemo(() => isAndroidTvRuntime(), []);
+    const tvDiagnosticAlertShownRef = useRef(false);
 
     React.useEffect(() => {
       topLevelUrlRef.current = url;
-    }, [url]);
+    }, [isTV, url]);
 
     React.useEffect(() => {
       const stopCastStatusForwarding = startCastShimEventForwarding(webViewRef);
@@ -172,6 +176,49 @@ const WebViewBrowser = forwardRef<WebViewBrowserRef, WebViewBrowserProps>(
     }));
 
     const onMessage = useCallback((event: WebViewMessageEvent) => {
+      if (isTV && event.nativeEvent.data.startsWith('MOVIX_TV_DIAG:')) {
+        try {
+          const diagnostic = JSON.parse(
+            event.nativeEvent.data.slice('MOVIX_TV_DIAG:'.length),
+          );
+          if (
+            diagnostic?.phase === 'after-5000ms'
+            && !tvDiagnosticAlertShownRef.current
+          ) {
+            tvDiagnosticAlertShownRef.current = true;
+            const rootStyle = diagnostic.rootStyle
+              ? `${diagnostic.rootStyle.display}/${diagnostic.rootStyle.visibility}/${diagnostic.rootStyle.opacity}`
+              : 'n/a';
+            const rootRect = diagnostic.rootRect
+              ? `${diagnostic.rootRect.width}x${diagnostic.rootRect.height}`
+              : 'n/a';
+            const uaData = diagnostic.uaData
+              ? `${diagnostic.uaData.platform ?? '?'} mobile=${String(diagnostic.uaData.mobile)}`
+              : 'n/a';
+            Alert.alert(
+              'TV render diagnostic',
+              [
+                `readyState: ${diagnostic.readyState}`,
+                `root: ${String(diagnostic.rootExists)} children=${diagnostic.rootChildren}`,
+                `root style: ${rootStyle} size=${rootRect}`,
+                `body children: ${diagnostic.bodyChildren}`,
+                `SW: controlled=${String(diagnostic.serviceWorkerControlled)} registrations=${diagnostic.serviceWorkerRegistrations ?? '?'}`,
+                `UA data: ${uaData}`,
+                `errors: ${diagnostic.errorCount ?? 0}`,
+                diagnostic.lastError
+                  ? `last error: ${diagnostic.lastError.message ?? JSON.stringify(diagnostic.lastError)}`
+                  : 'last error: none',
+                diagnostic.bodyText
+                  ? `text: ${diagnostic.bodyText}`
+                  : 'text: <empty>',
+              ].join('\n'),
+              [{ text: 'OK' }],
+            );
+          }
+        } catch {}
+        return;
+      }
+
       const isTopFrame = typeof event.nativeEvent.isTopFrame === 'boolean'
         ? event.nativeEvent.isTopFrame
         : undefined;
@@ -235,10 +282,11 @@ const WebViewBrowser = forwardRef<WebViewBrowserRef, WebViewBrowserProps>(
       isNetworkJournalEnabled,
     );
     useEffect(() => subscribeNetworkJournal(setJournalConsole), []);
-    const injectedJS = useMemo(
-      () => injectedJavaScriptFor(journalConsole),
-      [journalConsole],
-    );
+    const injectedJS = useMemo(() => {
+      const base = injectedJavaScriptFor(journalConsole);
+      if (!isTV) return base;
+      return `${buildTvRenderDiagnostic()}\n${base}`;
+    }, [journalConsole, isTV]);
 
     // Sur iOS, laisser WKWebView annoncer la version réelle de WebKit et de
     // l'appareil : un User-Agent Safari figé peut perturber Turnstile.
