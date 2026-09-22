@@ -63,6 +63,11 @@ class DnsModule(private val reactContext: ReactApplicationContext) :
         promise.resolve(DnsVpnService.isActive)
     }
 
+    @ReactMethod
+    fun isReady(promise: Promise) {
+        promise.resolve(DnsVpnService.isReady)
+    }
+
     private fun startVpnService(primaryDns: String, secondaryDns: String) {
         val intent = Intent(reactContext, DnsVpnService::class.java)
         intent.putExtra(EXTRA_PRIMARY_DNS, primaryDns)

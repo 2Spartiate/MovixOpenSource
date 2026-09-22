@@ -21,12 +21,12 @@ const { DnsModule } = NativeModules;
 const ANDROID_DNS_READY_TIMEOUT_MS = 5000;
 const ANDROID_DNS_READY_POLL_MS = 100;
 
-async function waitForAndroidDnsReady(): Promise<boolean> {
+async function waitForAndroidDnsForwarderReady(): Promise<boolean> {
   const deadline = Date.now() + ANDROID_DNS_READY_TIMEOUT_MS;
 
   while (Date.now() < deadline) {
     try {
-      if (await DnsModule.isEnabled()) {
+      if (await DnsModule.isReady()) {
         return true;
       }
     } catch {}
@@ -113,7 +113,7 @@ export default function App() {
         } else if (stored === 'true' && DnsModule && Platform.OS === 'android') {
           try {
             await DnsModule.enable('1.1.1.1', '1.0.0.1');
-            await waitForAndroidDnsReady();
+            await waitForAndroidDnsForwarderReady();
           } catch {}
           setDnsSettled(true);
         } else if (stored === 'true') {
