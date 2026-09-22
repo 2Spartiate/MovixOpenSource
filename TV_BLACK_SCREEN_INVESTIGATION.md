@@ -1107,3 +1107,75 @@ This reproduces the proven-successful manual Retry behavior internally while sti
 6. Only after stable networking, reintroduce TV product features checkpoint-by-checkpoint.
 
 This is the first proposed solution that accounts for the complete observed sequence without contradicting any of A -> J2B.
+
+
+---
+
+## TV-BS-J3A — truthful DNS forwarder readiness
+
+- TEST ID: TV-BS-J3A
+- DATE: 2026-09-22
+- BASE: J2A virtual-DNS + concurrent UDP forwarding architecture, with the J2B readiness concept corrected.
+- PURPOSE:
+  - Replace the ambiguous/premature `isActive` signal with a distinct native `isReady` signal that means the DNS forwarding thread itself is armed.
+- RUNTIME CHANGE:
+  - `DnsVpnService.isActive` remains the TUN-established state.
+  - New `DnsVpnService.isReady` is exposed separately.
+  - `isReady = true` occurs only after:
+    - TUN file descriptor acquisition;
+    - input stream creation;
+    - output stream creation;
+    - creation/assignment of the 8-worker DNS executor.
+  - The signal is set immediately before entering the blocking DNS read loop.
+  - `isReady = false` is enforced in the forwarding-thread `finally` block and in `stopVpn()`.
+  - `isRunning`, `isActive`, and `isReady` use `@Volatile` for cross-thread visibility.
+  - `DnsModule.isReady()` exposes the forwarder-ready signal to React Native.
+  - Android stored-enabled/native-disabled relaunch path polls `isReady()` every 100 ms with the same 5 s bound, rather than polling `isEnabled()/isActive`.
+- FROZEN BEHAVIOR:
+  - virtual DNS remains `10.215.173.2/32`;
+  - real `1.1.1.1/1.0.0.1` IPs remain outside the TUN;
+  - UDP destination port 53 guard remains;
+  - 8-worker concurrent UDP DNS forwarding remains;
+  - `START_NOT_STICKY` remains;
+  - no DNS-over-TCP;
+  - no forced VPN restart;
+  - no addressResolver retry yet;
+  - no WebView/UI changes;
+  - first-install DNS prompt remains non-blocking.
+- SOURCE COMMIT:
+  - `40d06422b5e43008577f8c0fccec39675006162e`
+  - message: `fix(tv): gate startup on DNS forwarder readiness`
+- BLOBS:
+  - `App.tsx`: `c5a981ff24a91cdaac34d9c27096638c8419d32b`
+  - `DnsModule.kt`: `d595e7f048266ab19f9b90e6fbf129f948e16e28`
+  - `DnsVpnService.kt`: `8f580bdfd2fd59f48683effc097d0637550fbeef`
+- CI:
+  - workflow: Android TV foundations
+  - run ID: `35768096220`
+  - conclusion: PASS
+  - J3A runtime contract: PASS
+  - frontend production build: PASS
+  - Android standalone build: PASS
+  - merged TV/mobile manifest contract: PASS
+  - standalone JS bundle packaged: PASS
+- GITHUB ARTIFACT:
+  - ID: `10713570534`
+  - name: `movix-google-tv-standalone-apk`
+  - artifact ZIP digest: `sha256:bd71f259a908c8f2907d99e23fe69c95010e021ac498b3b18e09a7fad5a8fa56`
+- APK:
+  - file: `app-release.apk`
+  - size: `72,593,570 bytes`
+  - SHA-256: `d3b4c17e4c0b873b6d967a5a868a60b8ce86e3e7219975ae08364132ccd0bbf9`
+- HARDWARE PROTOCOL:
+  1. Install TV-BS-J3A.
+  2. Leave the Movix DNS/VPN enabled normally.
+  3. Record first launch independently.
+  4. Perform at least **8 complete kill/relaunch cycles**.
+  5. For each launch record only: OK / shell-only / fallback / black.
+  6. Do not change VPN state during the sequence.
+  7. If fallback appears, record it before pressing Retry; then press Retry once without changing VPN state and record the result.
+- EXPECTED DISCRIMINATOR:
+  - If repeated launches are now directly OK, the remaining J2A/J2B failure was caused by using TUN-established state as a false proxy for DNS-forwarder readiness.
+  - If fallback still occurs but Retry succeeds, native readiness alone is insufficient and the next correction is one bounded retry inside `resolveAddressConfig()` before hardcoded fallback.
+  - If first launch regresses while later launches improve, inspect first-install prompt timing separately rather than altering the proven J1/J2A tunnel architecture.
+- USER HARDWARE RESULT: **PENDING**
