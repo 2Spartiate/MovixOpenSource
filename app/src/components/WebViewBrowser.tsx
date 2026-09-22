@@ -7,7 +7,7 @@ import React, {
   useRef,
   useState,
 } from 'react';
-import { Platform } from 'react-native';
+import { Alert, Platform } from 'react-native';
 import { WebView, type WebViewNavigation } from 'react-native-webview';
 import type {
   WebViewErrorEvent,
@@ -32,6 +32,7 @@ import {
 } from '../services/pictureInPicture';
 import { buildInjectedJavaScript } from '../injection/inject';
 import type { PictureInPictureShimMode } from '../injection/picture-in-picture-shim';
+import { buildTvRenderDiagnostic } from '../injection/tv-render-diagnostic';
 import { CONFIG } from '../config';
 
 export interface WebViewBrowserRef {
@@ -46,6 +47,7 @@ export interface WebViewBrowserRef {
 interface WebViewBrowserProps {
   url: string;
   isTV: boolean;
+  tvFeaturesEnabled: boolean;
   onNavigationStateChange?: (state: WebViewNavigation) => void;
   onLoadSuccess?: () => void;
   onError?: (error: string) => void;
@@ -93,15 +95,15 @@ const INJECTED_JS_BY_RUNTIME_STATE = new Map<string, string>();
 
 function injectedJavaScriptFor(
   journalConsoleEnabled: boolean,
-  isTV: boolean,
+  tvMode: boolean,
 ): string {
-  const cacheKey = `${journalConsoleEnabled ? 'journal' : 'quiet'}:${isTV ? 'tv' : 'handheld'}`;
+  const cacheKey = `${journalConsoleEnabled ? 'journal' : 'quiet'}:${tvMode ? 'tv-features' : 'handheld-behavior'}`;
   const cached = INJECTED_JS_BY_RUNTIME_STATE.get(cacheKey);
   if (cached !== undefined) return cached;
   const built = buildInjectedJavaScript({
     ...BASE_INJECTION_OPTIONS,
     journalConsoleEnabled,
-    tvMode: isTV,
+    tvMode,
   });
   INJECTED_JS_BY_RUNTIME_STATE.set(cacheKey, built);
   return built;
@@ -149,10 +151,11 @@ function isTopLevelFailure(
 }
 
 const WebViewBrowser = forwardRef<WebViewBrowserRef, WebViewBrowserProps>(
-  ({ url, isTV, onNavigationStateChange, onLoadSuccess, onError, onPictureInPictureModeChange }, ref) => {
+  ({ url, isTV, tvFeaturesEnabled, onNavigationStateChange, onLoadSuccess, onError, onPictureInPictureModeChange }, ref) => {
     const webViewRef = useRef<WebView>(null);
     const topLevelUrlRef = useRef(url);
     const navigationGenerationRef = useRef(0);
+    const tvDiagnosticAlertShownRef = useRef(false);
 
     React.useEffect(() => {
       topLevelUrlRef.current = url;
@@ -204,6 +207,49 @@ const WebViewBrowser = forwardRef<WebViewBrowserRef, WebViewBrowserProps>(
     }));
 
     const onMessage = useCallback((event: WebViewMessageEvent) => {
+      if (isTV && event.nativeEvent.data.startsWith('MOVIX_TV_DIAG:')) {
+        try {
+          const diagnostic = JSON.parse(
+            event.nativeEvent.data.slice('MOVIX_TV_DIAG:'.length),
+          );
+          if (
+            diagnostic?.phase === 'after-5000ms'
+            && !tvDiagnosticAlertShownRef.current
+          ) {
+            tvDiagnosticAlertShownRef.current = true;
+            const rootStyle = diagnostic.rootStyle
+              ? `${diagnostic.rootStyle.display}/${diagnostic.rootStyle.visibility}/${diagnostic.rootStyle.opacity}`
+              : 'n/a';
+            const rootRect = diagnostic.rootRect
+              ? `${diagnostic.rootRect.width}x${diagnostic.rootRect.height}`
+              : 'n/a';
+            const uaData = diagnostic.uaData
+              ? `${diagnostic.uaData.platform ?? '?'} mobile=${String(diagnostic.uaData.mobile)}`
+              : 'n/a';
+            Alert.alert(
+              'TV render diagnostic',
+              [
+                `readyState: ${diagnostic.readyState}`,
+                `root: ${String(diagnostic.rootExists)} children=${diagnostic.rootChildren}`,
+                `root style: ${rootStyle} size=${rootRect}`,
+                `body children: ${diagnostic.bodyChildren}`,
+                `SW: controlled=${String(diagnostic.serviceWorkerControlled)} registrations=${diagnostic.serviceWorkerRegistrations ?? '?'}`,
+                `UA data: ${uaData}`,
+                `errors: ${diagnostic.errorCount ?? 0}`,
+                diagnostic.lastError
+                  ? `last error: ${diagnostic.lastError.message ?? JSON.stringify(diagnostic.lastError)}`
+                  : 'last error: none',
+                diagnostic.bodyText
+                  ? `text: ${diagnostic.bodyText}`
+                  : 'text: <empty>',
+              ].join('\n'),
+              [{ text: 'OK' }],
+            );
+          }
+        } catch {}
+        return;
+      }
+
       const isTopFrame = typeof event.nativeEvent.isTopFrame === 'boolean'
         ? event.nativeEvent.isTopFrame
         : undefined;
@@ -222,7 +268,7 @@ const WebViewBrowser = forwardRef<WebViewBrowserRef, WebViewBrowserProps>(
         isTopFrame: isTopFrame,
         navigationGeneration: navigationGenerationRef.current,
       });
-    }, [url]);
+    }, [isTV, url]);
 
     // Reject every new-window request. This catches target="_blank" links and
     // popup attempts from iframes even if a site script bypasses the injected
@@ -262,10 +308,14 @@ const WebViewBrowser = forwardRef<WebViewBrowserRef, WebViewBrowserProps>(
       isNetworkJournalEnabled,
     );
     useEffect(() => subscribeNetworkJournal(setJournalConsole), []);
-    const injectedJS = useMemo(
-      () => injectedJavaScriptFor(journalConsole, isTV),
-      [journalConsole, isTV],
-    );
+    const injectedJS = useMemo(() => {
+      const base = injectedJavaScriptFor(
+        journalConsole,
+        isTV && tvFeaturesEnabled,
+      );
+      if (!isTV) return base;
+      return `${buildTvRenderDiagnostic()}\n${base}`;
+    }, [journalConsole, isTV, tvFeaturesEnabled]);
 
     // Sur iOS, laisser WKWebView annoncer la version réelle de WebKit et de
     // l'appareil : un User-Agent Safari figé peut perturber Turnstile.
