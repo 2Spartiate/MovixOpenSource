@@ -529,3 +529,62 @@ Initial remote HEAD at journal creation: `97c62bedba930f0830f461fdca138fc057c48e
   - Keep foreground-service behavior, `protect()`, App.tsx, WebView, DNS forwarding and all other runtime code unchanged for this diagnostic.
   - If the repeated sequence disappears across several kill/relaunch cycles, sticky VPN recreation is strongly implicated.
   - If it persists, the next observation target should be `protect(socket)` result / DNS forwarding lifecycle rather than broad WebView changes.
+
+
+---
+
+## TV-BS-I — disable sticky VPN recreation
+
+- TEST ID: TV-BS-I
+- DATE: 2026-09-22
+- BASE: TV-BS-H runtime behavior.
+- PURPOSE:
+  - Test whether Android's autonomous recreation of the DNS VPN service after process kills is responsible for the repeated-kill black-screen sequence.
+- UNIQUE RUNTIME VARIABLE:
+  - `app/android/app/src/main/java/com/movix/app/dns/DnsVpnService.kt`
+  - normal `onStartCommand()` return changed from `START_STICKY` to `START_NOT_STICKY`.
+  - stop-action path already returned `START_NOT_STICKY` and remains unchanged.
+- EVERYTHING ELSE FROZEN:
+  - `App.tsx`: `5fbe28710abf29ed78a478e1ca6bdf364f82b71a`
+  - `WebViewBrowser.tsx`: `c42d8b9e33dd01af93ddadbf9f89ba432255784a`
+  - `BrowserScreen.tsx`: `e7a7aae7f7754c49880b166006debff6b25efdbb`
+  - `MirrorErrorScreen.tsx`: `39854aee4c3fda0915629de455059f61486c557e`
+  - `inject.ts`: `4df61dd53d5bd8d9cb30368905aa20aac261d142`
+  - `DnsModule.kt`: `0a4dfcda8717826b6d68eff4ed2295fa5f12fb92`
+- NEW VPN BLOB:
+  - `DnsVpnService.kt`: `d5bc90c71176b138836f766523e06fac57a350fe`
+- TEST COMMIT / APK SOURCE COMMIT:
+  - `750fecf99b3a31210b62c49fbf173a23a5612ea8`
+  - message: `diag(tv): disable sticky DNS VPN recreation`
+- CI:
+  - workflow: Android TV foundations
+  - run ID: `35731378372`
+  - conclusion: PASS
+  - diagnostic A/B contract: PASS
+  - frontend production build: PASS
+  - standalone Android APK build: PASS
+  - merged TV/mobile manifest contract: PASS
+  - standalone JS bundle packaged: PASS
+- GITHUB ARTIFACT:
+  - ID: `10695479060`
+  - name: `movix-google-tv-standalone-apk`
+  - artifact ZIP digest: `sha256:f5d4f9493e98a22f589e86c508e21ea32ab6f980e4b5d9de441aa4934af0c93d`
+- APK:
+  - file: `app-release.apk`
+  - size: `72,593,302 bytes`
+  - SHA-256: `ad1af2cb8f6b828f19a5e7739ad3b57bd5f0e524b4e96735ba91e300f44b8ac4`
+- HARDWARE PROTOCOL:
+  1. Install TV-BS-I.
+  2. Leave Movix DNS/VPN enabled normally; do not manually resync/restart it.
+  3. Record first launch behavior, especially whether page shell and images/posters load.
+  4. Perform at least five complete kill/relaunch cycles.
+  5. Record each launch independently as:
+     - full success,
+     - page without images,
+     - fallback,
+     - black WebView.
+  6. Do not manually disconnect VPN unless a black state occurs; if black occurs, then disconnect once and record whether rendering immediately returns.
+- EXPECTED DISCRIMINATOR:
+  - If repeated black states disappear but first-launch-like partial loads recur, sticky service recreation is strongly implicated in the black-screen failure while DNS readiness remains a separate issue.
+  - If the same `partial -> perfect -> black...` sequence persists, sticky recreation alone is not causal and the next diagnostic should instrument/validate `protect(socket)` and DNS forwarding state without broad product changes.
+- USER HARDWARE RESULT: **PENDING**
