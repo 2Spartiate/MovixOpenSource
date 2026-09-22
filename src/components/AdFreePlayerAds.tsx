@@ -207,20 +207,32 @@ const AdFreePlayerAds: React.FC<AdFreePlayerAdsProps> = ({
     });
   }, []);
 
+  const completeAfterAdClick = useCallback(() => {
+    if (onAdClick) onAdClick();
+
+    // Le lecteur vidéo n'a plus d'étape intermédiaire « Merci / Lecture » :
+    // après le clic pub, on rend immédiatement la main au player. Les variantes
+    // téléchargement et Live TV conservent leur état déverrouillé spécifique.
+    if (variant === "player") {
+      finalOnAccept();
+      return;
+    }
+
+    revealUnlockedState();
+  }, [finalOnAccept, onAdClick, revealUnlockedState, variant]);
+
   const handleLinkClick = useCallback(() => {
     openAdLinks();
-    revealUnlockedState();
-    if (onAdClick) onAdClick();
-  }, [openAdLinks, onAdClick, revealUnlockedState]);
+    completeAfterAdClick();
+  }, [completeAfterAdClick, openAdLinks]);
 
   const completeScriptAdGesture = useCallback(() => {
     if (scriptAcceptTimeoutRef.current !== null) {
       window.clearTimeout(scriptAcceptTimeoutRef.current);
       scriptAcceptTimeoutRef.current = null;
     }
-    if (onAdClick) onAdClick();
-    revealUnlockedState();
-  }, [onAdClick, revealUnlockedState]);
+    completeAfterAdClick();
+  }, [completeAfterAdClick]);
 
   const beginScriptAdGesture = useCallback(() => {
     if (scriptAdFiredRef.current) return;
@@ -296,8 +308,8 @@ const AdFreePlayerAds: React.FC<AdFreePlayerAdsProps> = ({
     if (!shouldShow || popupMode !== 'auto' || autoFiredRef.current) return;
     autoFiredRef.current = true;
     handleLinkClick();
-    finalOnAccept();
-  }, [shouldShow, popupMode, handleLinkClick, finalOnAccept]);
+    if (variant !== "player") finalOnAccept();
+  }, [shouldShow, popupMode, handleLinkClick, finalOnAccept, variant]);
 
   // Texte contextualisé
   const headerText = hasClicked
@@ -351,13 +363,13 @@ const AdFreePlayerAds: React.FC<AdFreePlayerAdsProps> = ({
         className="fixed inset-0 z-[100000] cursor-pointer bg-transparent"
         onClick={() => {
           handleLinkClick();
-          finalOnAccept();
+          if (variant !== "player") finalOnAccept();
         }}
         onKeyDown={(e) => {
           if (e.key === 'Enter' || e.key === ' ') {
             e.preventDefault();
             handleLinkClick();
-            finalOnAccept();
+            if (variant !== "player") finalOnAccept();
           }
         }}
       />
