@@ -7,13 +7,17 @@ const text = path => readFile(new URL(path, root), 'utf8');
 
 test('initial TV focus uses explicit priority order', async () => {
   const source = await text('src/injection/tv-dpad-runtime.ts');
-  const auto = source.indexOf("hasAttribute('data-tv-autofocus')");
-  const primary = source.indexOf("hasAttribute('data-tv-primary-focus')");
-  const card = source.indexOf("hasAttribute('data-tv-card')");
+  const targetBlock = source.match(
+    /const target =([\s\S]*?)elements\[0\];/,
+  )?.[1] || '';
+
+  const auto = targetBlock.indexOf("data-tv-autofocus");
+  const card = targetBlock.indexOf('contentCard');
+  const primary = targetBlock.indexOf("data-tv-primary-focus");
+
   assert.ok(auto >= 0);
   assert.ok(card > auto);
   assert.ok(primary > card);
-  assert.match(source, /elements\[0\]/);
 });
 
 test('initial TV focus waits briefly for media content instead of stealing focus to search', async () => {
