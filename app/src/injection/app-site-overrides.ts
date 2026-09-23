@@ -342,7 +342,19 @@ export function buildAppSiteOverrides(): string {
           classes.includes('inset-y-0')
         );
 
-      if (marked || (hasChevron && looksOverlay)) hideManagedNode(button);
+      if (marked || (hasChevron && looksOverlay)) {
+        const isLeft = Boolean(
+          button.querySelector('svg.lucide-chevron-left, .lucide-chevron-left')
+        ) || classes.includes('left-');
+        const isRight = Boolean(
+          button.querySelector('svg.lucide-chevron-right, .lucide-chevron-right')
+        ) || classes.includes('right-');
+
+        button.setAttribute('data-tv-carousel-arrow', '');
+        if (isLeft) button.setAttribute('data-tv-carousel-arrow-direction', 'left');
+        if (isRight) button.setAttribute('data-tv-carousel-arrow-direction', 'right');
+        hideManagedNode(button);
+      }
     });
   };
 

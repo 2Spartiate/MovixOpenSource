@@ -134,3 +134,12 @@ test('header controls are removed from the TV focus graph whenever page is below
   assert.match(overrides, /window\.addEventListener\('scroll', syncTvHeaderFocusGate/);
   assert.match(overrides, /document\.activeElement\.closest\('header'\)/);
 });
+
+
+test('TV cleanup preserves hidden carousel arrows as callable left/right Embla controls', async () => {
+  const overrides = await text('src/injection/app-site-overrides.ts');
+  assert.match(overrides, /data-tv-carousel-arrow-direction', 'left'/);
+  assert.match(overrides, /data-tv-carousel-arrow-direction', 'right'/);
+  assert.match(overrides, /button\.setAttribute\('data-tv-carousel-arrow', ''\)/);
+  assert.match(overrides, /hideManagedNode\(button\)/);
+});
