@@ -40,6 +40,26 @@ test('native app injects live-site cleanup because the WebView loads remote Movi
   assert.match(overrides, /new MutationObserver\(scheduleApply\)/);
 });
 
+test('TV-only DOM cleanup functions are inert on handheld WebViews', async () => {
+  const overrides = await text('src/injection/app-site-overrides.ts');
+
+  for (const name of [
+    'markPosterCards',
+    'installCardActivation',
+    'removeFavoriteControls',
+    'removeCarouselArrows',
+    'removeTelegramUi',
+    'makeMovixBrandInert',
+    'removeFooter',
+    'disableTvSmoothScroll',
+  ]) {
+    assert.match(
+      overrides,
+      new RegExp(`const ${name} = \\(\\) => \\{\\s*if \\(window\\.MOVIX_TV !== true\\) return;`),
+    );
+  }
+});
+
 test('TV route changes prefer real media content over falling back to header search', async () => {
   const overrides = await text('src/injection/app-site-overrides.ts');
 
@@ -69,7 +89,7 @@ test('post-ad thank-you dialog is automatically advanced to playback in the app'
   assert.match(overrides, /requestAnimationFrame\(\(\) => button\.click\(\)\)/);
 });
 
-test('source frontend also carries the cleanup for any future web deployment', async () => {
+test('source frontend preserves handheld chrome while TV cleanup remains injectable', async () => {
   const [home, app, smooth, ads, carousel, searchCard] = await Promise.all([
     text('../src/pages/Home.tsx'),
     text('../src/App.tsx'),
@@ -79,10 +99,10 @@ test('source frontend also carries the cleanup for any future web deployment', a
     text('../src/components/SearchCard.tsx'),
   ]);
 
-  assert.doesNotMatch(home, /TelegramPromotion/);
-  assert.doesNotMatch(app, /import Footer|<Footer\s*\/?>/);
+  assert.match(home, /TelegramPromotion/);
+  assert.match(app, /import Footer|<Footer\s*\/?>/);
   assert.match(smooth, /MOVIX_TV === true/);
   assert.match(ads, /const completeAfterAdClick = useCallback/);
-  assert.doesNotMatch(carousel, /data-tv-favorite-overlay/);
-  assert.doesNotMatch(searchCard, /data-tv-favorite-overlay/);
+  assert.match(carousel, /data-tv-favorite-overlay/);
+  assert.match(searchCard, /data-tv-favorite-overlay/);
 });
