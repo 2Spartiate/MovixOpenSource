@@ -5,6 +5,7 @@ on:
   push:
     branches:
       - agent/google-tv-roadmap-v1
+      - agent/google-tv-clean-baseline-v1
     paths:
       - 'app/**'
       - 'src/**'
@@ -53,6 +54,7 @@ jobs:
         run: |
           node --test \
             tests/tvBaselineRuntimeDiagnosticContract.test.mjs \
+            tests/commonWebViewOverridesContract.test.mjs \
             tests/androidArtifactCleanupContract.test.mjs
           npx tsc --noEmit
 
