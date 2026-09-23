@@ -10,7 +10,7 @@ test('initial TV focus uses explicit priority order', async () => {
 
   assert.match(
     source,
-    /const target =\s*elements\.find\(element => element\.hasAttribute\('data-tv-autofocus'\)\) \|\|\s*contentCard \|\|\s*elements\.find\(element => element\.hasAttribute\('data-tv-primary-focus'\)\) \|\|\s*elements\[0\];/,
+    /const target =\s*elements\.find\(element => element\.hasAttribute\('data-tv-autofocus'\)\) \|\|\s*primary \|\|\s*contentCard \|\|\s*elements\[0\];/,
   );
 });
 
