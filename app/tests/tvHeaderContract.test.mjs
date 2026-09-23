@@ -14,10 +14,16 @@ test('MOVIX brand is inert while handheld Telegram chrome is removed only by the
     /<div[\s\S]{0,220}data-tv-ignore-focus[\s\S]{0,160}data-tv-header-logo/,
   );
   assert.match(header, />MOVIX<\/span>/);
-  assert.doesNotMatch(
+  // Preserve the phone behavior: the source logo remains a real Home link,
+  // while the TV runtime removes its href and focusability in the live DOM.
+  assert.match(
     header,
-    /<Link[\s\S]{0,220}data-tv-header-logo/,
+    /<Link[\s\S]{0,220}data-tv-ignore-focus[\s\S]{0,160}data-tv-header-logo/,
   );
+  assert.match(overrides, /const makeMovixBrandInert = \(\) =>/);
+  assert.match(overrides, /element\.removeAttribute\('href'\)/);
+  assert.match(overrides, /element\.setAttribute\('tabindex', '-1'\)/);
+  assert.match(overrides, /element\.setAttribute\('data-tv-ignore-focus', ''\)/);
 
   // Preserve the current handheld source. Google TV removes this action from
   // the live remote DOM instead of deleting a phone feature from shared code.
