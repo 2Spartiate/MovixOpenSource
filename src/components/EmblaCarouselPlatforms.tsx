@@ -20,10 +20,11 @@ interface EmblaCarouselPlatformsProps {
 }
 
 const EmblaCarouselPlatforms: React.FC<EmblaCarouselPlatformsProps> = ({ title, items }) => {
+  const isTvRuntime = typeof window !== 'undefined' && (window as any).MOVIX_TV === true;
   const { t } = useTranslation();
   const { effectivePrefs } = useLightMode();
   const [emblaRef, emblaApi] = useEmblaCarousel({
-    align: 'start',
+    align: isTvRuntime ? 'center' : 'start',
     dragFree: true,
     containScroll: 'keepSnaps',
     slidesToScroll: 1,

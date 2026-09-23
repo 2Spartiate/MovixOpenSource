@@ -47,6 +47,14 @@ export function buildTvBootstrap(): string {
           box-shadow: inset 0 0 0 1px rgba(220, 38, 38, 0.35) !important;
         }
 
+        /* TV D-pad needs geometry for cards before they enter the viewport.
+           The website's .embla-slide { content-visibility:auto } intentionally
+           skips offscreen descendants, making their focus links 0x0 in Chromium.
+           Disable only that paint/layout skipping on TV; handheld remains untouched. */
+        .movix-tv .embla-slide {
+          content-visibility: visible !important;
+        }
+
         .movix-tv [data-tv-carousel-arrow],
         .movix-tv [data-tv-favorite-overlay],
         .movix-tv [data-tv-header-telegram] {

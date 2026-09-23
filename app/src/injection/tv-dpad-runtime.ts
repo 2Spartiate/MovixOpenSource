@@ -174,6 +174,26 @@ ${domDiscoveryRuntime}
     };
   };
 
+  const isHeaderElement = (element) =>
+    element instanceof HTMLElement && Boolean(element.closest('header'));
+
+  const getRowCards = (row) => {
+    if (!(row instanceof HTMLElement)) return [];
+    return api.getTVFocusableElements().filter((element) =>
+      element instanceof HTMLElement &&
+      element.hasAttribute('data-tv-card') &&
+      element.closest('[data-tv-carousel-row]') === row
+    );
+  };
+
+  const getAdjacentCardInRow = (current, row, direction) => {
+    const cards = getRowCards(row);
+    const index = cards.indexOf(current);
+    if (index < 0) return null;
+    const delta = direction === 'right' ? 1 : -1;
+    return cards[index + delta] || null;
+  };
+
   const pageFocusIsEmpty = () => {
     const active = document.activeElement;
     return !active || active === document.body || active === document.documentElement;
@@ -376,54 +396,85 @@ ${domDiscoveryRuntime}
     const current = document.activeElement;
     if (!(current instanceof HTMLElement)) return false;
 
-    // Discovery is deliberately performed at keypress time. React route
-    // changes, lazy rows, search results and modal content are therefore
-    // immediately eligible without maintaining a mutation-driven cache.
     const candidates = api.getTVFocusCandidates()
       .filter(candidate => candidate.element !== current);
+    const currentRect = toRect(current);
+    const horizontal = direction === 'left' || direction === 'right';
+    const vertical = direction === 'up' || direction === 'down';
+    const currentRow = current.closest('[data-tv-carousel-row]');
 
-    // Poster navigation is row-first vertically. While another media row
-    // exists above/below, header controls are not eligible at all. This avoids
-    // diagonal jumps to Search/Account and makes ↑/↓ advance through rows even
-    // when the posters are horizontally staggered.
+    // Horizontal TV navigation is strictly local to the active carousel.
+    // Offscreen cards remain measurable on TV (content-visibility override),
+    // so DOM order can select the next real React link even beyond the screen.
+    if (horizontal && currentRow instanceof HTMLElement) {
+      const rowTarget = getAdjacentCardInRow(current, currentRow, direction);
+      if (rowTarget instanceof HTMLElement) {
+        try {
+          rowTarget.focus({ preventScroll: true });
+        } catch {
+          rowTarget.focus();
+        }
+        revealFocusedElement(rowTarget, direction);
+        return document.activeElement === rowTarget;
+      }
+      return false;
+    }
+
+    // Vertical poster navigation remains row-first and ignores horizontal
+    // misalignment: pick the closest media row, then the closest card in it.
     let next = null;
     if (
       current.hasAttribute('data-tv-card') &&
-      (direction === 'up' || direction === 'down')
+      vertical &&
+      currentRow instanceof HTMLElement
     ) {
-      const currentRow = current.closest('[data-tv-carousel-row]');
-      if (currentRow instanceof HTMLElement) {
-        const cardCandidates = candidates
-          .filter(candidate =>
-            candidate.element instanceof HTMLElement &&
-            candidate.element.hasAttribute('data-tv-card')
-          )
-          .map(candidate => {
-            const row = candidate.element.closest('[data-tv-carousel-row]');
-            if (!(row instanceof HTMLElement)) return null;
-            return {
-              ...candidate,
-              rowKey: row,
-              rowRect: toRect(row),
-            };
-          })
-          .filter(Boolean);
+      const cardCandidates = candidates
+        .filter(candidate =>
+          candidate.element instanceof HTMLElement &&
+          candidate.element.hasAttribute('data-tv-card')
+        )
+        .map(candidate => {
+          const row = candidate.element.closest('[data-tv-carousel-row]');
+          if (!(row instanceof HTMLElement)) return null;
+          return {
+            ...candidate,
+            rowKey: row,
+            rowRect: toRect(row),
+          };
+        })
+        .filter(Boolean);
 
-        next = findNextCardRowTarget(
-          toRect(current),
-          currentRow,
-          toRect(currentRow),
-          cardCandidates,
-          direction,
-        );
+      next = findNextCardRowTarget(
+        currentRect,
+        currentRow,
+        toRect(currentRow),
+        cardCandidates,
+        direction,
+      );
+    }
+
+    // While the page is still scrolled away from its real top, header controls
+    // cannot steal vertical focus from content. If there is no content target
+    // above, one ↑ brings the page fully home; only the following ↑ may enter
+    // Search / Account.
+    if (!next && vertical && !isHeaderElement(current)) {
+      const contentCandidates = candidates.filter(
+        candidate => !isHeaderElement(candidate.element)
+      );
+      next = findNextFocusTarget(currentRect, contentCandidates, direction);
+
+      if (!next && direction === 'up' && window.scrollY > 8) {
+        try {
+          window.scrollTo({ top: 0, left: window.scrollX, behavior: 'auto' });
+        } catch {
+          window.scrollTo(window.scrollX, 0);
+        }
+        return true;
       }
     }
 
-    // Only when there is no poster row left in that direction do we fall back
-    // to the global spatial graph. At the top row this naturally re-enables
-    // header controls.
     if (!next) {
-      next = findNextFocusTarget(toRect(current), candidates, direction);
+      next = findNextFocusTarget(currentRect, candidates, direction);
     }
     if (!next || !(next.element instanceof HTMLElement)) return false;
 
@@ -434,7 +485,6 @@ ${domDiscoveryRuntime}
     }
 
     revealFocusedElement(next.element, direction);
-
     return document.activeElement === next.element;
   };
 
