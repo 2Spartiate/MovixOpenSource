@@ -18,6 +18,19 @@ export function buildAppSiteOverrides(): string {
     .trim()
     .toLowerCase();
 
+  // Never detach nodes owned by the remote React tree. Detaching a child
+  // behind React's back can corrupt the next SPA commit. App-only cleanup is
+  // therefore expressed as attributes/styles only.
+  const hideManagedNode = (element) => {
+    if (!(element instanceof HTMLElement)) return;
+    element.setAttribute('data-movix-app-hidden', '1');
+    element.setAttribute('data-tv-ignore-focus', '');
+    element.setAttribute('aria-hidden', 'true');
+    element.setAttribute('tabindex', '-1');
+    element.style.setProperty('display', 'none', 'important');
+    element.style.setProperty('pointer-events', 'none', 'important');
+  };
+
   const removeTelegramUi = () => {
     document.querySelectorAll('header a[href*="t.me/"], header a[href*="telegram.me/"]').forEach((link) => {
       if (!(link instanceof HTMLElement)) return;
@@ -28,7 +41,7 @@ export function buildAppSiteOverrides(): string {
         String(link.textContent || '')
       );
       if (href.includes('movix_site') || label.includes('telegram')) {
-        link.remove();
+        hideManagedNode(link);
       }
     });
 
@@ -48,11 +61,11 @@ export function buildAppSiteOverrides(): string {
             text.includes('join the community')
           )
         ) {
-          node.remove();
+          hideManagedNode(node);
           return;
         }
       }
-      link.remove();
+      hideManagedNode(link);
     });
 
     document.querySelectorAll('h1, h2, h3, h4').forEach((heading) => {
@@ -67,7 +80,7 @@ export function buildAppSiteOverrides(): string {
       for (let depth = 0; node && depth < 6; depth += 1, node = node.parentElement) {
         const candidateText = normalise(node.textContent);
         if (candidateText.includes('telegram') && candidateText.length < 1200) {
-          node.remove();
+          hideManagedNode(node);
           return;
         }
       }
@@ -93,21 +106,28 @@ export function buildAppSiteOverrides(): string {
       );
 
       if (pathname !== '/' || (label !== 'movix' && !label.includes('movix'))) return;
-      if (link.querySelector('img[data-movix-app-brand-logo="1"]')) return;
 
-      const image = document.createElement('img');
-      image.src = 'https://raw.githubusercontent.com/2Spartiate/MovixOpenSource/refs/heads/agent/google-tv-clean-baseline-v1/public/movix-logo.png';
-      image.alt = 'Movix';
-      image.decoding = 'async';
-      image.dataset.movixAppBrandLogo = '1';
-      image.style.setProperty('display', 'block');
-      image.style.setProperty('height', 'clamp(28px, 4vw, 36px)');
-      image.style.setProperty('width', 'auto');
-      image.style.setProperty('max-width', '120px');
-      image.style.setProperty('object-fit', 'contain');
-
-      link.replaceChildren(image);
+      // Keep React's children intact. Render the app logo as a background and
+      // hide the original children visually instead of replacing DOM children.
+      link.setAttribute('data-movix-app-brand-logo', '1');
       link.setAttribute('aria-label', 'Movix');
+      link.style.setProperty('display', 'block');
+      link.style.setProperty('width', 'clamp(84px, 12vw, 120px)');
+      link.style.setProperty('height', 'clamp(28px, 4vw, 36px)');
+      link.style.setProperty(
+        'background-image',
+        'url("https://raw.githubusercontent.com/2Spartiate/MovixOpenSource/refs/heads/agent/google-tv-clean-baseline-v1/public/movix-logo.png")'
+      );
+      link.style.setProperty('background-repeat', 'no-repeat');
+      link.style.setProperty('background-position', 'left center');
+      link.style.setProperty('background-size', 'contain');
+      link.style.setProperty('font-size', '0');
+      link.style.setProperty('color', 'transparent');
+      Array.from(link.children).forEach((child) => {
+        if (child instanceof HTMLElement) {
+          child.style.setProperty('visibility', 'hidden', 'important');
+        }
+      });
     });
   };
 
@@ -307,7 +327,7 @@ export function buildAppSiteOverrides(): string {
     if (window.MOVIX_TV !== true) return;
 
     document.querySelectorAll('[data-tv-favorite-overlay]').forEach((element) => {
-      if (element instanceof HTMLElement) element.remove();
+      if (element instanceof HTMLElement) hideManagedNode(element);
     });
 
     Array.from(document.querySelectorAll('a[href]'))
@@ -325,7 +345,7 @@ export function buildAppSiteOverrides(): string {
           const hasStar = Boolean(
             button.querySelector('svg.lucide-star, .lucide-star')
           );
-          if (hasStar) button.remove();
+          if (hasStar) hideManagedNode(button);
         });
       });
   };
@@ -351,7 +371,7 @@ export function buildAppSiteOverrides(): string {
           classes.includes('inset-y-0')
         );
 
-      if (marked || (hasChevron && looksOverlay)) button.remove();
+      if (marked || (hasChevron && looksOverlay)) hideManagedNode(button);
     });
   };
 
@@ -386,7 +406,7 @@ export function buildAppSiteOverrides(): string {
 
   const removeFooter = () => {
     if (window.MOVIX_TV !== true) return;
-    document.querySelectorAll('footer').forEach((footer) => footer.remove());
+    document.querySelectorAll('footer').forEach((footer) => hideManagedNode(footer));
   };
 
   const disableTvSmoothScroll = () => {
