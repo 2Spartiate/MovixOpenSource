@@ -44,3 +44,29 @@ test('rounded and standard adaptive launchers share the validated 20dp safe-zone
   assert.match(launcher, /@drawable\/ic_launcher_foreground_scaled/);
   assert.match(round, /@drawable\/ic_launcher_foreground_scaled/);
 });
+
+
+test('TV launcher uses a dedicated adaptive icon with the Android TV 72dp safe-zone', async () => {
+  const [manifest, tvForeground, tv26, tv33, phoneForeground] = await Promise.all([
+    bytes('android/app/src/main/AndroidManifest.xml').then(buffer => buffer.toString('utf8')),
+    bytes('android/app/src/main/res/drawable/ic_launcher_tv_foreground_scaled.xml').then(buffer => buffer.toString('utf8')),
+    bytes('android/app/src/main/res/mipmap-anydpi-v26/ic_launcher_tv.xml').then(buffer => buffer.toString('utf8')),
+    bytes('android/app/src/main/res/mipmap-anydpi-v33/ic_launcher_tv.xml').then(buffer => buffer.toString('utf8')),
+    bytes('android/app/src/main/res/drawable/ic_launcher_foreground_scaled.xml').then(buffer => buffer.toString('utf8')),
+  ]);
+
+  // Phone keeps its previously validated 20dp framing.
+  for (const edge of ['left', 'top', 'right', 'bottom']) {
+    assert.match(phoneForeground, new RegExp(`android:${edge}="20dp"`));
+    assert.match(tvForeground, new RegExp(`android:${edge}="18dp"`));
+  }
+
+  assert.match(tv26, /@drawable\/ic_launcher_tv_foreground_scaled/);
+  assert.match(tv33, /@drawable\/ic_launcher_tv_foreground_scaled/);
+
+  // MainActivity remains the handheld LAUNCHER; TV uses a dedicated alias/icon.
+  assert.match(manifest, /<activity-alias[\s\S]*android:name="\.TvLauncherAlias"[\s\S]*android:icon="@mipmap\/ic_launcher_tv"[\s\S]*android\.intent\.category\.LEANBACK_LAUNCHER/);
+  const mainActivityBlock = manifest.match(/<activity\s+[\s\S]*?android:name="\.MainActivity"[\s\S]*?<\/activity>/)?.[0] || '';
+  assert.match(mainActivityBlock, /android\.intent\.category\.LAUNCHER/);
+  assert.doesNotMatch(mainActivityBlock, /android\.intent\.category\.LEANBACK_LAUNCHER/);
+});

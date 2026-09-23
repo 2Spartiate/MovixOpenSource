@@ -48,10 +48,6 @@
                 <action android:name="android.intent.action.MAIN" />
                 <category android:name="android.intent.category.LAUNCHER" />
             </intent-filter>
-            <intent-filter>
-                <action android:name="android.intent.action.MAIN" />
-                <category android:name="android.intent.category.LEANBACK_LAUNCHER" />
-            </intent-filter>
 
             <!-- Deep links Movix -->
             <intent-filter android:autoVerify="true">
@@ -62,6 +58,25 @@
                 <data android:scheme="https" android:host="*.movix.tax" />
             </intent-filter>
         </activity>
+
+        <!--
+          Google/Android TV launcher entry.
+          Keep the mobile launcher/icon untouched: TV gets its own adaptive
+          icon and LEANBACK_LAUNCHER component. Android TV documentation
+          recommends adaptive android:icon and deprecates roundIcon on TV.
+        -->
+        <activity-alias
+            android:name=".TvLauncherAlias"
+            android:targetActivity=".MainActivity"
+            android:label="@string/app_name"
+            android:icon="@mipmap/ic_launcher_tv"
+            android:banner="@drawable/tv_banner"
+            android:exported="true">
+            <intent-filter>
+                <action android:name="android.intent.action.MAIN" />
+                <category android:name="android.intent.category.LEANBACK_LAUNCHER" />
+            </intent-filter>
+        </activity-alias>
 
         <!-- Service VPN pour le changeur DNS -->
         <service
