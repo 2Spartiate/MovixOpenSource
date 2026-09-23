@@ -193,6 +193,102 @@ ${domDiscoveryRuntime}
     return null;
   };
 
+  const isHeaderElement = (element) =>
+    element instanceof HTMLElement && Boolean(element.closest('header'));
+
+  const pageCenterY = (element) => {
+    const rect = element.getBoundingClientRect();
+    return window.scrollY + rect.top + rect.height / 2;
+  };
+
+  const rowFocusables = (row) => {
+    if (!(row instanceof HTMLElement)) return [];
+    return api.getTVFocusableElements().filter((element) =>
+      element instanceof HTMLElement &&
+      !isHeaderElement(element) &&
+      element.closest('[data-tv-carousel-row]') === row
+    );
+  };
+
+  const adjacentCarouselRow = (currentRow, direction) => {
+    if (!(currentRow instanceof HTMLElement)) return null;
+    const originY = pageCenterY(currentRow);
+    const sign = direction === 'down' ? 1 : -1;
+
+    return Array.from(document.querySelectorAll('[data-tv-carousel-row]'))
+      .filter((row) => row instanceof HTMLElement && row !== currentRow)
+      .map((row) => {
+        const rect = row.getBoundingClientRect();
+        const delta = (pageCenterY(row) - originY) * sign;
+        return { row, rect, delta };
+      })
+      .filter(({ rect, delta }) =>
+        rect.width > 0 && rect.height > 0 && Number.isFinite(delta) && delta > 1
+      )
+      .sort((a, b) => a.delta - b.delta)[0]?.row || null;
+  };
+
+  const chooseRowTarget = (row, originElement) => {
+    const elements = rowFocusables(row);
+    if (!elements.length) return null;
+    const origin = toRect(originElement);
+    const originX = origin.centerX;
+    const cards = elements.filter((element) => element.hasAttribute('data-tv-card'));
+    const pool = cards.length ? cards : elements;
+
+    return pool
+      .map((element, index) => {
+        const rect = toRect(element);
+        return {
+          element,
+          index,
+          distance: Math.abs(rect.centerX - originX),
+          left: rect.left,
+        };
+      })
+      .sort((a, b) =>
+        a.distance - b.distance ||
+        a.left - b.left ||
+        a.index - b.index
+      )[0]?.element || null;
+  };
+
+  const centerRowAnchor = (row) => {
+    if (!(row instanceof HTMLElement)) return false;
+    const rect = row.getBoundingClientRect();
+    const top = Math.max(
+      0,
+      window.scrollY + rect.top + rect.height / 2 - window.innerHeight / 2,
+    );
+    try {
+      window.scrollTo({ top, left: window.scrollX, behavior: 'auto' });
+    } catch {
+      window.scrollTo(window.scrollX, top);
+    }
+    return true;
+  };
+
+  const focusRowWhenReady = (row, originElement, attempt = 0) => {
+    if (!(row instanceof HTMLElement) || !row.isConnected) return false;
+    const target = chooseRowTarget(row, originElement);
+    if (target instanceof HTMLElement) {
+      try {
+        target.focus({ preventScroll: true });
+      } catch {
+        target.focus();
+      }
+      centerVerticalTarget(target);
+      return document.activeElement === target;
+    }
+
+    if (attempt === 0) centerRowAnchor(row);
+    if (attempt < 8) {
+      setTimeout(() => focusRowWhenReady(row, originElement, attempt + 1), 50);
+      return true;
+    }
+    return false;
+  };
+
   const centerVerticalTarget = (element) => {
     if (!(element instanceof HTMLElement)) return false;
     const rect = element.getBoundingClientRect();
@@ -233,13 +329,35 @@ ${domDiscoveryRuntime}
     return true;
   };
 
-  const centerCarouselTarget = (element, row) => {
+  const findCarouselArrow = (row, direction) => {
+    if (!(row instanceof HTMLElement)) return null;
+    let root = row;
+    for (let depth = 0; root && depth < 5; depth += 1, root = root.parentElement) {
+      const arrow = root.querySelector(
+        'button[data-tv-carousel-arrow-direction="' + direction + '"]'
+      );
+      if (arrow instanceof HTMLButtonElement) return arrow;
+    }
+    return null;
+  };
+
+  const nudgeCarousel = (row, direction) => {
+    const arrow = findCarouselArrow(row, direction);
+    if (!(arrow instanceof HTMLButtonElement)) return false;
+    try {
+      arrow.click();
+      return true;
+    } catch {
+      return false;
+    }
+  };
+
+  const centerCarouselTarget = (element, row, direction) => {
     if (!(element instanceof HTMLElement) || !(row instanceof HTMLElement)) {
       return false;
     }
 
-    // Prefer a real horizontal scroll container belonging to this row. This
-    // keeps left/right movement local to the carousel and never pans the page.
+    // Prefer a genuine scroll container when the live carousel exposes one.
     const boundary = row.parentElement;
     let scroller = element.parentElement;
     while (
@@ -267,9 +385,20 @@ ${domDiscoveryRuntime}
       scroller = scroller.parentElement;
     }
 
-    // Embla often moves slides with transforms instead of scrollLeft. Let the
-    // browser reveal the focused slide as a fallback, then restore the page
-    // coordinates so only the carousel can move.
+    // Embla uses transforms rather than scrollLeft. Its hidden arrow controls
+    // still own the real API, so use them as the reliable TV fallback whenever
+    // focus reaches the visible edge. This moves only the active carousel.
+    const rect = element.getBoundingClientRect();
+    const bounds = row.getBoundingClientRect();
+    const edge = Math.min(160, Math.max(48, rect.width * 0.55));
+    const needsNudge =
+      (direction === 'right' && rect.right >= bounds.right - edge) ||
+      (direction === 'left' && rect.left <= bounds.left + edge);
+
+    if (needsNudge && nudgeCarousel(row, direction)) {
+      return true;
+    }
+
     const pageX = window.scrollX;
     const pageY = window.scrollY;
     try {
@@ -296,7 +425,7 @@ ${domDiscoveryRuntime}
     const carouselRow = element.closest('[data-tv-carousel-row]');
 
     if (horizontalMove && carouselRow instanceof HTMLElement) {
-      return centerCarouselTarget(element, carouselRow);
+      return centerCarouselTarget(element, carouselRow, direction);
     }
 
     if (direction === 'up' || direction === 'down') {
@@ -376,55 +505,60 @@ ${domDiscoveryRuntime}
     const current = document.activeElement;
     if (!(current instanceof HTMLElement)) return false;
 
-    // Discovery is deliberately performed at keypress time. React route
-    // changes, lazy rows, search results and modal content are therefore
-    // immediately eligible without maintaining a mutation-driven cache.
     const candidates = api.getTVFocusCandidates()
       .filter(candidate => candidate.element !== current);
+    const currentRect = toRect(current);
+    const vertical = direction === 'up' || direction === 'down';
+    const horizontal = direction === 'left' || direction === 'right';
+    const currentRow = current.closest('[data-tv-carousel-row]');
 
-    // Poster navigation is row-first vertically. While another media row
-    // exists above/below, header controls are not eligible at all. This avoids
-    // diagonal jumps to Search/Account and makes ↑/↓ advance through rows even
-    // when the posters are horizontally staggered.
-    let next = null;
-    if (
-      current.hasAttribute('data-tv-card') &&
-      (direction === 'up' || direction === 'down')
-    ) {
-      const currentRow = current.closest('[data-tv-carousel-row]');
-      if (currentRow instanceof HTMLElement) {
-        const cardCandidates = candidates
-          .filter(candidate =>
-            candidate.element instanceof HTMLElement &&
-            candidate.element.hasAttribute('data-tv-card')
-          )
-          .map(candidate => {
-            const row = candidate.element.closest('[data-tv-carousel-row]');
-            if (!(row instanceof HTMLElement)) return null;
-            return {
-              ...candidate,
-              rowKey: row,
-              rowRect: toRect(row),
-            };
-          })
-          .filter(Boolean);
-
-        next = findNextCardRowTarget(
-          toRect(current),
-          currentRow,
-          toRect(currentRow),
-          cardCandidates,
-          direction,
-        );
+    // Vertical navigation is anchored to carousel rows, including rows that are
+    // mostly/off screen. One key press selects the adjacent row, centers it and
+    // focuses its nearest card instead of browser-like incremental scrolling.
+    if (vertical && currentRow instanceof HTMLElement) {
+      const row = adjacentCarouselRow(currentRow, direction);
+      if (row instanceof HTMLElement) {
+        return focusRowWhenReady(row, current);
       }
     }
 
-    // Only when there is no poster row left in that direction do we fall back
-    // to the global spatial graph. At the top row this naturally re-enables
-    // header controls.
-    if (!next) {
-      next = findNextFocusTarget(toRect(current), candidates, direction);
+    // Header is not part of the vertical content graph while content still
+    // exists in the requested direction. This prevents diagonal jumps from
+    // Prime Video/poster rows to Search/Account.
+    let next = null;
+    if (vertical && !isHeaderElement(current)) {
+      const contentCandidates = candidates.filter(
+        candidate => !isHeaderElement(candidate.element)
+      );
+      next = findNextFocusTarget(currentRect, contentCandidates, direction);
+
+      // At the top edge of the content graph, first bring the page fully home.
+      // Header becomes eligible only once scrollY is actually at the top.
+      if (!next && direction === 'up' && window.scrollY > 8) {
+        try {
+          window.scrollTo({ top: 0, left: window.scrollX, behavior: 'auto' });
+        } catch {
+          window.scrollTo(window.scrollX, 0);
+        }
+        return true;
+      }
     }
+
+    if (!next) {
+      next = findNextFocusTarget(currentRect, candidates, direction);
+    }
+
+    // If an Embla row has more slides but transformed/offscreen slides are not
+    // discoverable yet, advance the real carousel instead of getting stuck.
+    if (
+      !next &&
+      horizontal &&
+      currentRow instanceof HTMLElement &&
+      nudgeCarousel(currentRow, direction)
+    ) {
+      return true;
+    }
+
     if (!next || !(next.element instanceof HTMLElement)) return false;
 
     try {
@@ -434,7 +568,6 @@ ${domDiscoveryRuntime}
     }
 
     revealFocusedElement(next.element, direction);
-
     return document.activeElement === next.element;
   };
 
