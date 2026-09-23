@@ -461,6 +461,9 @@ const HeroSliderInner: React.FC<HeroSliderProps> = ({ items }) => {
                               <motion.div whileHover={{ scale: 1.03 }} whileTap={{ scale: 0.97 }}>
                                 <Link
                                   to={`/${item.media_type}/${encodeId(item.id)}`}
+                                  data-tv-primary-focus={isTvRuntime ? 'hero-play' : undefined}
+                                  data-tv-autofocus={isTvRuntime ? '' : undefined}
+                                  data-tv-focus-id={isTvRuntime ? 'hero-play' : undefined}
                                   className="inline-flex items-center justify-center gap-2 bg-red-600 hover:bg-red-500 text-white px-5 sm:px-6 md:px-7 py-3 sm:py-3 min-h-[48px] rounded-xl sm:rounded-2xl text-sm sm:text-base font-semibold transition-colors shadow-lg shadow-red-600/30 touch-manipulation"
                                 >
                                   <Play className="w-4 h-4 sm:w-5 sm:h-5 fill-current" />
@@ -470,6 +473,8 @@ const HeroSliderInner: React.FC<HeroSliderProps> = ({ items }) => {
                               <motion.div whileHover={{ scale: 1.03 }} whileTap={{ scale: 0.97 }}>
                                 <Link
                                   to={`/${item.media_type}/${encodeId(item.id)}`}
+                                  data-tv-ignore-focus={isTvRuntime ? '' : undefined}
+                                  tabIndex={isTvRuntime ? -1 : undefined}
                                   className="inline-flex items-center justify-center gap-2 bg-white/15 hover:bg-white/25 text-white px-5 sm:px-6 md:px-7 py-3 sm:py-3 min-h-[48px] rounded-xl sm:rounded-2xl text-sm sm:text-base font-medium border border-white/20 transition-colors touch-manipulation"
                                 >
                                   <Info className="w-4 h-4 sm:w-5 sm:h-5" />
@@ -500,6 +505,8 @@ const HeroSliderInner: React.FC<HeroSliderProps> = ({ items }) => {
                   key={idx}
                   type="button"
                   data-tv-hero-dot={isTvRuntime ? '' : undefined}
+                  data-tv-ignore-focus={isTvRuntime ? '' : undefined}
+                  tabIndex={isTvRuntime ? -1 : undefined}
                   onClick={() => scrollTo(idx)}
                   aria-label={t('settings.carouselSlide', { position: idx + 1, total: items.length })}
                   aria-current={idx === selectedIndex ? 'true' : undefined}

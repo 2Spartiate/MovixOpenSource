@@ -112,3 +112,12 @@ test('TV Embla carousels center the focused slide without changing handheld alig
     assert.match(source, /emblaApi\.scrollTo\(index/);
   }
 });
+
+
+test('hero source declares Play as the only TV entry while info and dots stay handheld-clickable', async () => {
+  const source = await text('../src/components/HeroSlider.tsx');
+  assert.match(source, /data-tv-primary-focus=\{isTvRuntime \? 'hero-play' : undefined\}/);
+  assert.match(source, /data-tv-autofocus=\{isTvRuntime \? '' : undefined\}/);
+  assert.match(source, /data-tv-ignore-focus=\{isTvRuntime \? '' : undefined\}/);
+  assert.match(source, /tabIndex=\{isTvRuntime \? -1 : undefined\}/);
+});
