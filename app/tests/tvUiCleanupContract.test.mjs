@@ -129,7 +129,7 @@ test('TV hero exposes only Play as the primary D-pad entry and ignores info/dots
 test('header controls are removed from the TV focus graph whenever page is below top', async () => {
   const overrides = await text('src/injection/app-site-overrides.ts');
   assert.match(overrides, /const syncTvHeaderFocusGate = \(\) =>/);
-  assert.match(overrides, /const gated = window\.scrollY > 8/);
+  assert.match(overrides, /const gated = documentScrollTop > 8 \|\| heroMovedUnderHeader/);
   assert.match(overrides, /data-tv-header-gated-focus/);
   assert.match(overrides, /window\.addEventListener\('scroll', syncTvHeaderFocusGate/);
   assert.match(overrides, /document\.activeElement\.closest\('header'\)/);
@@ -142,4 +142,14 @@ test('TV cleanup preserves hidden carousel arrows as callable left/right Embla c
   assert.match(overrides, /data-tv-carousel-arrow-direction', 'right'/);
   assert.match(overrides, /button\.setAttribute\('data-tv-carousel-arrow', ''\)/);
   assert.match(overrides, /hideManagedNode\(button\)/);
+});
+
+
+test('search and account stay ordinary header controls rather than stealing primary Home focus', async () => {
+  const [header, profile] = await Promise.all([
+    text('../src/components/Header.tsx'),
+    text('../src/components/ProfileMenu.tsx'),
+  ]);
+  assert.doesNotMatch(header, /data-tv-primary-focus="search"/);
+  assert.doesNotMatch(profile, /data-tv-primary-focus="account"/);
 });

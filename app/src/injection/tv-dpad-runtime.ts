@@ -177,6 +177,33 @@ ${domDiscoveryRuntime}
   const isHeaderElement = (element) =>
     element instanceof HTMLElement && Boolean(element.closest('header'));
 
+  const pageIsAtRealTop = () => {
+    const scrollTop = Math.max(
+      Number(window.scrollY || 0),
+      Number(document.documentElement?.scrollTop || 0),
+      Number(document.body?.scrollTop || 0),
+    );
+    if (scrollTop > 8) return false;
+
+    if (window.location.pathname === '/') {
+      const hero = document.querySelector('[data-tv-hero-slider]');
+      if (hero instanceof HTMLElement) {
+        const rect = hero.getBoundingClientRect();
+        // Home starts with the hero below the fixed header. If its top has
+        // crossed the header band, an internal/container scroll has moved.
+        if (rect.top < 40) return false;
+      }
+    }
+    return true;
+  };
+
+  const getHeroPlay = () => {
+    const target = document.querySelector(
+      '[data-tv-primary-focus="hero-play"], [data-tv-focus-id="hero-play"]'
+    );
+    return target instanceof HTMLElement ? target : null;
+  };
+
   const getRowCards = (row) => {
     if (!(row instanceof HTMLElement)) return [];
     return api.getTVFocusableElements().filter((element) =>
@@ -484,7 +511,11 @@ ${domDiscoveryRuntime}
       );
       next = findNextFocusTarget(currentRect, contentCandidates, direction);
 
-      if (!next && direction === 'up' && window.scrollY > 8) {
+      if (!next && direction === 'up' && !pageIsAtRealTop()) {
+        const heroPlay = getHeroPlay();
+        if (heroPlay) {
+          return focusWithoutJank(heroPlay);
+        }
         try {
           window.scrollTo({ top: 0, left: window.scrollX, behavior: 'auto' });
         } catch {
@@ -510,10 +541,29 @@ ${domDiscoveryRuntime}
   };
 
   const handleDpadKeydown = (event) => {
-    if (!api.shouldSpatialNavigationHandle(event)) return false;
-
     const direction = directions[event.key];
     if (!direction) return false;
+
+    const eventTarget = event.target;
+    if (
+      direction === 'down' &&
+      window.location.pathname === '/' &&
+      eventTarget instanceof HTMLElement &&
+      eventTarget.closest('header')
+    ) {
+      const heroPlay = getHeroPlay();
+      if (heroPlay) {
+        focusWithoutJank(heroPlay);
+        event.preventDefault();
+        event.stopPropagation();
+        if (typeof event.stopImmediatePropagation === 'function') {
+          event.stopImmediatePropagation();
+        }
+        return true;
+      }
+    }
+
+    if (!api.shouldSpatialNavigationHandle(event)) return false;
 
     // Once an arrow belongs to the TV spatial graph, consume it even when
     // the current element is already at that edge. Otherwise Chromium falls

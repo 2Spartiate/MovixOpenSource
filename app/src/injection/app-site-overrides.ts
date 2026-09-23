@@ -443,7 +443,17 @@ export function buildAppSiteOverrides(): string {
     const header = document.querySelector('header');
     if (!(header instanceof HTMLElement)) return;
 
-    const gated = window.scrollY > 8;
+    const documentScrollTop = Math.max(
+      Number(window.scrollY || 0),
+      Number(document.documentElement?.scrollTop || 0),
+      Number(document.body?.scrollTop || 0),
+    );
+    const hero = window.location.pathname === '/'
+      ? document.querySelector('[data-tv-hero-slider]')
+      : null;
+    const heroMovedUnderHeader =
+      hero instanceof HTMLElement && hero.getBoundingClientRect().top < 40;
+    const gated = documentScrollTop > 8 || heroMovedUnderHeader;
     const interactive = header.querySelectorAll(
       'a[href], button, input, select, textarea, [role="button"], [tabindex]'
     );

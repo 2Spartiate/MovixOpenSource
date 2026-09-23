@@ -148,7 +148,7 @@ test('runtime keeps horizontal movement inside the row and gates header until pa
   assert.match(runtime, /getAdjacentCardInRow/);
   assert.match(runtime, /horizontal && currentRow instanceof HTMLElement/);
   assert.match(runtime, /candidate => !isHeaderElement\(candidate\.element\)/);
-  assert.match(runtime, /window\.scrollY > 8/);
+  assert.match(runtime, /pageIsAtRealTop/);
   assert.match(runtime, /window\.scrollTo\(\{ top: 0/);
   assert.match(runtime, /findNextCardRowTarget/);
 });
@@ -167,4 +167,21 @@ test('Embla fallback clicks the live hidden arrow only when focused card reaches
   assert.match(runtime, /requestAnimationFrame\(\(\) => requestAnimationFrame\(nudgeIfNeeded\)\)/);
   assert.match(runtime, /direction === 'right' \? arrows\[arrows\.length - 1\] : arrows\[0\]/);
   assert.match(runtime, /arrow\.click\(\)/);
+});
+
+
+test('ArrowDown from any Home header control bypasses input editing and focuses hero Play', () => {
+  const runtime = buildTvDpadRuntime('(function () { return null; })', '/* dom discovery */');
+  assert.match(runtime, /direction === 'down'/);
+  assert.match(runtime, /eventTarget\.closest\('header'\)/);
+  assert.match(runtime, /const heroPlay = getHeroPlay\(\)/);
+  assert.match(runtime, /focusWithoutJank\(heroPlay\)/);
+});
+
+test('header gating detects internal scrolling from hero geometry, not only window.scrollY', () => {
+  const runtime = buildTvDpadRuntime('(function () { return null; })', '/* dom discovery */');
+  assert.match(runtime, /document\.documentElement\?\.scrollTop/);
+  assert.match(runtime, /document\.body\?\.scrollTop/);
+  assert.match(runtime, /hero\.getBoundingClientRect\(\)/);
+  assert.match(runtime, /rect\.top < 40/);
 });
