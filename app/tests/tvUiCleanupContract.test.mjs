@@ -114,3 +114,23 @@ test('TV posters keep the real React Router links focusable and never use proxy 
   assert.doesNotMatch(overrides, /data-tv-card-proxy/);
   assert.doesNotMatch(overrides, /__MOVIX_APP_CARD_ACTIVATION_READY/);
 });
+
+
+test('TV hero exposes only Play as the primary D-pad entry and ignores info/dots', async () => {
+  const overrides = await text('src/injection/app-site-overrides.ts');
+  assert.match(overrides, /const markTvHeroFocusPolicy = \(\) =>/);
+  assert.match(overrides, /data-tv-primary-focus', 'hero-play'/);
+  assert.match(overrides, /data-tv-autofocus/);
+  assert.match(overrides, /lucide-info/);
+  assert.match(overrides, /data-tv-hero-dot/);
+  assert.match(overrides, /element\.setAttribute\('data-tv-ignore-focus', ''\)/);
+});
+
+test('header controls are removed from the TV focus graph whenever page is below top', async () => {
+  const overrides = await text('src/injection/app-site-overrides.ts');
+  assert.match(overrides, /const syncTvHeaderFocusGate = \(\) =>/);
+  assert.match(overrides, /const gated = window\.scrollY > 8/);
+  assert.match(overrides, /data-tv-header-gated-focus/);
+  assert.match(overrides, /window\.addEventListener\('scroll', syncTvHeaderFocusGate/);
+  assert.match(overrides, /document\.activeElement\.closest\('header'\)/);
+});

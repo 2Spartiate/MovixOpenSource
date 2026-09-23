@@ -375,6 +375,109 @@ export function buildAppSiteOverrides(): string {
     });
   };
 
+  const markTvHeroFocusPolicy = () => {
+    if (window.MOVIX_TV !== true) return;
+    if (window.location.pathname !== '/') return;
+
+    const markedRoot = document.querySelector('[data-tv-hero-slider]');
+    const progressRoot = document.querySelector('.hero-progress-fill')?.closest('.embla');
+    const root =
+      markedRoot instanceof HTMLElement
+        ? markedRoot
+        : progressRoot instanceof HTMLElement
+          ? progressRoot
+          : null;
+    if (!(root instanceof HTMLElement)) return;
+
+    // One and only one TV entry point for the hero: the red Play CTA.
+    root.querySelectorAll('[data-tv-primary-focus], [data-tv-autofocus]').forEach((element) => {
+      if (!(element instanceof HTMLElement)) return;
+      element.removeAttribute('data-tv-primary-focus');
+      element.removeAttribute('data-tv-autofocus');
+    });
+
+    const playLink = Array.from(root.querySelectorAll('a[href]')).find((link) => (
+      link instanceof HTMLAnchorElement &&
+      Boolean(link.querySelector('svg.lucide-play, .lucide-play'))
+    ));
+    if (playLink instanceof HTMLElement) {
+      playLink.setAttribute('data-tv-primary-focus', 'hero-play');
+      playLink.setAttribute('data-tv-autofocus', '');
+      playLink.setAttribute('data-tv-focus-id', 'hero-play');
+      playLink.setAttribute('tabindex', '0');
+      playLink.removeAttribute('data-tv-ignore-focus');
+    }
+
+    // "More info" and slide dots remain clickable on handheld but are outside
+    // the TV D-pad graph. Autoplay can still click dots programmatically.
+    root.querySelectorAll('a, button').forEach((element) => {
+      if (!(element instanceof HTMLElement) || element === playLink) return;
+      const isInfo = Boolean(
+        element.querySelector('svg.lucide-info, .lucide-info')
+      );
+      const isDot =
+        element.hasAttribute('data-tv-hero-dot') ||
+        element.getAttribute('aria-current') === 'true' ||
+        normalise(element.getAttribute('aria-label')).includes('slide');
+
+      if (!isInfo && !isDot) return;
+      element.setAttribute('data-tv-ignore-focus', '');
+      element.setAttribute('tabindex', '-1');
+    });
+  };
+
+  const syncTvHeaderFocusGate = () => {
+    if (window.MOVIX_TV !== true) return;
+    const header = document.querySelector('header');
+    if (!(header instanceof HTMLElement)) return;
+
+    const gated = window.scrollY > 8;
+    const interactive = header.querySelectorAll(
+      'a[href], button, input, select, textarea, [role="button"], [tabindex]'
+    );
+
+    interactive.forEach((element) => {
+      if (!(element instanceof HTMLElement)) return;
+
+      if (gated) {
+        if (!element.hasAttribute('data-tv-header-gated-focus')) {
+          const previous = element.getAttribute('tabindex');
+          element.setAttribute('data-tv-header-gated-tabindex', previous === null ? '__none__' : previous);
+          element.setAttribute('data-tv-header-gated-focus', '');
+        }
+        element.setAttribute('data-tv-ignore-focus', '');
+        element.setAttribute('tabindex', '-1');
+        return;
+      }
+
+      if (!element.hasAttribute('data-tv-header-gated-focus')) return;
+      const previous = element.getAttribute('data-tv-header-gated-tabindex');
+      element.removeAttribute('data-tv-header-gated-focus');
+      element.removeAttribute('data-tv-header-gated-tabindex');
+
+      if (
+        !element.hasAttribute('data-movix-brand-inert') &&
+        !element.hasAttribute('data-tv-header-telegram')
+      ) {
+        element.removeAttribute('data-tv-ignore-focus');
+      }
+
+      if (previous === '__none__' || previous === null) {
+        element.removeAttribute('tabindex');
+      } else {
+        element.setAttribute('tabindex', previous);
+      }
+    });
+
+    if (gated && document.activeElement instanceof HTMLElement && document.activeElement.closest('header')) {
+      document.activeElement.blur();
+      const api = window.__MOVIX_TV_FOCUS;
+      if (api && typeof api.ensureInitialFocus === 'function') {
+        requestAnimationFrame(() => api.ensureInitialFocus());
+      }
+    }
+  };
+
   const removeFooter = () => {
     if (window.MOVIX_TV !== true) return;
     document.querySelectorAll('footer').forEach((footer) => hideManagedNode(footer));
@@ -543,6 +646,8 @@ export function buildAppSiteOverrides(): string {
 
     // Product behavior below is TV-only.
     makeMovixBrandInert();
+    markTvHeroFocusPolicy();
+    syncTvHeaderFocusGate();
     removeFooter();
     removeCarouselArrows();
     removeFavoriteControls();
@@ -563,6 +668,10 @@ export function buildAppSiteOverrides(): string {
   const start = () => {
     patchHistory();
     apply();
+    if (!window.__MOVIX_TV_HEADER_GATE_READY) {
+      window.__MOVIX_TV_HEADER_GATE_READY = true;
+      window.addEventListener('scroll', syncTvHeaderFocusGate, { passive: true });
+    }
     if (typeof MutationObserver === 'function' && document.documentElement) {
       const observer = new MutationObserver(scheduleApply);
       observer.observe(document.documentElement, {

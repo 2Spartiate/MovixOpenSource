@@ -152,3 +152,19 @@ test('runtime keeps horizontal movement inside the row and gates header until pa
   assert.match(runtime, /window\.scrollTo\(\{ top: 0/);
   assert.match(runtime, /findNextCardRowTarget/);
 });
+
+
+test('empty page focus enters the explicit primary hero CTA before cards/header', () => {
+  const runtime = buildTvDpadRuntime('(function () { return null; })', '/* dom discovery */');
+  assert.match(runtime, /const primary = elements\.find\(element => element\.hasAttribute\('data-tv-primary-focus'\)\)/);
+  assert.match(runtime, /data-tv-autofocus[\s\S]{0,180}primary[\s\S]{0,180}contentCard/);
+  assert.match(runtime, /if \(pageFocusIsEmpty\(\)\) \{\s*return api\.ensureInitialFocus\(\)/);
+});
+
+test('Embla fallback clicks the live hidden arrow only when focused card reaches the viewport edge', () => {
+  const runtime = buildTvDpadRuntime('(function () { return null; })', '/* dom discovery */');
+  assert.match(runtime, /button\[data-tv-carousel-arrow\]/);
+  assert.match(runtime, /requestAnimationFrame\(\(\) => requestAnimationFrame\(nudgeIfNeeded\)\)/);
+  assert.match(runtime, /direction === 'right' \? arrows\[arrows\.length - 1\] : arrows\[0\]/);
+  assert.match(runtime, /arrow\.click\(\)/);
+});

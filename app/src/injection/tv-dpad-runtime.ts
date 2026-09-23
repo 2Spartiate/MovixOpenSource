@@ -253,7 +253,7 @@ ${domDiscoveryRuntime}
     return true;
   };
 
-  const centerCarouselTarget = (element, row) => {
+  const centerCarouselTarget = (element, row, direction) => {
     if (!(element instanceof HTMLElement) || !(row instanceof HTMLElement)) {
       return false;
     }
@@ -287,25 +287,41 @@ ${domDiscoveryRuntime}
       scroller = scroller.parentElement;
     }
 
-    // Embla often moves slides with transforms instead of scrollLeft. Let the
-    // browser reveal the focused slide as a fallback, then restore the page
-    // coordinates so only the carousel can move.
+    // Embla translates its track instead of changing scrollLeft. Give the
+    // focused card's React onFocus a frame to call emblaApi.scrollTo(index).
+    // If the card is still at/outside the viewport edge, invoke Embla's real
+    // hidden arrow control programmatically. The button stays in React's tree
+    // (only visually hidden on TV), so this reaches the live carousel API.
     const pageX = window.scrollX;
     const pageY = window.scrollY;
-    try {
-      element.scrollIntoView({
-        behavior: 'auto',
-        block: 'nearest',
-        inline: 'center',
-      });
-    } catch {
-      element.scrollIntoView();
-    }
-    try {
-      window.scrollTo({ left: pageX, top: pageY, behavior: 'auto' });
-    } catch {
-      window.scrollTo(pageX, pageY);
-    }
+    const nudgeIfNeeded = () => {
+      if (!(element instanceof HTMLElement) || !element.isConnected) return;
+      const rect = element.getBoundingClientRect();
+      const rowRect = row.getBoundingClientRect();
+      const left = Math.max(0, rowRect.left);
+      const right = Math.min(window.innerWidth, rowRect.right);
+      const edge = Math.min(120, Math.max(48, rect.width * 0.45));
+      const needsNudge =
+        (direction === 'right' && rect.right >= right - edge) ||
+        (direction === 'left' && rect.left <= left + edge);
+
+      if (needsNudge) {
+        const arrows = Array.from(row.querySelectorAll('button[data-tv-carousel-arrow]'))
+          .filter((button) => button instanceof HTMLButtonElement);
+        const arrow = direction === 'right' ? arrows[arrows.length - 1] : arrows[0];
+        if (arrow instanceof HTMLButtonElement) {
+          try { arrow.click(); } catch {}
+        }
+      }
+
+      try {
+        window.scrollTo({ left: pageX, top: pageY, behavior: 'auto' });
+      } catch {
+        window.scrollTo(pageX, pageY);
+      }
+    };
+
+    requestAnimationFrame(() => requestAnimationFrame(nudgeIfNeeded));
     return true;
   };
 
@@ -316,7 +332,7 @@ ${domDiscoveryRuntime}
     const carouselRow = element.closest('[data-tv-carousel-row]');
 
     if (horizontalMove && carouselRow instanceof HTMLElement) {
-      return centerCarouselTarget(element, carouselRow);
+      return centerCarouselTarget(element, carouselRow, direction);
     }
 
     if (direction === 'up' || direction === 'down') {
@@ -367,6 +383,7 @@ ${domDiscoveryRuntime}
     if (api.restoreLastFocus()) return true;
 
     const elements = api.getTVFocusableElements();
+    const primary = elements.find(element => element.hasAttribute('data-tv-primary-focus'));
     const contentCard = elements.find(element => element.hasAttribute('data-tv-card'));
 
     if (api.preferContentAfterNavigation) {
@@ -385,14 +402,18 @@ ${domDiscoveryRuntime}
 
     const target =
       elements.find(element => element.hasAttribute('data-tv-autofocus')) ||
+      primary ||
       contentCard ||
-      elements.find(element => element.hasAttribute('data-tv-primary-focus')) ||
       elements[0];
 
     return target ? focusWithoutJank(target) : false;
   };
 
   api.moveFocus = (direction) => {
+    if (pageFocusIsEmpty()) {
+      return api.ensureInitialFocus();
+    }
+
     const current = document.activeElement;
     if (!(current instanceof HTMLElement)) return false;
 
