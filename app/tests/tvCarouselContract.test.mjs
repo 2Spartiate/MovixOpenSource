@@ -5,47 +5,88 @@ import test from 'node:test';
 const root = new URL('../', import.meta.url);
 const text = path => readFile(new URL(path, root), 'utf8');
 
-test('Embla carousel exposes cards as primary TV targets', async () => {
+test('main Embla carousel exposes TV cards while retaining handheld arrow/favorite source controls', async () => {
   const source = await text('../src/components/EmblaCarousel.tsx');
   assert.match(source, /data-tv-focus-group="carousel-row"/);
   assert.match(source, /to=\{detailPath\}[\s\S]{0,140}data-tv-focus[\s\S]{0,100}data-tv-card/);
-  assert.match(source, /data-tv-ignore-focus[\s\S]{0,100}data-tv-favorite-overlay/);
-  assert.match(source, /data-tv-ignore-focus[\s\S]{0,100}data-tv-carousel-arrow/);
+  assert.match(source, /data-tv-favorite-overlay/);
+  assert.match(source, /const handleTVCardFocus = useCallback/);
+  assert.match(source, /emblaApi\.scrollTo\(index/);
+  assert.match(source, /data-tv-carousel-arrow/);
+  assert.match(source, /<ChevronLeft/);
 });
 
-test('legacy ContentRow keeps arrows outside TV focus and cards inside it', async () => {
+test('legacy ContentRow keeps TV cards and preserves source arrow buttons for handheld', async () => {
   const source = await text('../src/components/ContentRow.tsx');
   assert.match(source, /data-tv-focus-group="carousel-row"/);
-  assert.match(source, /data-tv-carousel-arrow/);
   assert.match(source, /data-tv-card/);
+  assert.match(source, /data-tv-carousel-arrow/);
+  assert.match(source, /ChevronLeft|ChevronRight/);
 });
 
-test('search cards make the card primary and favorites secondary on TV', async () => {
+for (const [name, path] of [
+  ['genres', '../src/components/EmblaCarouselGenres.tsx'],
+  ['platforms', '../src/components/EmblaCarouselPlatforms.tsx'],
+]) {
+  test(`${name} carousel follows focused TV cards while keeping handheld arrows in source`, async () => {
+    const source = await text(path);
+    assert.match(source, /data-tv-carousel-row/);
+    assert.match(source, /data-tv-focus/);
+    assert.match(source, /data-tv-card/);
+    assert.match(source, /const handleTVFocus = useCallback/);
+    assert.match(source, /emblaApi\.scrollTo\(index/);
+    assert.match(source, /data-tv-carousel-arrow/);
+    assert.match(source, /ChevronLeft/);
+  });
+}
+
+test('search cards keep handheld favorite controls while exposing the card to TV', async () => {
   const source = await text('../src/components/SearchCard.tsx');
   assert.match(source, /data-tv-card/);
   assert.match(source, /data-tv-favorite-overlay/);
+  assert.match(source, /watchlistCache/);
+  assert.match(source, /addToWatchlist/);
 });
 
-test('TV-only bootstrap hides redundant carousel arrows and favorite overlays', async () => {
+test('TV bootstrap hides scrollbars and redundant TV chrome with MOVIX red focus', async () => {
   const source = await text('src/injection/tv-bootstrap.ts');
-  assert.match(source, /\.movix-tv \[data-tv-carousel-arrow\]/);
-  assert.match(source, /\.movix-tv \[data-tv-favorite-overlay\]/);
+  assert.match(source, /scrollbar-width: none !important/);
+  assert.match(source, /::-webkit-scrollbar/);
+  assert.match(source, /outline: 3px solid #dc2626 !important/);
+  assert.match(source, /data-tv-carousel-arrow/);
+  assert.match(source, /data-tv-favorite-overlay/);
+  assert.match(source, /data-tv-header-telegram/);
   assert.match(source, /display: none !important/);
+  assert.match(source, /--hero-duration: 10000ms !important/);
 });
 
-
-test('Embla follows focused TV cards through its own scroll API', async () => {
-  const source = await text('../src/components/EmblaCarousel.tsx');
-  assert.match(source, /onFocus=\{\(\) => onTVFocus\?\.\(index\)\}/);
-  assert.match(source, /const handleTVCardFocus = useCallback/);
-  assert.match(source, /MOVIX_TV/);
-  assert.match(source, /emblaApi\.scrollTo\(index/);
-  assert.match(source, /onTVFocus=\{handleTVCardFocus\}/);
-});
-
-test('spatial runtime centers horizontal carousel targets', async () => {
+test('spatial runtime centers vertical focus and confines horizontal centering to the active carousel', async () => {
   const source = await text('src/injection/tv-dpad-runtime.ts');
+  assert.match(source, /centerVerticalTarget/);
+  assert.match(source, /centerCarouselTarget/);
   assert.match(source, /horizontalMove = direction === 'left' \|\| direction === 'right'/);
   assert.match(source, /closest\('\[data-tv-carousel-row\]'\)/);
-  assert.match(source, /inline: horizontalMove && carouselRow \? 'center' : 'nearest'/);
+  assert.match(source, /window\.innerHeight \/ 2/);
+  assert.match(source, /window\.scrollTo\(\{ left: pageX, top: pageY, behavior: 'auto' \}\)/);
+});
+
+test('TV hero keeps handheld timing intact but advances animated slides every ten seconds', async () => {
+  const source = await text('../src/components/HeroSlider.tsx');
+  assert.match(source, /const AUTO_SLIDE_MS = 6000/);
+  assert.match(source, /const TV_AUTO_SLIDE_MS = 10000/);
+  assert.match(source, /\(window as any\)\.MOVIX_TV === true/);
+  assert.match(source, /autoSlideMs = isTvRuntime \? TV_AUTO_SLIDE_MS : AUTO_SLIDE_MS/);
+  assert.match(source, /scrollNext\(isTvRuntime \? false : !effectivePrefs\.transitions\)/);
+  assert.match(source, /data-tv-hero-slider=\{isTvRuntime \? '' : undefined\}/);
+  assert.match(source, /data-tv-hero-dot=\{isTvRuntime \? '' : undefined\}/);
+});
+
+test('live WebView TV override owns the ten-second hero cycle only under MOVIX_TV', async () => {
+  const source = await text('src/injection/app-site-overrides.ts');
+  assert.match(source, /const installTvHeroAutoplay = \(\) =>/);
+  assert.match(source, /window\.MOVIX_TV !== true/);
+  assert.match(source, /window\.__MOVIX_TV_HERO_AUTOPLAY/);
+  assert.match(source, /lucide-pause/);
+  assert.match(source, /button\[aria-current="true"\]/);
+  assert.match(source, /schedule\(10000\)/);
 });

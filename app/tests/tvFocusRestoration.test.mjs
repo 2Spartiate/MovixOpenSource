@@ -7,13 +7,18 @@ const text = path => readFile(new URL(path, root), 'utf8');
 
 test('initial TV focus uses explicit priority order', async () => {
   const source = await text('src/injection/tv-dpad-runtime.ts');
-  const auto = source.indexOf("hasAttribute('data-tv-autofocus')");
-  const primary = source.indexOf("hasAttribute('data-tv-primary-focus')");
-  const card = source.indexOf("hasAttribute('data-tv-card')");
-  assert.ok(auto >= 0);
-  assert.ok(primary > auto);
-  assert.ok(card > primary);
-  assert.match(source, /elements\[0\]/);
+
+  assert.match(
+    source,
+    /const target =\s*elements\.find\(element => element\.hasAttribute\('data-tv-autofocus'\)\) \|\|\s*contentCard \|\|\s*elements\.find\(element => element\.hasAttribute\('data-tv-primary-focus'\)\) \|\|\s*elements\[0\];/,
+  );
+});
+
+test('initial TV focus waits briefly for media content instead of stealing focus to search', async () => {
+  const source = await text('src/injection/tv-dpad-runtime.ts');
+  assert.match(source, /preferContentAfterNavigation = true/);
+  assert.match(source, /performance\.now\(\) \+ 5000/);
+  assert.match(source, /scheduleFocusRecovery\(\)/);
 });
 
 test('initial focus never replaces an already meaningful active element', async () => {
@@ -36,14 +41,24 @@ test('focus memory uses stable identifiers and hrefs for SPA restoration', async
 test('mutation recovery is guarded and only scans when focus is lost', async () => {
   const source = await text('src/injection/tv-dpad-runtime.ts');
   assert.match(source, /new MutationObserver\(scheduleFocusRecovery\)/);
-  assert.match(source, /if \(!pageFocusIsEmpty\(\) \|\| api\.focusRecoveryRaf\) return/);
+  assert.match(source, /api\.focusRecoveryRaf \|\| api\.focusRecoveryTimer/);
   assert.match(source, /requestAnimationFrame/);
   assert.match(source, /api\.focusObserver\.disconnect\(\)/);
+});
+
+test('SPA route recovery waits for content cards before falling back to header search', async () => {
+  const source = await text('src/injection/tv-dpad-runtime.ts');
+  assert.match(source, /preferContentAfterNavigation/);
+  assert.match(source, /navigationInProgressUntil/);
+  assert.match(source, /const contentCard = elements\.find/);
+  assert.match(source, /return focusWithoutJank\(contentCard\)/);
+  assert.match(source, /api\.focusRecoveryTimer = setTimeout/);
 });
 
 test('focus lifecycle listeners are replaceable and cleanable', async () => {
   const source = await text('src/injection/tv-dpad-runtime.ts');
   assert.match(source, /removeEventListener\('focusin', api\.focusinHandler, true\)/);
   assert.match(source, /addEventListener\('focusin', handleFocusIn, true\)/);
+  assert.match(source, /focusRecoveryTimer/);
   assert.match(source, /destroyDpadRuntime/);
 });

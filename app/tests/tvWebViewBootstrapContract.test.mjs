@@ -17,49 +17,49 @@ async function importTypeScript(relativePath) {
   return import(`data:text/javascript;base64,${Buffer.from(outputText).toString('base64')}`);
 }
 
-test('TV bootstrap is idempotent and only establishes the TV contract', async () => {
-  const { buildTvBootstrap } = await importTypeScript(
-    'src/injection/tv-bootstrap.ts',
-  );
+test('TV bootstrap is idempotent and establishes TV-only visual/navigation chrome', async () => {
+  const { buildTvBootstrap } = await importTypeScript('src/injection/tv-bootstrap.ts');
   const script = buildTvBootstrap();
 
   assert.match(script, /MOVIX_TV\s*=\s*true/);
   assert.match(script, /classList\.add\('movix-tv'\)/);
   assert.match(script, /__MOVIX_TV_BOOTSTRAP_READY/);
-  assert.match(script, /movix-tv-bootstrap-style/);
-  assert.match(script, /:focus-visible/);
-  assert.match(script, /\.movix-tv \[data-tv-header-telegram\]/);
-  assert.match(script, /display:\s*none\s*!important/);
+  assert.match(script, /scrollbar-width: none !important/);
+  assert.match(script, /::-webkit-scrollbar/);
+  assert.match(script, /outline: 3px solid #dc2626 !important/);
+  assert.match(script, /data-tv-carousel-arrow/);
+  assert.match(script, /data-tv-favorite-overlay/);
+  assert.match(script, /data-tv-header-telegram/);
+  assert.match(script, /--hero-duration: 10000ms !important/);
   assert.match(script, /DOMContentLoaded/);
-
   assert.doesNotMatch(script, /MutationObserver|ArrowLeft|ArrowRight|ArrowUp|ArrowDown|scrollIntoView/);
 });
 
-test('injection enables the TV bootstrap only when tvMode is true', async () => {
+test('TV bootstrap and spatial D-pad are injected only behind tvMode', async () => {
   const inject = await text('src/injection/inject.ts');
 
   assert.match(inject, /tvMode\?: boolean/);
   assert.match(inject, /options\.tvMode \? buildTvBootstrap\(\) : ''/);
+  assert.match(inject, /const tvDpadRuntime = options\.tvMode/);
+  assert.match(inject, /buildTvDpadRuntime/);
+  assert.match(inject, /buildTvDomDiscoveryRuntime/);
   assert.match(inject, /\$\{tvBootstrap\}/);
+  assert.match(inject, /\$\{tvDpadRuntime\}/);
+  assert.doesNotMatch(inject, /tvDpadEnabled/);
 });
 
-test('hardware isolation build keeps TV bootstrap but disables D-pad injection', async () => {
-  const [inject, webView] = await Promise.all([
-    text('src/injection/inject.ts'),
-    text('src/components/WebViewBrowser.tsx'),
-  ]);
+test('TV marker precedes shared live-site overrides and D-pad runtime follows the bridge', async () => {
+  const inject = await text('src/injection/inject.ts');
 
-  assert.match(inject, /tvDpadEnabled\?: boolean/);
-  assert.match(inject, /options\.tvMode && options\.tvDpadEnabled !== false/);
-  assert.match(webView, /const TV_DPAD_ENABLED = false;/);
-  assert.match(
-    webView,
-    /tvDpadEnabled: isTV \? TV_DPAD_ENABLED : false/,
-  );
-  assert.match(
-    webView,
-    /isTV && TV_DPAD_ENABLED \? 'dpad' : 'no-dpad'/,
-  );
+  const bootstrapIndex = inject.indexOf('${tvBootstrap}');
+  const overridesIndex = inject.indexOf('${appSiteOverrides}');
+  const bridgeIndex = inject.indexOf('${bridge}');
+  const dpadIndex = inject.indexOf('${tvDpadRuntime}');
+
+  assert.ok(bootstrapIndex >= 0);
+  assert.ok(overridesIndex > bootstrapIndex);
+  assert.ok(bridgeIndex > overridesIndex);
+  assert.ok(dpadIndex > bridgeIndex);
 });
 
 test('WebView injection cache is partitioned by journal and TV runtime', async () => {
@@ -73,25 +73,19 @@ test('WebView injection cache is partitioned by journal and TV runtime', async (
   assert.match(webView, /injectedJavaScriptBeforeContentLoadedForMainFrameOnly=\{true\}/);
 });
 
+test('browser chrome remains available on handheld but is suppressed on TV', async () => {
+  const browser = await text('src/screens/BrowserScreen.tsx');
 
-test('embedded URL bar stays hidden on TV, phones and tablets', async () => {
-  const browserScreen = await text('src/screens/BrowserScreen.tsx');
-
-  assert.match(
-    browserScreen,
-    /const effectiveShowUrlBar = false;/,
-  );
-  assert.match(
-    browserScreen,
-    /const toolbarHidden = !effectiveShowUrlBar && !uiPrefs\.showNavBar/,
-  );
-  assert.match(browserScreen, /showUrlBar=\{effectiveShowUrlBar\}/);
-  assert.match(browserScreen, /showNavBar=\{uiPrefs\.showNavBar\}/);
-  assert.doesNotMatch(browserScreen, /isTV \? false : uiPrefs\.showUrlBar/);
+  assert.match(browser, /import BrowserToolbar/);
+  assert.match(browser, /import IOSBrowserToolbar/);
+  assert.match(browser, /useBrowserUIPrefs/);
+  assert.match(browser, /!isPictureInPictureActive && !isTV && !toolbarHidden/);
+  assert.match(browser, /showUrlBar=\{uiPrefs\.showUrlBar\}/);
+  assert.match(browser, /showNavBar=\{uiPrefs\.showNavBar\}/);
+  assert.match(browser, /!isPictureInPictureActive && !isTV && navBarHidden/);
 });
 
-
-test('app blocks popup windows on every runtime before and after page scripts', async () => {
+test('app blocks popup windows before page scripts and at the native WebView boundary', async () => {
   const [inject, webView] = await Promise.all([
     text('src/injection/inject.ts'),
     text('src/components/WebViewBrowser.tsx'),
@@ -101,9 +95,8 @@ test('app blocks popup windows on every runtime before and after page scripts', 
   assert.match(inject, /const blockedOpen = \(\) => null/);
   assert.match(inject, /writable:\s*false/);
   assert.match(inject, /configurable:\s*false/);
-
-  assert.match(webView, /const onOpenWindow = useCallback\(\(_event: WebViewOpenWindowEvent\) => \{/);
+  assert.match(webView, /const onOpenWindow = useCallback\(\(_event: WebViewOpenWindowEvent\)/);
   assert.match(webView, /setSupportMultipleWindows=\{true\}/);
   assert.match(webView, /javaScriptCanOpenWindowsAutomatically=\{false\}/);
-  assert.doesNotMatch(webView, /Linking\.openURL/);
+  assert.doesNotMatch(webView, /Linking\.openURL|isSameOrigin/);
 });
