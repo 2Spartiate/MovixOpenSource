@@ -19,6 +19,7 @@ import NotFound from './pages/NotFound';
 // ont été supprimés — VideoJS/VideoJSPlayer ne sont montés nulle part et ces composants
 // importent déjà leur propre CSS s'ils sont réactivés un jour.
 import axios from 'axios';
+import Footer from './components/Footer';
 import { AlertService } from './services/alertService';
 import NotificationToast from './components/NotificationToast';
 import { NotificationData } from './types/alerts';
@@ -1762,6 +1763,7 @@ const AppWithIntro: React.FC = () => {
   const isWrappedRoute = currentPath === '/wrapped' || currentPath.startsWith('/wrapped/');
   const shouldShowHeader = !isWatchRoute && !isWrappedRoute;
   const isAprilFoolsAdminRouteEnabled = isAprilFoolsAdminEnabled(location.search);
+  const isNoFooterPage = isWatchRoute;
 
   // Le plein écran du lecteur est porté par le conteneur racine de l'app (voir
   // `PLAYER_FULLSCREEN_HOST_ID`), pour qu'il survive au remontage du lecteur
@@ -1772,6 +1774,22 @@ const AppWithIntro: React.FC = () => {
     if (isWatchRoute) return;
     releaseHostFullscreen();
   }, [isWatchRoute]);
+
+  React.useEffect(() => {
+    // Masquer le footer uniquement sur les routes lecteur
+    const footer = document.querySelector('footer');
+    if (footer) {
+      if (isNoFooterPage) {
+        footer.style.display = 'none';
+      } else {
+        footer.style.display = '';
+      }
+    }
+    // Nettoyage au démontage
+    return () => {
+      if (footer) footer.style.display = '';
+    };
+  }, [isNoFooterPage]);
 
   // Apply profile page styles
   React.useEffect(() => {
@@ -1884,6 +1902,7 @@ const AppWithIntro: React.FC = () => {
             <Route path="*" element={<NotFound />} />
           </Routes>
         </ProfileGate>
+        {!isWatchRoute && <Footer />}
       </div>
 
       {/* Redirect Popup */}
