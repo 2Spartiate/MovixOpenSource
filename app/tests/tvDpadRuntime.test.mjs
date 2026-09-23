@@ -19,6 +19,7 @@ async function importTypeScript(relativePath) {
 
 const {
   shouldSpatialNavigationHandleSnapshot,
+  findNextCardRowTarget,
   buildTvDpadRuntime,
 } = await importTypeScript('src/injection/tv-dpad-runtime.ts');
 
@@ -94,4 +95,58 @@ test('TV D-pad runtime is injected only behind tvMode', async () => {
   assert.match(inject, /buildTvDomDiscoveryRuntime/);
   assert.match(inject, /findNextFocusTarget\.toString\(\)/);
   assert.match(inject, /\$\{tvDpadRuntime\}/);
+});
+
+
+const rowRect = (left, top, width = 900, height = 180) => ({
+  left, top, right: left + width, bottom: top + height, width, height,
+  centerX: left + width / 2, centerY: top + height / 2,
+});
+const cardRect = (left, top, width = 120, height = 170) => ({
+  left, top, right: left + width, bottom: top + height, width, height,
+  centerX: left + width / 2, centerY: top + height / 2,
+});
+
+test('vertical poster navigation chooses the nearest row before horizontal alignment', () => {
+  const currentRow = {};
+  const rowAbove = {};
+  const farRowAbove = {};
+  const current = cardRect(700, 500);
+
+  const picked = findNextCardRowTarget(
+    current,
+    currentRow,
+    rowRect(0, 480),
+    [
+      { value: 'near-row-left', rect: cardRect(80, 280), rowKey: rowAbove, rowRect: rowRect(0, 260) },
+      { value: 'far-row-aligned', rect: cardRect(700, 80), rowKey: farRowAbove, rowRect: rowRect(0, 60) },
+    ],
+    'up',
+  );
+
+  assert.equal(picked?.value, 'near-row-left');
+});
+
+test('within the chosen row the horizontally closest poster wins', () => {
+  const currentRow = {};
+  const rowAbove = {};
+  const picked = findNextCardRowTarget(
+    cardRect(500, 500),
+    currentRow,
+    rowRect(0, 480),
+    [
+      { value: 'left', rect: cardRect(80, 280), rowKey: rowAbove, rowRect: rowRect(0, 260) },
+      { value: 'closest', rect: cardRect(540, 280), rowKey: rowAbove, rowRect: rowRect(0, 260) },
+    ],
+    'up',
+  );
+  assert.equal(picked?.value, 'closest');
+});
+
+test('runtime suppresses header candidates until no poster row remains above', () => {
+  const runtime = buildTvDpadRuntime('(function () { return null; })', '/* dom discovery */');
+  assert.match(runtime, /current\.hasAttribute\('data-tv-card'\)/);
+  assert.match(runtime, /candidate\.element\.hasAttribute\('data-tv-card'\)/);
+  assert.match(runtime, /findNextCardRowTarget/);
+  assert.match(runtime, /if \(!next\) \{\s*next = findNextFocusTarget/);
 });

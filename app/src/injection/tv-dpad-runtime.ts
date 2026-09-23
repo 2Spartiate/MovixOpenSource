@@ -6,6 +6,85 @@ export interface TVArrowTargetSnapshot {
   role?: string | null;
 }
 
+export interface TVCardRowSnapshot<T = unknown> {
+  value: T;
+  rect: {
+    left: number;
+    top: number;
+    right: number;
+    bottom: number;
+    width: number;
+    height: number;
+    centerX?: number;
+    centerY?: number;
+  };
+  rowKey: unknown;
+  rowRect: {
+    left: number;
+    top: number;
+    right: number;
+    bottom: number;
+    width: number;
+    height: number;
+    centerX?: number;
+    centerY?: number;
+  };
+}
+
+/**
+ * Vertical TV navigation is row-first for poster cards.
+ * The nearest row in the requested direction wins regardless of horizontal
+ * alignment; only then do we choose the closest card within that row.
+ */
+export function findNextCardRowTarget<T>(
+  currentRect: TVCardRowSnapshot<T>['rect'],
+  currentRowKey: unknown,
+  currentRowRect: TVCardRowSnapshot<T>['rowRect'],
+  candidates: readonly TVCardRowSnapshot<T>[],
+  direction: 'up' | 'down',
+): TVCardRowSnapshot<T> | null {
+  const centerX = (rect: TVCardRowSnapshot<T>['rect']) =>
+    Number.isFinite(rect.centerX) ? rect.centerX! : rect.left + rect.width / 2;
+  const centerY = (rect: TVCardRowSnapshot<T>['rowRect']) =>
+    Number.isFinite(rect.centerY) ? rect.centerY! : rect.top + rect.height / 2;
+
+  const originX = centerX(currentRect);
+  const originRowY = centerY(currentRowRect);
+  const sign = direction === 'down' ? 1 : -1;
+  const rows = new Map<unknown, { delta: number; items: TVCardRowSnapshot<T>[] }>();
+
+  candidates.forEach((candidate) => {
+    if (candidate.rowKey === currentRowKey) return;
+    const delta = (centerY(candidate.rowRect) - originRowY) * sign;
+    if (!Number.isFinite(delta) || delta <= 0.5) return;
+
+    const existing = rows.get(candidate.rowKey);
+    if (existing) {
+      existing.items.push(candidate);
+      if (delta < existing.delta) existing.delta = delta;
+    } else {
+      rows.set(candidate.rowKey, { delta, items: [candidate] });
+    }
+  });
+
+  const nearestRow = Array.from(rows.values())
+    .sort((a, b) => a.delta - b.delta)[0];
+  if (!nearestRow) return null;
+
+  return nearestRow.items
+    .map((candidate, index) => ({
+      candidate,
+      index,
+      horizontalDistance: Math.abs(centerX(candidate.rect) - originX),
+      left: candidate.rect.left,
+    }))
+    .sort((a, b) =>
+      a.horizontalDistance - b.horizontalDistance ||
+      a.left - b.left ||
+      a.index - b.index
+    )[0]?.candidate ?? null;
+}
+
 /**
  * Browser-independent mirror of the "do not steal arrows from editing/native
  * controls" policy used by the injected runtime.
@@ -37,6 +116,7 @@ ${domDiscoveryRuntime}
 (() => {
   const api = window.__MOVIX_TV_FOCUS || (window.__MOVIX_TV_FOCUS = {});
   const findNextFocusTarget = ${engineSource};
+  const findNextCardRowTarget = ${findNextCardRowTarget.toString()};
   const directions = {
     ArrowLeft: 'left',
     ArrowRight: 'right',
@@ -301,7 +381,50 @@ ${domDiscoveryRuntime}
     // immediately eligible without maintaining a mutation-driven cache.
     const candidates = api.getTVFocusCandidates()
       .filter(candidate => candidate.element !== current);
-    const next = findNextFocusTarget(toRect(current), candidates, direction);
+
+    // Poster navigation is row-first vertically. While another media row
+    // exists above/below, header controls are not eligible at all. This avoids
+    // diagonal jumps to Search/Account and makes ↑/↓ advance through rows even
+    // when the posters are horizontally staggered.
+    let next = null;
+    if (
+      current.hasAttribute('data-tv-card') &&
+      (direction === 'up' || direction === 'down')
+    ) {
+      const currentRow = current.closest('[data-tv-carousel-row]');
+      if (currentRow instanceof HTMLElement) {
+        const cardCandidates = candidates
+          .filter(candidate =>
+            candidate.element instanceof HTMLElement &&
+            candidate.element.hasAttribute('data-tv-card')
+          )
+          .map(candidate => {
+            const row = candidate.element.closest('[data-tv-carousel-row]');
+            if (!(row instanceof HTMLElement)) return null;
+            return {
+              ...candidate,
+              rowKey: row,
+              rowRect: toRect(row),
+            };
+          })
+          .filter(Boolean);
+
+        next = findNextCardRowTarget(
+          toRect(current),
+          currentRow,
+          toRect(currentRow),
+          cardCandidates,
+          direction,
+        );
+      }
+    }
+
+    // Only when there is no poster row left in that direction do we fall back
+    // to the global spatial graph. At the top row this naturally re-enables
+    // header controls.
+    if (!next) {
+      next = findNextFocusTarget(toRect(current), candidates, direction);
+    }
     if (!next || !(next.element instanceof HTMLElement)) return false;
 
     try {
