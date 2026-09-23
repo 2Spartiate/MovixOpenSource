@@ -101,6 +101,10 @@ const EmblaCarouselPlatforms: React.FC<EmblaCarouselPlatformsProps> = ({ title, 
         // snap range instead of passing an out-of-range card index.
         const maxCardIndex = Math.max(items.length - 1, 1);
         const maxSnapIndex = Math.max(snaps.length - 1, 0);
+        if (index <= maxSnapIndex) {
+          emblaApi.scrollTo(index, false);
+          return;
+        }
         const target = Math.round((index / maxCardIndex) * maxSnapIndex);
         emblaApi.scrollTo(Math.min(maxSnapIndex, Math.max(0, target)), false);
       } catch {

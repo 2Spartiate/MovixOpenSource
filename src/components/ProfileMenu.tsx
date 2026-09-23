@@ -164,6 +164,7 @@ const ProfileMenu: React.FC = () => {
       {/* Desktop profile button */}
       <motion.button
         type="button"
+        data-tv-primary-focus="account"
         aria-haspopup="menu"
         aria-expanded={isOpen}
         whileHover={{ scale: 1.05 }}

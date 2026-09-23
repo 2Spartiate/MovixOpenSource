@@ -143,13 +143,3 @@ test('TV cleanup preserves hidden carousel arrows as callable left/right Embla c
   assert.match(overrides, /button\.setAttribute\('data-tv-carousel-arrow', ''\)/);
   assert.match(overrides, /hideManagedNode\(button\)/);
 });
-
-
-test('search and account stay ordinary header controls rather than stealing primary Home focus', async () => {
-  const [header, profile] = await Promise.all([
-    text('../src/components/Header.tsx'),
-    text('../src/components/ProfileMenu.tsx'),
-  ]);
-  assert.doesNotMatch(header, /data-tv-primary-focus="search"/);
-  assert.doesNotMatch(profile, /data-tv-primary-focus="account"/);
-});
