@@ -9,17 +9,19 @@ test('main Embla carousel exposes focus-driven cards with no arrow chrome', asyn
   const source = await text('../src/components/EmblaCarousel.tsx');
   assert.match(source, /data-tv-focus-group="carousel-row"/);
   assert.match(source, /to=\{detailPath\}[\s\S]{0,140}data-tv-focus[\s\S]{0,100}data-tv-card/);
-  assert.doesNotMatch(source, /data-tv-favorite-overlay/);
+  assert.match(source, /data-tv-favorite-overlay/);
   assert.match(source, /const handleTVCardFocus = useCallback/);
   assert.match(source, /emblaApi\.scrollTo\(index/);
-  assert.doesNotMatch(source, /data-tv-carousel-arrow|<ChevronLeft/);
+  assert.match(source, /data-tv-ignore-focus[\s\S]{0,120}data-tv-carousel-arrow/);
+  assert.match(source, /<ChevronLeft/);
 });
 
 test('legacy ContentRow keeps cards in the TV graph and removes arrow buttons', async () => {
   const source = await text('../src/components/ContentRow.tsx');
   assert.match(source, /data-tv-focus-group="carousel-row"/);
   assert.match(source, /data-tv-card/);
-  assert.doesNotMatch(source, /data-tv-carousel-arrow|ChevronLeft|ChevronRight/);
+  assert.match(source, /data-tv-carousel-arrow/);
+  assert.match(source, /ChevronLeft|ChevronRight/);
 });
 
 for (const [name, path] of [
@@ -33,14 +35,17 @@ for (const [name, path] of [
     assert.match(source, /data-tv-card/);
     assert.match(source, /const handleTVFocus = useCallback/);
     assert.match(source, /emblaApi\.scrollTo\(index/);
-    assert.doesNotMatch(source, /data-tv-carousel-arrow|ChevronLeft/);
+    assert.match(source, /data-tv-carousel-arrow/);
+    assert.match(source, /ChevronLeft/);
   });
 }
 
-test('search cards expose the card itself and no longer render favorite controls', async () => {
+test('search cards keep handheld favorite controls while exposing the card to TV', async () => {
   const source = await text('../src/components/SearchCard.tsx');
   assert.match(source, /data-tv-card/);
-  assert.doesNotMatch(source, /data-tv-favorite-overlay|watchlistCache|addToWatchlist/);
+  assert.match(source, /data-tv-favorite-overlay/);
+  assert.match(source, /watchlistCache/);
+  assert.match(source, /addToWatchlist/);
 });
 
 test('TV bootstrap only hides the remaining favorite overlay chrome', async () => {
