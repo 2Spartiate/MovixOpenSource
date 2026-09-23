@@ -49,18 +49,18 @@ test('runtime consumes eligible D-pad arrows even at a spatial graph edge', () =
   assert.doesNotMatch(runtime, /if \(!moved\) return false/);
 });
 
-test('runtime handles four D-pad arrows and scrolls only after focus selection', () => {
+test('runtime handles four D-pad arrows and centers only the relevant panel after focus selection', () => {
   const runtime = buildTvDpadRuntime('(function () { return null; })', '/* dom discovery */');
   for (const key of ['ArrowLeft', 'ArrowRight', 'ArrowUp', 'ArrowDown']) {
     assert.match(runtime, new RegExp(key));
   }
   assert.match(runtime, /focus\(\{ preventScroll: true \}\)/);
-  assert.match(runtime, /scrollIntoView/);
-  assert.match(runtime, /block: 'nearest'/);
-  assert.match(
-    runtime,
-    /inline: horizontalMove && carouselRow \? 'center' : 'nearest'/,
-  );
+  assert.match(runtime, /centerVerticalTarget/);
+  assert.match(runtime, /centerCarouselTarget/);
+  assert.match(runtime, /window\.innerHeight \/ 2/);
+  assert.match(runtime, /scroller\.scrollTo\(\{ left, top: scroller\.scrollTop, behavior: 'auto' \}\)/);
+  assert.match(runtime, /window\.scrollTo\(\{ left: pageX, top: pageY, behavior: 'auto' \}\)/);
+  assert.match(runtime, /revealFocusedElement\(next\.element, direction\)/);
   assert.match(runtime, /data-tv-consume-arrows/);
   assert.match(runtime, /data-tv-player-control/);
 });

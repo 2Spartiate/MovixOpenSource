@@ -48,16 +48,22 @@ test('search cards keep handheld favorite controls while exposing the card to TV
   assert.match(source, /addToWatchlist/);
 });
 
-test('TV bootstrap only hides the remaining favorite overlay chrome', async () => {
+test('TV bootstrap hides scrollbars, uses MOVIX red focus, and hides favorite overlays', async () => {
   const source = await text('src/injection/tv-bootstrap.ts');
+  assert.match(source, /scrollbar-width: none !important/);
+  assert.match(source, /::-webkit-scrollbar/);
+  assert.match(source, /outline: 3px solid #dc2626 !important/);
   assert.match(source, /\.movix-tv \[data-tv-favorite-overlay\]/);
   assert.match(source, /display: none !important/);
   assert.doesNotMatch(source, /data-tv-carousel-arrow|data-tv-header-telegram/);
 });
 
-test('spatial runtime centers horizontal carousel targets', async () => {
+test('spatial runtime centers vertical focus and confines horizontal centering to the active carousel', async () => {
   const source = await text('src/injection/tv-dpad-runtime.ts');
+  assert.match(source, /centerVerticalTarget/);
+  assert.match(source, /centerCarouselTarget/);
   assert.match(source, /horizontalMove = direction === 'left' \|\| direction === 'right'/);
   assert.match(source, /closest\('\[data-tv-carousel-row\]'\)/);
-  assert.match(source, /inline: horizontalMove && carouselRow \? 'center' : 'nearest'/);
+  assert.match(source, /window\.innerHeight \/ 2/);
+  assert.match(source, /window\.scrollTo\(\{ left: pageX, top: pageY, behavior: 'auto' \}\)/);
 });
