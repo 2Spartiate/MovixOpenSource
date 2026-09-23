@@ -294,27 +294,6 @@ export function buildAppSiteOverrides(): string {
     });
   };
 
-  const installCardActivation = () => {
-    if (window.MOVIX_TV !== true) return;
-    if (window.__MOVIX_APP_CARD_ACTIVATION_READY) return;
-    window.__MOVIX_APP_CARD_ACTIVATION_READY = true;
-
-    document.addEventListener('keydown', (event) => {
-      if (event.key !== 'Enter' && event.key !== ' ') return;
-
-      const active = document.activeElement;
-      if (!(active instanceof HTMLElement)) return;
-      if (!active.hasAttribute('data-tv-card-proxy')) return;
-
-      const link = active.querySelector('a[data-tv-card-link]');
-      if (!(link instanceof HTMLAnchorElement)) return;
-
-      event.preventDefault();
-      event.stopPropagation();
-      link.click();
-    }, true);
-  };
-
   const removeFavoriteControls = () => {
     if (window.MOVIX_TV !== true) return;
 
@@ -583,7 +562,6 @@ export function buildAppSiteOverrides(): string {
 
   const start = () => {
     patchHistory();
-    installCardActivation();
     apply();
     if (typeof MutationObserver === 'function' && document.documentElement) {
       const observer = new MutationObserver(scheduleApply);

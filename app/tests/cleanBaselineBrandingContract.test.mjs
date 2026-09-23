@@ -21,6 +21,8 @@ test('final validated Movix logo and adaptive launcher assets remain byte-for-by
     ['android/app/src/main/res/drawable/ic_launcher_monochrome_scaled.xml', 'b430661a1a26a965efb34de2bd97cb2235d1012e'],
     ['android/app/src/main/res/mipmap-anydpi-v26/ic_launcher.xml', '24f928dc5d8947b7159b7b9a39f27c244e064eec'],
     ['android/app/src/main/res/mipmap-anydpi-v33/ic_launcher.xml', '02082c28552d03b7485a9fbb94ec6df06b26ca98'],
+    ['android/app/src/main/res/mipmap-anydpi-v26/ic_launcher_round.xml', '24f928dc5d8947b7159b7b9a39f27c244e064eec'],
+    ['android/app/src/main/res/mipmap-anydpi-v33/ic_launcher_round.xml', '02082c28552d03b7485a9fbb94ec6df06b26ca98'],
     ['src/screens/UpdateScreen.tsx', 'c7b3e51e3bb5450babf91c0b64a781a411ee1bbe'],
     ['../src/components/Header.tsx', '2df183bb65f92ffa1bbb31023267363fc5a1bb69'],
   ]);
@@ -28,4 +30,17 @@ test('final validated Movix logo and adaptive launcher assets remain byte-for-by
   for (const [path, sha] of expected) {
     assert.equal(gitBlobSha(await bytes(path)), sha, path);
   }
+});
+
+
+test('rounded and standard adaptive launchers share the validated 20dp safe-zone', async () => {
+  const foreground = (await bytes('android/app/src/main/res/drawable/ic_launcher_foreground_scaled.xml')).toString('utf8');
+  const launcher = (await bytes('android/app/src/main/res/mipmap-anydpi-v26/ic_launcher.xml')).toString('utf8');
+  const round = (await bytes('android/app/src/main/res/mipmap-anydpi-v26/ic_launcher_round.xml')).toString('utf8');
+
+  for (const edge of ['left', 'top', 'right', 'bottom']) {
+    assert.match(foreground, new RegExp(`android:${edge}="20dp"`));
+  }
+  assert.match(launcher, /@drawable\/ic_launcher_foreground_scaled/);
+  assert.match(round, /@drawable\/ic_launcher_foreground_scaled/);
 });

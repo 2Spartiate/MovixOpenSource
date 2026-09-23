@@ -23,13 +23,9 @@ test('native app layers TV cleanup onto the clean shared WebView policy', async 
   assert.match(overrides, /data-tv-carousel-row/);
   assert.match(overrides, /DETAIL_PATH/);
   assert.match(overrides, /looksLikePosterCardLink/);
-  assert.match(overrides, /data-tv-card-proxy/);
   assert.match(overrides, /data-tv-card-link/);
   assert.match(overrides, /data-tv-focus-id/);
   assert.match(overrides, /'media:' \+ path/);
-  assert.match(overrides, /installCardActivation/);
-  assert.match(overrides, /event\.key !== 'Enter'/);
-  assert.match(overrides, /link\.click\(\)/);
   assert.match(overrides, /removeFavoriteControls/);
   assert.match(overrides, /lucide-star/);
   assert.match(overrides, /new MutationObserver\(scheduleApply\)/);
@@ -40,7 +36,6 @@ test('TV-only product cleanup functions are inert on handheld WebViews', async (
 
   for (const name of [
     'markPosterCards',
-    'installCardActivation',
     'removeFavoriteControls',
     'removeCarouselArrows',
     'makeMovixBrandInert',
@@ -65,7 +60,7 @@ test('TV route changes prefer media content and disable browser-like smooth scro
   assert.match(overrides, /history\[methodName\]/);
   assert.match(overrides, /preferContentAfterNavigation = true/);
   assert.match(overrides, /navigationInProgressUntil = performance\.now\(\) \+ 5000/);
-  assert.match(overrides, /window\.scrollTo/);
+  assert.doesNotMatch(overrides, /markTvRouteTransition[\s\S]{0,700}window\.scrollTo/);
   assert.match(overrides, /lenis\.destroy/);
   assert.match(overrides, /delete window\.lenis/);
   assert.match(overrides, /scrollBehavior = 'auto'/);
@@ -106,4 +101,16 @@ test('injected cleanup never detaches children from the remote React tree', asyn
   assert.match(overrides, /const hideManagedNode = \(element\) =>/);
   assert.match(overrides, /style\.setProperty\('display', 'none', 'important'\)/);
   assert.doesNotMatch(overrides, /\.(?:remove|replaceChildren)\(/);
+});
+
+
+test('TV posters keep the real React Router links focusable and never use proxy activation', async () => {
+  const overrides = await text('src/injection/app-site-overrides.ts');
+
+  assert.match(overrides, /link\.setAttribute\('data-tv-focus', ''\)/);
+  assert.match(overrides, /link\.setAttribute\('data-tv-card', ''\)/);
+  assert.match(overrides, /link\.setAttribute\('tabindex', '0'\)/);
+  assert.match(overrides, /link\.removeAttribute\('data-tv-ignore-focus'\)/);
+  assert.doesNotMatch(overrides, /data-tv-card-proxy/);
+  assert.doesNotMatch(overrides, /__MOVIX_APP_CARD_ACTIVATION_READY/);
 });

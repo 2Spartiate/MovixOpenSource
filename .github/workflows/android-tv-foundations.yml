@@ -8,6 +8,7 @@ on:
       - agent/google-tv-clean-baseline-v1
       - agent/google-tv-clean-integration-v1
       - agent/google-tv-dom-safety-ab-v1
+      - agent/google-tv-navigation-polish-v1
     paths:
       - 'app/**'
       - 'src/**'

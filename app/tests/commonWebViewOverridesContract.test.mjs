@@ -38,7 +38,6 @@ test('additional product cleanup is explicitly TV-gated instead of changing hand
 
   for (const name of [
     'markPosterCards',
-    'installCardActivation',
     'removeFavoriteControls',
     'removeCarouselArrows',
     'makeMovixBrandInert',

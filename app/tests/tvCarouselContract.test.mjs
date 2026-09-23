@@ -53,6 +53,8 @@ test('TV bootstrap hides scrollbars and redundant TV chrome with MOVIX red focus
   assert.match(source, /scrollbar-width: none !important/);
   assert.match(source, /::-webkit-scrollbar/);
   assert.match(source, /outline: 3px solid #dc2626 !important/);
+  assert.match(source, /\[data-tv-card\]:focus-visible/);
+  assert.match(source, /outline-offset: -3px !important/);
   assert.match(source, /data-tv-carousel-arrow/);
   assert.match(source, /data-tv-favorite-overlay/);
   assert.match(source, /data-tv-header-telegram/);
