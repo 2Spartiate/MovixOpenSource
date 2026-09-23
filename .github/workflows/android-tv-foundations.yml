@@ -10,6 +10,7 @@ on:
       - agent/google-tv-dom-safety-ab-v1
       - agent/google-tv-navigation-polish-v1
       - agent/google-tv-header-row-icon-v1
+      - agent/google-tv-row-anchors-v2
     paths:
       - 'app/**'
       - 'src/**'

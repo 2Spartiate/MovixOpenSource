@@ -150,3 +150,21 @@ test('runtime suppresses header candidates until no poster row remains above', (
   assert.match(runtime, /findNextCardRowTarget/);
   assert.match(runtime, /if \(!next\) \{\s*next = findNextFocusTarget/);
 });
+
+
+test('runtime anchors vertical navigation to adjacent carousel rows before global focus', () => {
+  const runtime = buildTvDpadRuntime('(function () { return null; })', '/* dom discovery */');
+  assert.match(runtime, /adjacentCarouselRow/);
+  assert.match(runtime, /focusRowWhenReady/);
+  assert.match(runtime, /centerRowAnchor/);
+  assert.match(runtime, /window\.scrollY > 8/);
+  assert.match(runtime, /candidate => !isHeaderElement\(candidate\.element\)/);
+});
+
+test('runtime uses hidden carousel controls as an Embla horizontal fallback', () => {
+  const runtime = buildTvDpadRuntime('(function () { return null; })', '/* dom discovery */');
+  assert.match(runtime, /data-tv-carousel-arrow-direction/);
+  assert.match(runtime, /nudgeCarousel/);
+  assert.match(runtime, /arrow\.click\(\)/);
+  assert.match(runtime, /centerCarouselTarget\(element, carouselRow, direction\)/);
+});

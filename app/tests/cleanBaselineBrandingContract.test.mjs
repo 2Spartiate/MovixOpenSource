@@ -46,7 +46,7 @@ test('rounded and standard adaptive launchers share the validated 20dp safe-zone
 });
 
 
-test('TV launcher uses a dedicated adaptive icon with the Android TV 72dp safe-zone', async () => {
+test('TV launcher uses a dedicated adaptive icon with an intentionally smaller 40dp A/B foreground', async () => {
   const [manifest, tvForeground, tv26, tv33, phoneForeground] = await Promise.all([
     bytes('android/app/src/main/AndroidManifest.xml').then(buffer => buffer.toString('utf8')),
     bytes('android/app/src/main/res/drawable/ic_launcher_tv_foreground_scaled.xml').then(buffer => buffer.toString('utf8')),
@@ -58,7 +58,7 @@ test('TV launcher uses a dedicated adaptive icon with the Android TV 72dp safe-z
   // Phone keeps its previously validated 20dp framing.
   for (const edge of ['left', 'top', 'right', 'bottom']) {
     assert.match(phoneForeground, new RegExp(`android:${edge}="20dp"`));
-    assert.match(tvForeground, new RegExp(`android:${edge}="18dp"`));
+    assert.match(tvForeground, new RegExp(`android:${edge}="40dp"`));
   }
 
   assert.match(tv26, /@drawable\/ic_launcher_tv_foreground_scaled/);

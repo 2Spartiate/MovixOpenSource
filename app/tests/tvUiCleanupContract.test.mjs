@@ -114,3 +114,12 @@ test('TV posters keep the real React Router links focusable and never use proxy 
   assert.doesNotMatch(overrides, /data-tv-card-proxy/);
   assert.doesNotMatch(overrides, /__MOVIX_APP_CARD_ACTIVATION_READY/);
 });
+
+
+test('hidden carousel arrows retain a direction marker for D-pad Embla control', async () => {
+  const overrides = await text('src/injection/app-site-overrides.ts');
+  assert.match(overrides, /data-tv-carousel-arrow-direction/);
+  assert.match(overrides, /'left'/);
+  assert.match(overrides, /'right'/);
+  assert.match(overrides, /hideManagedNode\(button\)/);
+});
