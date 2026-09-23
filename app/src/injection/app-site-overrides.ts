@@ -173,6 +173,8 @@ export function buildAppSiteOverrides(): string {
   };
 
   const removeCarouselArrows = () => {
+    if (window.MOVIX_TV !== true) return;
+
     document.querySelectorAll('button').forEach((button) => {
       if (!(button instanceof HTMLElement)) return;
 
@@ -198,6 +200,8 @@ export function buildAppSiteOverrides(): string {
   };
 
   const removeTelegramUi = () => {
+    if (window.MOVIX_TV !== true) return;
+
     document.querySelectorAll('a[href*="t.me/movix_site"]').forEach((link) => {
       if (!(link instanceof HTMLElement)) return;
 
@@ -234,6 +238,8 @@ export function buildAppSiteOverrides(): string {
   };
 
   const makeMovixBrandInert = () => {
+    if (window.MOVIX_TV !== true) return;
+
     document.querySelectorAll('header a, header [role="link"]').forEach((element) => {
       if (!(element instanceof HTMLElement)) return;
       if (normalise(element.textContent) !== 'movix') return;
@@ -249,6 +255,8 @@ export function buildAppSiteOverrides(): string {
   };
 
   const removeFooter = () => {
+    if (window.MOVIX_TV !== true) return;
+
     document.querySelectorAll('footer').forEach((footer) => footer.remove());
   };
 
