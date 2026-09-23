@@ -41,6 +41,12 @@ export function buildTvBootstrap(): string {
         .movix-tv [data-tv-favorite-overlay] {
           display: none !important;
         }
+
+        .movix-tv .hero-progress-fill {
+          --hero-duration: 10000ms !important;
+          animation-duration: 10000ms !important;
+          animation-play-state: running !important;
+        }
       \`;
       (document.head || root).appendChild(style);
     }

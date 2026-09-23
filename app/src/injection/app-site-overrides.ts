@@ -275,6 +275,124 @@ export function buildAppSiteOverrides(): string {
     if (document.body) document.body.style.scrollBehavior = 'auto';
   };
 
+  const installTvHeroAutoplay = () => {
+    if (window.MOVIX_TV !== true) return;
+
+    const previous = window.__MOVIX_TV_HERO_AUTOPLAY;
+    const onHome = window.location.pathname === '/';
+
+    if (!onHome) {
+      if (previous?.timer) clearTimeout(previous.timer);
+      if (previous) {
+        previous.timer = null;
+        previous.root = null;
+      }
+      return;
+    }
+
+    const markedRoot = document.querySelector('[data-tv-hero-slider]');
+    const progressRoot = document.querySelector('.hero-progress-fill')?.closest('.embla');
+    const fallbackRoot = Array.from(document.querySelectorAll('.embla')).find((candidate) => {
+      if (!(candidate instanceof HTMLElement)) return false;
+      if (candidate.querySelectorAll('.embla__slide').length < 2) return false;
+      return Boolean(candidate.querySelector('button[aria-current="true"]'));
+    });
+
+    const root =
+      markedRoot instanceof HTMLElement
+        ? markedRoot
+        : progressRoot instanceof HTMLElement
+          ? progressRoot
+          : fallbackRoot instanceof HTMLElement
+            ? fallbackRoot
+            : null;
+
+    if (!root) return;
+    if (previous?.root === root && previous.timer) return;
+
+    if (previous?.timer) clearTimeout(previous.timer);
+
+    const runtime = { root, timer: null };
+    window.__MOVIX_TV_HERO_AUTOPLAY = runtime;
+
+    const pauseNativeAutoplay = () => {
+      const toggle = Array.from(root.querySelectorAll('button')).find((button) => (
+        button.querySelector(
+          'svg.lucide-pause, .lucide-pause, svg.lucide-play, .lucide-play'
+        )
+      ));
+
+      if (!(toggle instanceof HTMLButtonElement)) return;
+
+      toggle.setAttribute('data-tv-ignore-focus', '');
+      toggle.setAttribute('tabindex', '-1');
+
+      const currentlyRunning = Boolean(
+        toggle.querySelector('svg.lucide-pause, .lucide-pause')
+      );
+      if (!currentlyRunning || toggle.dataset.movixTvNativePaused === '1') return;
+
+      toggle.dataset.movixTvNativePaused = '1';
+      toggle.click();
+    };
+
+    const getDots = () => {
+      const explicit = Array.from(root.querySelectorAll('button[data-tv-hero-dot]'))
+        .filter((button) => button instanceof HTMLButtonElement);
+      if (explicit.length > 1) return explicit;
+
+      const active = root.querySelector('button[aria-current="true"]');
+      const group = active?.parentElement;
+      if (!(group instanceof HTMLElement)) return [];
+
+      return Array.from(group.children)
+        .filter((child) => child instanceof HTMLButtonElement);
+    };
+
+    const schedule = (delay = 10000) => {
+      if (runtime.timer) clearTimeout(runtime.timer);
+      runtime.timer = setTimeout(advance, delay);
+    };
+
+    const advance = () => {
+      if (
+        window.MOVIX_TV !== true ||
+        !root.isConnected ||
+        window.location.pathname !== '/'
+      ) {
+        if (runtime.timer) clearTimeout(runtime.timer);
+        runtime.timer = null;
+        return;
+      }
+
+      const dots = getDots();
+      if (dots.length < 2) {
+        schedule(500);
+        return;
+      }
+
+      const activeIndex = dots.findIndex(
+        (button) => button.getAttribute('aria-current') === 'true'
+      );
+      const nextIndex = activeIndex >= 0
+        ? (activeIndex + 1) % dots.length
+        : 0;
+      const next = dots[nextIndex];
+
+      if (next instanceof HTMLButtonElement) {
+        next.click();
+      }
+      schedule(10000);
+    };
+
+    // Stop the live site's own 6 s autoplay first. The TV runtime then owns
+    // the cadence and advances the same Embla dots every 10 s, preserving the
+    // site's native right-to-left transition.
+    pauseNativeAutoplay();
+    requestAnimationFrame(pauseNativeAutoplay);
+    schedule(10000);
+  };
+
   const skipPostAdThanks = () => {
     const dialogs = Array.from(document.querySelectorAll('[role="dialog"]'));
     dialogs.forEach((dialog) => {
@@ -348,6 +466,7 @@ export function buildAppSiteOverrides(): string {
     removeFavoriteControls();
     markPosterCards();
     disableTvSmoothScroll();
+    installTvHeroAutoplay();
     skipPostAdThanks();
   };
 

@@ -55,6 +55,8 @@ test('TV bootstrap hides scrollbars, uses MOVIX red focus, and hides favorite ov
   assert.match(source, /outline: 3px solid #dc2626 !important/);
   assert.match(source, /\.movix-tv \[data-tv-favorite-overlay\]/);
   assert.match(source, /display: none !important/);
+  assert.match(source, /\.movix-tv \.hero-progress-fill/);
+  assert.match(source, /--hero-duration: 10000ms !important/);
   assert.doesNotMatch(source, /data-tv-carousel-arrow|data-tv-header-telegram/);
 });
 
@@ -66,4 +68,25 @@ test('spatial runtime centers vertical focus and confines horizontal centering t
   assert.match(source, /closest\('\[data-tv-carousel-row\]'\)/);
   assert.match(source, /window\.innerHeight \/ 2/);
   assert.match(source, /window\.scrollTo\(\{ left: pageX, top: pageY, behavior: 'auto' \}\)/);
+});
+
+
+test('TV hero keeps handheld timing intact but advances animated slides every ten seconds', async () => {
+  const source = await text('../src/components/HeroSlider.tsx');
+  assert.match(source, /const AUTO_SLIDE_MS = 6000/);
+  assert.match(source, /const TV_AUTO_SLIDE_MS = 10000/);
+  assert.match(source, /\(window as any\)\.MOVIX_TV === true/);
+  assert.match(source, /autoSlideMs = isTvRuntime \? TV_AUTO_SLIDE_MS : AUTO_SLIDE_MS/);
+  assert.match(source, /scrollNext\(isTvRuntime \? false : !effectivePrefs\.transitions\)/);
+  assert.match(source, /data-tv-hero-slider=\{isTvRuntime \? '' : undefined\}/);
+  assert.match(source, /data-tv-hero-dot=\{isTvRuntime \? '' : undefined\}/);
+});
+
+test('live WebView TV override pauses the remote cadence and owns the ten-second hero cycle', async () => {
+  const source = await text('src/injection/app-site-overrides.ts');
+  assert.match(source, /window\.__MOVIX_TV_HERO_AUTOPLAY/);
+  assert.match(source, /lucide-pause/);
+  assert.match(source, /button\[aria-current="true"\]/);
+  assert.match(source, /schedule\(10000\)/);
+  assert.match(source, /window\.MOVIX_TV !== true/);
 });
