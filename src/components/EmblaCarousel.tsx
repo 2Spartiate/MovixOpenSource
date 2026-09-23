@@ -1,7 +1,7 @@
 import { useLightMode } from '@/context/LightModeContext';
 import React, { useCallback, useEffect, useRef, useState, useMemo } from 'react';
 import useEmblaCarousel from 'embla-carousel-react';
-import { Star, Calendar, Trash, Trash2, ChevronRight } from 'lucide-react';
+import { Star, Calendar, Trash, Trash2, ChevronLeft, ChevronRight } from 'lucide-react';
 import { PrefetchLink as Link } from '@/routing/PrefetchLink';
 import { motion } from 'framer-motion';
 import { toast } from 'sonner';
@@ -421,6 +421,8 @@ const EmblaCarousel: React.FC<EmblaCarouselProps> = ({
     loop: false,
     slides: '.embla-slide'
   });
+  const [canScrollPrev, setCanScrollPrev] = useState(false);
+  const [canScrollNext, setCanScrollNext] = useState(false);
   const rowRef = useRef<HTMLDivElement>(null);
   const { items: allowedItems } = useAgeRestrictedContent(items);
 
@@ -543,6 +545,51 @@ const EmblaCarousel: React.FC<EmblaCarouselProps> = ({
     return 4;                 // sm/xs
   }, []);
 
+  const checkIfScrollable = useCallback(() => {
+    if (!emblaApi) return false;
+    if (emblaApi.scrollSnapList().length <= 1) return false;
+    const container = emblaApi.containerNode();
+    if (container) {
+      const scrollWidth = container.scrollWidth;
+      const clientWidth = container.clientWidth;
+      if (scrollWidth <= clientWidth + 5) {
+        return false;
+      }
+    }
+    return true;
+  }, [emblaApi]);
+
+  // Effect 2: track arrow-button state via 'select' + 'reInit' only.
+  useEffect(() => {
+    if (!emblaApi) return;
+    let disposed = false;
+    let frameId = 0;
+    const runUpdate = () => {
+      if (disposed) return;
+      try {
+        const isScrollable = checkIfScrollable();
+        setCanScrollPrev(isScrollable && emblaApi.canScrollPrev());
+        setCanScrollNext(isScrollable && emblaApi.canScrollNext());
+      } catch (_) {
+        // Le document peut avoir été détaché entre select et la frame suivante.
+      }
+    };
+    const updateArrows = () => {
+      runUpdate();
+      cancelAnimationFrame(frameId);
+      frameId = requestAnimationFrame(runUpdate);
+    };
+    updateArrows();
+    emblaApi.on('select', updateArrows);
+    emblaApi.on('reInit', updateArrows);
+    return () => {
+      disposed = true;
+      cancelAnimationFrame(frameId);
+      emblaApi.off('select', updateArrows);
+      emblaApi.off('reInit', updateArrows);
+    };
+  }, [emblaApi, checkIfScrollable, limitedItems]);
+
   // Support molette horizontale (tilt wheel / trackpad) -> scroll du carousel
   useEffect(() => {
     if (!emblaApi) return;
@@ -569,10 +616,44 @@ const EmblaCarousel: React.FC<EmblaCarouselProps> = ({
   }, [emblaApi, effectivePrefs.transitions]);
 
   // Suppression hover pendant scroll horizontal du carousel (drag pointerUp lift,
-  // settle pour wheel/drag). Pose body.embla-scrolling -> CSS rule
+  // settle pour wheel/scrollPrev/Next). Pose body.embla-scrolling -> CSS rule
   // `body.embla-scrolling .embla-slide { pointer-events: none }` (src/index.css)
   // empêche les hover flips quand les cards défilent sous le curseur.
   useEmblaScrollSuppress(emblaApi);
+
+  const getStep = useCallback(() => {
+    const w = typeof window !== 'undefined' ? window.innerWidth : 1024;
+    if (w >= 1536) return 8; // 2K+
+    if (w >= 1280) return 6; // xl
+    if (w >= 1024) return 5; // lg
+    if (w >= 768) return 4;  // md
+    return 2;                // sm/xs
+  }, []);
+
+  const handlePrev = useCallback((e?: React.MouseEvent) => {
+    if (e) { e.preventDefault(); e.stopPropagation(); }
+    if (!emblaApi) return;
+    try {
+      const current = emblaApi.selectedScrollSnap();
+      const target = Math.max(0, current - getStep());
+      emblaApi.scrollTo(target, !effectivePrefs.transitions);
+    } catch (_) {
+      emblaApi.scrollPrev(!effectivePrefs.transitions);
+    }
+  }, [emblaApi, getStep, effectivePrefs.transitions]);
+
+  const handleNext = useCallback((e?: React.MouseEvent) => {
+    if (e) { e.preventDefault(); e.stopPropagation(); }
+    if (!emblaApi) return;
+    try {
+      const current = emblaApi.selectedScrollSnap();
+      const snaps = emblaApi.scrollSnapList().length;
+      const target = Math.min(snaps - 1, current + getStep());
+      emblaApi.scrollTo(target, !effectivePrefs.transitions);
+    } catch (_) {
+      emblaApi.scrollNext(!effectivePrefs.transitions);
+    }
+  }, [emblaApi, getStep, effectivePrefs.transitions]);
 
   const handleTVCardFocus = useCallback((index: number) => {
     if (!(window as any).MOVIX_TV || !emblaApi) return;
@@ -732,7 +813,7 @@ const EmblaCarousel: React.FC<EmblaCarouselProps> = ({
                 })();
 
                 // Lookup mémoïsé : progressMap pré-calculée 1× par changement
-                // d'items. Sur un re-render non lié (hover, progression),
+                // d'items. Sur un re-render non lié (canScrollNext flip, hover),
                 // on récupère ici la même référence d'objet → CarouselCard memo
                 // respecté.
                 const progressData = progressMap.get(`${item.id}-${item.media_type}`) ?? EMPTY_PROGRESS;
@@ -759,7 +840,47 @@ const EmblaCarousel: React.FC<EmblaCarouselProps> = ({
               <div className="flex-none w-8 md:w-24" aria-hidden="true" />
             </div>
           </div>
-
+          {/* Boutons de navigation - verticaux noirs avec slide-in au hover */}
+          <button
+            type="button"
+            data-tv-ignore-focus
+            data-tv-carousel-arrow
+            aria-label={t('common.previous')}
+            onClick={handlePrev}
+            onPointerDown={(e) => { e.preventDefault(); e.stopPropagation(); }}
+            className={`hidden md:flex absolute left-6 md:left-8 top-1/2 z-[950]
+                     w-12 h-32 rounded-2xl items-center justify-center text-white/90 hover:text-white
+                     bg-gradient-to-b from-neutral-900/95 via-black/95 to-neutral-900/95
+                     ring-1 ring-white/10 hover:ring-red-500/40
+                     shadow-2xl shadow-black/70
+                     transition-all duration-300 ease-out
+                     -translate-y-1/2
+                     opacity-0 -translate-x-2
+                     group-hover/carousel:opacity-100 group-hover/carousel:translate-x-0
+                     ${!canScrollPrev ? 'pointer-events-none !opacity-0' : 'pointer-events-auto'}`}
+          >
+            <ChevronLeft className="w-7 h-7" strokeWidth={2.25} />
+          </button>
+          <button
+            type="button"
+            data-tv-ignore-focus
+            data-tv-carousel-arrow
+            aria-label={t('common.next')}
+            onClick={handleNext}
+            onPointerDown={(e) => { e.preventDefault(); e.stopPropagation(); }}
+            className={`hidden md:flex absolute right-6 md:right-8 top-1/2 z-[950]
+                     w-12 h-32 rounded-2xl items-center justify-center text-white/90 hover:text-white
+                     bg-gradient-to-b from-neutral-900/95 via-black/95 to-neutral-900/95
+                     ring-1 ring-white/10 hover:ring-red-500/40
+                     shadow-2xl shadow-black/70
+                     transition-all duration-300 ease-out
+                     -translate-y-1/2
+                     opacity-0 translate-x-2
+                     group-hover/carousel:opacity-100 group-hover/carousel:translate-x-0
+                     ${!canScrollNext ? 'pointer-events-none !opacity-0' : 'pointer-events-auto'}`}
+          >
+            <ChevronRight className="w-7 h-7" strokeWidth={2.25} />
+          </button>
         </div>
       </div>
   );
