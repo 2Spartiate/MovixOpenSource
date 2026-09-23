@@ -7,7 +7,7 @@ import React, {
   useRef,
   useState,
 } from 'react';
-import { Linking, Platform } from 'react-native';
+import { Platform } from 'react-native';
 import { WebView, type WebViewNavigation } from 'react-native-webview';
 import type {
   WebViewErrorEvent,
@@ -108,14 +108,6 @@ function isUsableHttpUrl(value: unknown): value is string {
   );
 }
 
-function isSameOrigin(a: string, b: string): boolean {
-  try {
-    return new URL(a).origin === new URL(b).origin;
-  } catch {
-    return false;
-  }
-}
-
 const WebViewBrowser = forwardRef<WebViewBrowserRef, WebViewBrowserProps>(
   ({ url, onNavigationStateChange, onError, onPictureInPictureModeChange }, ref) => {
     const webViewRef = useRef<WebView>(null);
@@ -192,23 +184,9 @@ const WebViewBrowser = forwardRef<WebViewBrowserRef, WebViewBrowserProps>(
       });
     }, [url]);
 
-    // `window.open` et les liens `target="_blank"` : sans ce gestionnaire,
-    // react-native-webview recharge la cible dans le WebView courant, ce qui
-    // fait entrer les pop-ups publicitaires dans l'application. Seules les
-    // fenêtres de même origine que la page Movix restent internes ; tout le
-    // reste part vers le navigateur par défaut du système.
-    const onOpenWindow = useCallback((event: WebViewOpenWindowEvent) => {
-      const targetUrl = event.nativeEvent.targetUrl;
-      if (!isUsableHttpUrl(targetUrl)) return;
-      if (isSameOrigin(targetUrl, topLevelUrlRef.current)) {
-        webViewRef.current?.injectJavaScript(
-          `window.location.href = ${JSON.stringify(targetUrl)}; true;`,
-        );
-        return;
-      }
-      Linking.openURL(targetUrl).catch(() => {
-        // Aucun gestionnaire système : la pop-up est simplement abandonnée.
-      });
+    // Reject every new-window request on both handheld and TV.
+    const onOpenWindow = useCallback((_event: WebViewOpenWindowEvent) => {
+      // Intentionally ignored.
     }, []);
 
     const onHttpError = useCallback(
@@ -267,8 +245,9 @@ const WebViewBrowser = forwardRef<WebViewBrowserRef, WebViewBrowserProps>(
         }}
         // Navigation
         onNavigationStateChange={onNavigationStateChange}
-        // Pop-ups : hors origine Movix -> navigateur système
+        // Popups/new tabs are blocked for the shared handheld + TV runtime.
         setSupportMultipleWindows={true}
+        javaScriptCanOpenWindowsAutomatically={false}
         onOpenWindow={onOpenWindow}
         // Errors
         onError={onWebViewError}
