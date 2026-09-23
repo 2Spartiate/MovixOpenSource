@@ -12,6 +12,7 @@ on:
       - agent/google-tv-header-row-icon-v1
       - agent/google-tv-offscreen-focus-v3
       - agent/google-tv-launcher-carousel-focus-v4
+      - agent/google-tv-home-focus-platform-v5
     paths:
       - 'app/**'
       - 'src/**'
