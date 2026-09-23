@@ -150,7 +150,7 @@ export default function UpdateScreen({
       <View style={styles.container}>
         <View style={styles.inner}>
           <Image
-            source={require('../../android/app/src/main/res/mipmap-xxxhdpi/ic_launcher.png')}
+            source={require('../../android/app/src/main/res/drawable-nodpi/ic_launcher_foreground.png')}
             style={styles.icon}
             resizeMode="contain"
           />
@@ -197,7 +197,7 @@ export default function UpdateScreen({
     <View style={styles.container}>
       <View style={styles.inner}>
         <Image
-          source={require('../../android/app/src/main/res/mipmap-xxxhdpi/ic_launcher.png')}
+          source={require('../../android/app/src/main/res/drawable-nodpi/ic_launcher_foreground.png')}
           style={styles.icon}
           resizeMode="contain"
         />
