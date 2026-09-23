@@ -19,7 +19,9 @@ test('clean shared policy still owns branding, Telegram cleanup and playback-gat
 
   assert.match(overrides, /const replaceHeaderLogo = \(\) =>/);
   assert.match(overrides, /movix-logo\.png/);
-  assert.match(overrides, /replaceChildren\(image\)/);
+  assert.match(overrides, /background-image/);
+  assert.match(overrides, /data-movix-app-brand-logo/);
+  assert.doesNotMatch(overrides, /replaceChildren\(/);
   assert.match(overrides, /const removeTelegramUi = \(\) =>/);
   assert.match(overrides, /t\.me\/movix_site/);
   assert.match(overrides, /rejoignez notre communaute/);

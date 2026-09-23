@@ -98,3 +98,12 @@ test('phone source chrome is retained while TV behavior is runtime-conditioned',
   assert.match(searchCard, /data-tv-favorite-overlay/);
   assert.match(browser, /!isPictureInPictureActive && !isTV && !toolbarHidden/);
 });
+
+
+test('injected cleanup never detaches children from the remote React tree', async () => {
+  const overrides = await text('src/injection/app-site-overrides.ts');
+
+  assert.match(overrides, /const hideManagedNode = \(element\) =>/);
+  assert.match(overrides, /style\.setProperty\('display', 'none', 'important'\)/);
+  assert.doesNotMatch(overrides, /\.(?:remove|replaceChildren)\(/);
+});
