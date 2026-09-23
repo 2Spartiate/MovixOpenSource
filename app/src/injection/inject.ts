@@ -1,3 +1,4 @@
+import { buildAppSiteOverrides } from './app-site-overrides';
 import { buildBridgeRuntime } from './bridge-runtime';
 import { buildCastShim } from './cast-shim';
 import {
@@ -17,6 +18,7 @@ export function buildInjectedJavaScript(
     mediaProxyScheme?: string | null;
   } = {},
 ): string {
+  const appSiteOverrides = buildAppSiteOverrides();
   const castShim = buildCastShim();
   const pipShim = buildPictureInPictureShim(
     options.pictureInPictureMode ?? 'disabled',
@@ -30,8 +32,27 @@ export function buildInjectedJavaScript(
     mediaProxyScheme: options.mediaProxyScheme,
   });
 
-  // Cast shim FIRST — must be on window before any page JS runs.
+  const popupBlocker = `
+(() => {
+  const blockedOpen = () => null;
+  try {
+    Object.defineProperty(window, 'open', {
+      value: blockedOpen,
+      writable: false,
+      configurable: false,
+    });
+  } catch {
+    try { window.open = blockedOpen; } catch {}
+  }
+})();
+`;
+
+  // Shared smartphone + TV policy runs before the remote site scripts.
   return `
+${popupBlocker}
+
+${appSiteOverrides}
+
 ${castShim}
 
 ${pipShim}
