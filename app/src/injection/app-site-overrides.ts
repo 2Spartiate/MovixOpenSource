@@ -21,7 +21,9 @@ export function buildAppSiteOverrides(): string {
       if (!(link instanceof HTMLElement)) return;
       const href = String(link.getAttribute('href') || '');
       const label = normalise(
-        `${link.getAttribute('aria-label') || ''} ${link.getAttribute('title') || ''} ${link.textContent || ''}`
+        String(link.getAttribute('aria-label') || '') + ' ' +
+        String(link.getAttribute('title') || '') + ' ' +
+        String(link.textContent || '')
       );
       if (href.includes('movix_site') || label.includes('telegram')) {
         link.remove();
@@ -74,7 +76,8 @@ export function buildAppSiteOverrides(): string {
     Array.from(root.querySelectorAll('button, [role="button"]')).find((candidate) => {
       if (!(candidate instanceof HTMLElement)) return false;
       const label = normalise(
-        `${candidate.textContent || ''} ${candidate.getAttribute('aria-label') || ''}`
+        String(candidate.textContent || '') + ' ' +
+        String(candidate.getAttribute('aria-label') || '')
       );
       return labels.some((expected) => label === expected || label.includes(expected));
     });
