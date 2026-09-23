@@ -120,6 +120,7 @@ export function buildAppSiteOverrides(): string {
   };
 
   const installCardActivation = () => {
+    if (window.MOVIX_TV !== true) return;
     if (window.__MOVIX_APP_CARD_ACTIVATION_READY) return;
     window.__MOVIX_APP_CARD_ACTIVATION_READY = true;
 
@@ -140,6 +141,8 @@ export function buildAppSiteOverrides(): string {
   };
 
   const removeFavoriteControls = () => {
+    if (window.MOVIX_TV !== true) return;
+
     document.querySelectorAll('[data-tv-favorite-overlay]').forEach((element) => {
       if (element instanceof HTMLElement) element.remove();
     });
