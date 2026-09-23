@@ -5,18 +5,27 @@ import test from 'node:test';
 const root = new URL('../', import.meta.url);
 const text = path => readFile(new URL(path, root), 'utf8');
 
-test('MOVIX header brand is visual-only and Telegram header action is removed', async () => {
+test('MOVIX brand is inert while handheld Telegram chrome is removed only by the TV override', async () => {
   const header = await text('../src/components/Header.tsx');
+  const overrides = await text('src/injection/app-site-overrides.ts');
+
   assert.match(
     header,
     /<div[\s\S]{0,220}data-tv-ignore-focus[\s\S]{0,160}data-tv-header-logo/,
   );
   assert.match(header, />MOVIX<\/span>/);
-  assert.doesNotMatch(header, /data-tv-header-telegram|https:\/\/t\.me\/movix_site/);
   assert.doesNotMatch(
     header,
     /<Link[\s\S]{0,220}data-tv-header-logo/,
   );
+
+  // Preserve the current handheld source. Google TV removes this action from
+  // the live remote DOM instead of deleting a phone feature from shared code.
+  assert.match(header, /data-tv-header-telegram/);
+  assert.match(header, /https:\/\/t\.me\/movix_site/);
+  assert.match(overrides, /const removeTelegramUi = \(\) =>/);
+  assert.match(overrides, /a\[href\*="t\.me\/movix_site"\]/);
+
   assert.match(header, /ref=\{searchInputRef\}[\s\S]{0,120}data-tv-primary-focus="search"[\s\S]{0,120}type="text"/);
 });
 
