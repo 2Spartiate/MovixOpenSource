@@ -1,6 +1,10 @@
 <?xml version="1.0" encoding="utf-8"?>
 <layer-list xmlns:android="http://schemas.android.com/apk/res/android">
-    <!-- TV launcher foreground with additional breathing room under the launcher-owned mask. -->
+    <!--
+      Android TV / Google TV uiMode-specific foreground.
+      The launcher owns the final circular mask; this inset only controls how
+      much breathing room the artwork has inside that adaptive-icon canvas.
+    -->
     <item
         android:left="28dp"
         android:top="28dp"
