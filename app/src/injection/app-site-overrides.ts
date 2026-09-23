@@ -72,6 +72,43 @@ export function buildAppSiteOverrides(): string {
     });
   };
 
+  const replaceHeaderLogo = () => {
+    const candidates = Array.from(document.querySelectorAll('header a[href]'));
+
+    candidates.forEach((link) => {
+      if (!(link instanceof HTMLAnchorElement)) return;
+
+      let pathname = String(link.getAttribute('href') || '');
+      try {
+        pathname = new URL(link.href, window.location.href).pathname;
+      } catch {
+        // Keep the raw href fallback.
+      }
+
+      const label = normalise(
+        String(link.textContent || '') + ' ' +
+        String(link.getAttribute('aria-label') || '')
+      );
+
+      if (pathname !== '/' || (label !== 'movix' && !label.includes('movix'))) return;
+      if (link.querySelector('img[data-movix-app-brand-logo="1"]')) return;
+
+      const image = document.createElement('img');
+      image.src = 'https://raw.githubusercontent.com/2Spartiate/MovixOpenSource/refs/heads/agent/google-tv-clean-baseline-v1/public/movix-logo.png';
+      image.alt = 'Movix';
+      image.decoding = 'async';
+      image.dataset.movixAppBrandLogo = '1';
+      image.style.setProperty('display', 'block');
+      image.style.setProperty('height', 'clamp(28px, 4vw, 36px)');
+      image.style.setProperty('width', 'auto');
+      image.style.setProperty('max-width', '120px');
+      image.style.setProperty('object-fit', 'contain');
+
+      link.replaceChildren(image);
+      link.setAttribute('aria-label', 'Movix');
+    });
+  };
+
   const findButton = (root, labels) =>
     Array.from(root.querySelectorAll('button, [role="button"]')).find((candidate) => {
       if (!(candidate instanceof HTMLElement)) return false;
@@ -145,6 +182,7 @@ export function buildAppSiteOverrides(): string {
   };
 
   const apply = () => {
+    replaceHeaderLogo();
     removeTelegramUi();
     advancePlaybackGate();
   };

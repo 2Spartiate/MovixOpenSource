@@ -446,7 +446,8 @@ const Header: React.FC = () => {
                 to="/"
                 data-tv-ignore-focus
                 data-tv-header-logo
-                className="text-2xl md:text-3xl font-extrabold flex items-center hover:scale-105 transition-transform duration-300 flex-shrink-0"
+                aria-label="Movix"
+                className="flex items-center hover:scale-105 transition-transform duration-300 flex-shrink-0"
                 onClick={(e) => {
                   if (location.pathname === '/') {
                     e.preventDefault();
@@ -459,7 +460,11 @@ const Header: React.FC = () => {
                   }
                 }}
               >
-                <span className="text-red-600 tracking-wider">MOVIX</span>
+                <img
+                  src="/movix-logo.png"
+                  alt="Movix"
+                  className="block h-8 md:h-9 w-auto max-w-[7.5rem] object-contain"
+                />
               </Link>
 
               <a

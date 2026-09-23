@@ -24,8 +24,19 @@ test('shared DOM policy removes Telegram UI and advances the playback gate', asy
   assert.match(overrides, /merci pour ton aide/);
   assert.match(overrides, /queueMicrotask\(\(\) => viewAdButton\.click\(\)\)/);
   assert.match(overrides, /queueMicrotask\(\(\) => playButton\.click\(\)\)/);
+  assert.match(overrides, /replaceHeaderLogo/);
+  assert.match(overrides, /movix-logo\.png/);
+  assert.match(overrides, /replaceChildren\(image\)/);
 
   assert.doesNotMatch(overrides, /removeFooter|Carousel|data-tv-|MOVIX_TV|movix-tv/);
+});
+
+test('source header renders the branded image asset instead of the legacy MOVIX text', async () => {
+  const header = await text('../src/components/Header.tsx');
+
+  assert.match(header, /src="\/movix-logo\.png"/);
+  assert.match(header, /aria-label="Movix"/);
+  assert.doesNotMatch(header, /<span className="text-red-600 tracking-wider">MOVIX<\/span>/);
 });
 
 test('native WebView rejects popup and new-window requests on every device', async () => {
