@@ -92,3 +92,23 @@ test('live WebView TV override owns the ten-second hero cycle only under MOVIX_T
   assert.match(source, /button\[aria-current="true"\]/);
   assert.match(source, /schedule\(10000\)/);
 });
+
+
+test('TV disables Embla content-visibility skipping so offscreen cards keep focus geometry', async () => {
+  const source = await text('src/injection/tv-bootstrap.ts');
+  assert.match(source, /\.movix-tv \.embla-slide/);
+  assert.match(source, /content-visibility: visible !important/);
+});
+
+test('TV Embla carousels center the focused slide without changing handheld align:start', async () => {
+  for (const path of [
+    '../src/components/EmblaCarousel.tsx',
+    '../src/components/EmblaCarouselGenres.tsx',
+    '../src/components/EmblaCarouselPlatforms.tsx',
+  ]) {
+    const source = await text(path);
+    assert.match(source, /isTvRuntime = typeof window !== 'undefined'/);
+    assert.match(source, /align: isTvRuntime \? 'center' : 'start'/);
+    assert.match(source, /emblaApi\.scrollTo\(index/);
+  }
+});

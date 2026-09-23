@@ -143,10 +143,12 @@ test('within the chosen row the horizontally closest poster wins', () => {
   assert.equal(picked?.value, 'closest');
 });
 
-test('runtime suppresses header candidates until no poster row remains above', () => {
+test('runtime keeps horizontal movement inside the row and gates header until page top', () => {
   const runtime = buildTvDpadRuntime('(function () { return null; })', '/* dom discovery */');
-  assert.match(runtime, /current\.hasAttribute\('data-tv-card'\)/);
-  assert.match(runtime, /candidate\.element\.hasAttribute\('data-tv-card'\)/);
+  assert.match(runtime, /getAdjacentCardInRow/);
+  assert.match(runtime, /horizontal && currentRow instanceof HTMLElement/);
+  assert.match(runtime, /candidate => !isHeaderElement\(candidate\.element\)/);
+  assert.match(runtime, /window\.scrollY > 8/);
+  assert.match(runtime, /window\.scrollTo\(\{ top: 0/);
   assert.match(runtime, /findNextCardRowTarget/);
-  assert.match(runtime, /if \(!next\) \{\s*next = findNextFocusTarget/);
 });
