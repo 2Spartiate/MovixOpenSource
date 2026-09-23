@@ -1,7 +1,9 @@
 import { useLightMode } from '@/context/LightModeContext';
-import React, { useCallback } from 'react';
+import React, { useCallback, useEffect, useState } from 'react';
 import useEmblaCarousel from 'embla-carousel-react';
+import { ChevronLeft, ChevronRight } from 'lucide-react';
 import { PrefetchLink as Link } from '@/routing/PrefetchLink';
+import { useTranslation } from 'react-i18next';
 
 interface PlatformItem {
   id: number;
@@ -18,6 +20,7 @@ interface EmblaCarouselPlatformsProps {
 }
 
 const EmblaCarouselPlatforms: React.FC<EmblaCarouselPlatformsProps> = ({ title, items }) => {
+  const { t } = useTranslation();
   const { effectivePrefs } = useLightMode();
   const [emblaRef, emblaApi] = useEmblaCarousel({
     align: 'start',
@@ -28,17 +31,73 @@ const EmblaCarouselPlatforms: React.FC<EmblaCarouselPlatformsProps> = ({ title, 
     duration: effectivePrefs.transitions ? 25 : 0,
     loop: false
   });
+  const [canScrollPrev, setCanScrollPrev] = useState(false);
+  const [canScrollNext, setCanScrollNext] = useState(false);
+
+  useEffect(() => {
+    if (!emblaApi) return;
+    const updateArrows = () => {
+      try {
+        setCanScrollPrev(emblaApi.canScrollPrev());
+        setCanScrollNext(emblaApi.canScrollNext());
+      } catch (_) {
+        // noop
+      }
+    };
+    updateArrows();
+    emblaApi.on('select', updateArrows);
+    emblaApi.on('reInit', updateArrows);
+    return () => {
+      emblaApi.off('select', updateArrows);
+      emblaApi.off('reInit', updateArrows);
+    };
+  }, [emblaApi]);
+
+  const getStep = useCallback(() => {
+    const w = typeof window !== 'undefined' ? window.innerWidth : 1024;
+    if (w >= 1536) return 4; // Larger items, fewer per step
+    if (w >= 1280) return 3;
+    if (w >= 1024) return 3;
+    if (w >= 768) return 2;
+    return 1;
+  }, []);
+
+  const handlePrev = useCallback((e?: React.MouseEvent) => {
+    if (e) { e.preventDefault(); e.stopPropagation(); }
+    if (!emblaApi) return;
+    try {
+      const current = emblaApi.selectedScrollSnap();
+      const target = Math.max(0, current - getStep());
+      emblaApi.scrollTo(target, !effectivePrefs.transitions);
+    } catch (_) {
+      emblaApi.scrollPrev(!effectivePrefs.transitions);
+    }
+  }, [emblaApi, getStep, effectivePrefs.transitions]);
+
+  const handleNext = useCallback((e?: React.MouseEvent) => {
+    if (e) { e.preventDefault(); e.stopPropagation(); }
+    if (!emblaApi) return;
+    try {
+      const current = emblaApi.selectedScrollSnap();
+      const snaps = emblaApi.scrollSnapList().length;
+      const target = Math.min(snaps - 1, current + getStep());
+      emblaApi.scrollTo(target, !effectivePrefs.transitions);
+    } catch (_) {
+      emblaApi.scrollNext(!effectivePrefs.transitions);
+    }
+  }, [emblaApi, getStep, effectivePrefs.transitions]);
+
   const handleTVFocus = useCallback((index: number) => {
     if (!(window as any).MOVIX_TV || !emblaApi) return;
     try {
       emblaApi.scrollTo(index, !effectivePrefs.transitions);
     } catch {
-      // Le runtime spatial conserve scrollIntoView comme repli.
+      // The spatial runtime still performs scrollIntoView as a fallback.
     }
   }, [emblaApi, effectivePrefs.transitions]);
 
   return (
-    <div className="w-full relative -mx-3 md:-mx-4" data-tv-focus-group="carousel-row" data-tv-carousel-row>
+    <div className="w-full relative group/carousel -mx-3 md:-mx-4" data-tv-focus-group="carousel-row" data-tv-carousel-row>
       {title && (
         <div className="flex justify-between items-center mb-2 px-4 md:px-6 relative z-10">
           <h2 className="section-title">{title}</h2>
@@ -122,7 +181,46 @@ const EmblaCarouselPlatforms: React.FC<EmblaCarouselPlatformsProps> = ({ title, 
             <div className="flex-none w-8 md:w-24" aria-hidden="true" />
           </div>
         </div>
-
+        <button
+          type="button"
+          data-tv-ignore-focus
+          data-tv-carousel-arrow
+          aria-label={t('common.previous')}
+          onClick={handlePrev}
+          onPointerDown={(e) => { e.preventDefault(); e.stopPropagation(); }}
+          className={`hidden md:flex absolute left-6 md:left-8 top-1/2 z-20
+                     w-12 h-32 rounded-2xl items-center justify-center text-white/90 hover:text-white
+                     bg-gradient-to-b from-neutral-900/70 via-black/80 to-neutral-900/70 backdrop-blur-md
+                     ring-1 ring-white/10 hover:ring-red-500/40
+                     shadow-2xl shadow-black/70
+                     transition-all duration-300 ease-out
+                     -translate-y-1/2
+                     opacity-0 -translate-x-2
+                     group-hover/carousel:opacity-100 group-hover/carousel:translate-x-0
+                     ${!canScrollPrev ? 'pointer-events-none !opacity-0' : 'pointer-events-auto'}`}
+        >
+          <ChevronLeft className="w-7 h-7" strokeWidth={2.25} />
+        </button>
+        <button
+          type="button"
+          data-tv-ignore-focus
+          data-tv-carousel-arrow
+          aria-label={t('common.next')}
+          onClick={handleNext}
+          onPointerDown={(e) => { e.preventDefault(); e.stopPropagation(); }}
+          className={`hidden md:flex absolute right-6 md:right-8 top-1/2 z-20
+                     w-12 h-32 rounded-2xl items-center justify-center text-white/90 hover:text-white
+                     bg-gradient-to-b from-neutral-900/70 via-black/80 to-neutral-900/70 backdrop-blur-md
+                     ring-1 ring-white/10 hover:ring-red-500/40
+                     shadow-2xl shadow-black/70
+                     transition-all duration-300 ease-out
+                     -translate-y-1/2
+                     opacity-0 translate-x-2
+                     group-hover/carousel:opacity-100 group-hover/carousel:translate-x-0
+                     ${!canScrollNext ? 'pointer-events-none !opacity-0' : 'pointer-events-auto'}`}
+        >
+          <ChevronRight className="w-7 h-7" strokeWidth={2.25} />
+        </button>
       </div>
     </div>
   );
