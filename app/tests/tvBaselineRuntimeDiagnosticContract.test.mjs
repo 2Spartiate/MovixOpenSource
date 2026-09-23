@@ -35,14 +35,16 @@ test('TV-BS-J3C keeps J3B and blocks only first install until VPN choice settles
     text('android/app/src/main/AndroidManifest.xml'),
   ]);
 
-  // J3C changes App.tsx only.
+  // DNS/startup remains the hardware-proven J3C baseline.
   assert.equal(gitBlobSha(appBytes), '07df8edb713d852fa3a81e60de34a2b4f2c382cd');
 
-  // Keep the proven J3B recovery and J2A networking byte-for-byte.
+  // Keep the proven J3B recovery and J2A networking byte-for-byte. The only
+  // intentionally changed runtime surfaces are WebView popup policy and the
+  // injected common smartphone + TV DOM layer.
   assert.equal(gitBlobSha(browserBytes), 'eae4e3a602a4f9ab6429f1d5dd73049566547cd4');
-  assert.equal(gitBlobSha(webViewBytes), 'c42d8b9e33dd01af93ddadbf9f89ba432255784a');
+  assert.equal(gitBlobSha(webViewBytes), '0841ead427299847b26019b0e5fc0f3066505d94');
   assert.equal(gitBlobSha(mirrorBytes), '39854aee4c3fda0915629de455059f61486c557e');
-  assert.equal(gitBlobSha(injectBytes), '4df61dd53d5bd8d9cb30368905aa20aac261d142');
+  assert.equal(gitBlobSha(injectBytes), '0ab20da11f96efa8f0396edb19a88e3a29450929');
   assert.equal(gitBlobSha(resolverBytes), '37e8b3cc355a024a01259f4476cef330febc9fd1');
   assert.equal(gitBlobSha(dnsModuleBytes), '0a4dfcda8717826b6d68eff4ed2295fa5f12fb92');
   assert.equal(gitBlobSha(dnsVpnBytes), '95201edbeb0cf8fe97f9ab3f3a11ddf4e0b2fff0');
