@@ -121,3 +121,14 @@ test('hero source declares Play as the only TV entry while info and dots stay ha
   assert.match(source, /data-tv-ignore-focus=\{isTvRuntime \? '' : undefined\}/);
   assert.match(source, /tabIndex=\{isTvRuntime \? -1 : undefined\}/);
 });
+
+
+test('streaming platform carousel exposes explicit slides and maps TV focus into valid Embla snaps', async () => {
+  const source = await text('../src/components/EmblaCarouselPlatforms.tsx');
+  assert.match(source, /slides: '\.platform-slide'/);
+  assert.match(source, /className="platform-slide flex-none"/);
+  assert.match(source, /const snaps = emblaApi\.scrollSnapList\(\)/);
+  assert.match(source, /const target = Math\.round\(\(index \/ maxCardIndex\) \* maxSnapIndex\)/);
+  assert.match(source, /emblaApi\.scrollTo\(Math\.min\(maxSnapIndex, Math\.max\(0, target\)\), false\)/);
+  assert.match(source, /requestAnimationFrame\(scrollFocusedPlatform\)/);
+});

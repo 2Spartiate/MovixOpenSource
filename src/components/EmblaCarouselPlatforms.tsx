@@ -30,7 +30,8 @@ const EmblaCarouselPlatforms: React.FC<EmblaCarouselPlatformsProps> = ({ title, 
     slidesToScroll: 1,
     skipSnaps: false,
     duration: effectivePrefs.transitions ? 25 : 0,
-    loop: false
+    loop: false,
+    slides: '.platform-slide'
   });
   const [canScrollPrev, setCanScrollPrev] = useState(false);
   const [canScrollNext, setCanScrollNext] = useState(false);
@@ -90,12 +91,28 @@ const EmblaCarouselPlatforms: React.FC<EmblaCarouselPlatformsProps> = ({ title, 
 
   const handleTVFocus = useCallback((index: number) => {
     if (!(window as any).MOVIX_TV || !emblaApi) return;
-    try {
-      emblaApi.scrollTo(index, !effectivePrefs.transitions);
-    } catch {
-      // The spatial runtime still performs scrollIntoView as a fallback.
-    }
-  }, [emblaApi, effectivePrefs.transitions]);
+    const scrollFocusedPlatform = () => {
+      try {
+        const snaps = emblaApi.scrollSnapList();
+        if (snaps.length === 0) return;
+
+        // With few large platform cards Embla may expose fewer snap points
+        // than there are cards. Map the focused card across the available
+        // snap range instead of passing an out-of-range card index.
+        const maxCardIndex = Math.max(items.length - 1, 1);
+        const maxSnapIndex = Math.max(snaps.length - 1, 0);
+        const target = Math.round((index / maxCardIndex) * maxSnapIndex);
+        emblaApi.scrollTo(Math.min(maxSnapIndex, Math.max(0, target)), false);
+      } catch {
+        // The spatial runtime still performs a hidden-arrow fallback.
+      }
+    };
+
+    // Focus itself can precede Embla's layout/selection bookkeeping by one
+    // frame on Android TV WebView. Run once now and once on the next frame.
+    scrollFocusedPlatform();
+    requestAnimationFrame(scrollFocusedPlatform);
+  }, [emblaApi, items.length]);
 
   return (
     <div className="w-full relative group/carousel -mx-3 md:-mx-4" data-tv-focus-group="carousel-row" data-tv-carousel-row>
@@ -108,7 +125,7 @@ const EmblaCarouselPlatforms: React.FC<EmblaCarouselPlatformsProps> = ({ title, 
         <div className="overflow-visible" ref={emblaRef}>
           <div className="flex gap-6 pr-8 md:pr-16 py-8 pl-4 md:pl-6">
             {items.map((platform, index) => (
-              <div key={platform.id} className="flex-none">
+              <div key={platform.id} className="platform-slide flex-none">
                 <Link to={platform.route} data-tv-focus data-tv-card onFocus={() => handleTVFocus(index)} className="platform-link block w-[250px] h-[150px] group select-none">
                   <div
                     className="w-full h-full relative bg-white rounded-xl"
