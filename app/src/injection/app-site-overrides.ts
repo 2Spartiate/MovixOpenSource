@@ -273,25 +273,17 @@ export function buildAppSiteOverrides(): string {
         (classes.includes('inset-0') || classes.includes('inset-x-0'));
 
       const path = linkPath(link);
-      let focusTarget = link;
 
-      if (isTransparentOverlay && link.parentElement instanceof HTMLElement) {
-        focusTarget = link.parentElement;
-        focusTarget.setAttribute('data-tv-card-proxy', '');
-        focusTarget.setAttribute('data-tv-focus', '');
-        focusTarget.setAttribute('data-tv-card', '');
-        focusTarget.setAttribute('data-tv-focus-id', 'media:' + path);
-        focusTarget.setAttribute('role', 'button');
-        focusTarget.setAttribute('tabindex', '0');
-
+      // Focus the real React Router link, not its visual parent. This keeps the
+      // native PrefetchLink onFocus hook alive on TV, preserves the exact media
+      // destination, and lets the focus ring be painted above the poster.
+      link.setAttribute('data-tv-focus', '');
+      link.setAttribute('data-tv-card', '');
+      link.setAttribute('data-tv-focus-id', 'media:' + path);
+      link.setAttribute('tabindex', '0');
+      link.removeAttribute('data-tv-ignore-focus');
+      if (isTransparentOverlay) {
         link.setAttribute('data-tv-card-link', '');
-        link.setAttribute('data-tv-ignore-focus', '');
-        link.setAttribute('tabindex', '-1');
-      } else {
-        link.setAttribute('data-tv-focus', '');
-        link.setAttribute('data-tv-card', '');
-        link.setAttribute('data-tv-focus-id', 'media:' + path);
-        link.setAttribute('tabindex', '0');
       }
 
       const row = findCardRow(link);
@@ -539,13 +531,10 @@ export function buildAppSiteOverrides(): string {
     api.preferContentAfterNavigation = true;
     api.navigationInProgressUntil = performance.now() + 5000;
 
-    requestAnimationFrame(() => {
-      try {
-        window.scrollTo({ top: 0, left: 0, behavior: 'auto' });
-      } catch {
-        window.scrollTo(0, 0);
-      }
-    });
+    // Do not scroll the old route here. React may keep the previous screen
+    // painted while the lazy destination resolves; forcing scrollTop=0 at this
+    // exact moment exposed Home's first Top-10 card for 1–2 seconds. The site
+    // owns its own post-mount ScrollToTop, so only focus recovery belongs here.
   };
 
   const patchHistory = () => {

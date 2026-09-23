@@ -38,6 +38,15 @@ export function buildTvBootstrap(): string {
           box-shadow: 0 0 0 1px rgba(220, 38, 38, 0.35) !important;
         }
 
+        /* Poster links sit above images and inside overflow-hidden cards.
+           Paint their ring inward so it cannot disappear behind/clipped by the poster. */
+        .movix-tv [data-tv-card]:focus-visible {
+          outline: 3px solid #dc2626 !important;
+          outline-offset: -3px !important;
+          border-radius: 0.75rem !important;
+          box-shadow: inset 0 0 0 1px rgba(220, 38, 38, 0.35) !important;
+        }
+
         .movix-tv [data-tv-carousel-arrow],
         .movix-tv [data-tv-favorite-overlay],
         .movix-tv [data-tv-header-telegram] {
