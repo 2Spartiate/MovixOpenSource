@@ -6,6 +6,10 @@ import {
   type PictureInPictureShimMode,
 } from './picture-in-picture-shim';
 import { buildPlaybackAwakeShim } from './playback-awake-shim';
+import { buildTvBootstrap } from './tv-bootstrap';
+import { buildTvDomDiscoveryRuntime } from './tv-focus-dom';
+import { buildTvDpadRuntime } from './tv-dpad-runtime';
+import { findNextFocusTarget } from './tv-spatial-engine';
 import { USERSCRIPT_SOURCE } from './userscript-source';
 
 export function buildInjectedJavaScript(
@@ -16,6 +20,7 @@ export function buildInjectedJavaScript(
     mediaProxyXhrRoutingEnabled?: boolean;
     journalConsoleEnabled?: boolean;
     mediaProxyScheme?: string | null;
+    tvMode?: boolean;
   } = {},
 ): string {
   const appSiteOverrides = buildAppSiteOverrides();
@@ -24,6 +29,13 @@ export function buildInjectedJavaScript(
     options.pictureInPictureMode ?? 'disabled',
   );
   const playbackAwakeShim = buildPlaybackAwakeShim();
+  const tvBootstrap = options.tvMode ? buildTvBootstrap() : '';
+  const tvDpadRuntime = options.tvMode
+    ? buildTvDpadRuntime(
+        `(${findNextFocusTarget.toString()})`,
+        buildTvDomDiscoveryRuntime(),
+      )
+    : '';
   const bridge = buildBridgeRuntime({
     mediaProxyRoutingEnabled: options.mediaProxyRoutingEnabled,
     mediaProxyCapabilityEnabled: options.mediaProxyCapabilityEnabled,
@@ -47,9 +59,12 @@ export function buildInjectedJavaScript(
 })();
 `;
 
-  // Shared smartphone + TV policy runs before the remote site scripts.
+  // Keep the clean-baseline shared policy. TV adds only its marker/runtime
+  // around that same WebView bootstrap; handheld never receives TV code.
   return `
 ${popupBlocker}
+
+${tvBootstrap}
 
 ${appSiteOverrides}
 
@@ -60,6 +75,8 @@ ${pipShim}
 ${playbackAwakeShim}
 
 ${bridge}
+
+${tvDpadRuntime}
 
 // --- Userscript Movix ---
 ${USERSCRIPT_SOURCE}

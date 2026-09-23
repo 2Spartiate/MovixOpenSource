@@ -25,6 +25,7 @@ import { setLocalPlaybackAwake } from '../services/playbackAwake';
 import { setPictureInPicturePlaybackActive } from '../services/pictureInPicture';
 import { useBrowserUIPrefs } from '../hooks/useBrowserUIPrefs';
 import { useAddress } from '../context/AddressContext';
+import { isAndroidTvRuntime } from '../platform/tvRuntime';
 import SettingsScreen from './SettingsScreen';
 
 export default function BrowserScreen() {
@@ -32,6 +33,8 @@ export default function BrowserScreen() {
   const webViewRef = useRef<WebViewBrowserRef>(null);
   const { prefs: uiPrefs } = useBrowserUIPrefs();
   const { config, isLoading, refresh } = useAddress();
+  // Preserve the clean-baseline TV detection: native Platform.isTV only.
+  const isTV = useMemo(() => isAndroidTvRuntime(), []);
 
   const navBarHidden = !uiPrefs.showNavBar;
   const toolbarHidden = !uiPrefs.showUrlBar && !uiPrefs.showNavBar;
@@ -71,14 +74,25 @@ export default function BrowserScreen() {
         return true;
       }
       if (canGoBack) {
-        webViewRef.current?.goBack();
+        if (isTV) {
+          webViewRef.current?.injectJavaScript(`
+            (() => {
+              const event = new Event('movix-tv-back', { cancelable: true });
+              window.dispatchEvent(event);
+              if (!event.defaultPrevented) window.history.back();
+            })();
+            true;
+          `);
+        } else {
+          webViewRef.current?.goBack();
+        }
         return true;
       }
       return false;
     });
 
     return () => handler.remove();
-  }, [canGoBack, settingsVisible]);
+  }, [canGoBack, isTV, settingsVisible]);
 
   useEffect(() => {
     const subscription = AppState.addEventListener('change', nextState => {
@@ -179,13 +193,14 @@ export default function BrowserScreen() {
           key={`${activeUrl}:${webViewGeneration}`}
           ref={webViewRef}
           url={activeUrl}
+          isTV={isTV}
           onNavigationStateChange={onNavigationStateChange}
           onError={onWebViewError}
           onPictureInPictureModeChange={onPictureInPictureModeChange}
         />
       </View>
 
-      {!isPictureInPictureActive && !toolbarHidden && (
+      {!isPictureInPictureActive && !isTV && !toolbarHidden && (
         <View style={{ paddingBottom: insets.bottom }}>
           {Platform.OS === 'ios' ? (
             <IOSBrowserToolbar
@@ -251,7 +266,7 @@ export default function BrowserScreen() {
         </View>
       </Modal>
 
-      {!isPictureInPictureActive && navBarHidden && (
+      {!isPictureInPictureActive && !isTV && navBarHidden && (
         <MiniPill onPress={() => setSettingsVisible(true)} />
       )}
     </View>
