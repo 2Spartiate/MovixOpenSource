@@ -87,8 +87,17 @@ const EmblaCarouselGenres: React.FC<EmblaCarouselGenresProps> = ({ title, items 
     }
   }, [emblaApi, getStep, effectivePrefs.transitions]);
 
+  const handleTVFocus = useCallback((index: number) => {
+    if (!(window as any).MOVIX_TV || !emblaApi) return;
+    try {
+      emblaApi.scrollTo(index, !effectivePrefs.transitions);
+    } catch {
+      // The spatial runtime still performs scrollIntoView as a fallback.
+    }
+  }, [emblaApi, effectivePrefs.transitions]);
+
   return (
-    <div className="w-full relative">
+    <div className="w-full relative" data-tv-focus-group="carousel-row" data-tv-carousel-row>
       {title && (
         <div className="flex justify-between items-center mb-2 px-4 md:px-6 relative z-10">
           <h2 className="section-title">{title}</h2>
@@ -97,9 +106,9 @@ const EmblaCarouselGenres: React.FC<EmblaCarouselGenresProps> = ({ title, items 
       <div className="relative w-full">
         <div className="overflow-visible" ref={emblaRef}>
           <div className="flex gap-4 md:gap-6 pr-4 md:pr-6 py-4 pl-4 md:pl-6">
-            {items.map((genre) => (
+            {items.map((genre, index) => (
               <div key={genre.id} className="flex-none">
-                <Link to={genre.route} className="block w-[180px] h-[100px] md:w-[220px] md:h-[120px] group select-none">
+                <Link to={genre.route} data-tv-focus data-tv-card onFocus={() => handleTVFocus(index)} className="block w-[180px] h-[100px] md:w-[220px] md:h-[120px] group select-none">
                   <div className="w-full h-full relative rounded-xl overflow-hidden bg-gradient-to-br from-red-600/20 to-red-400/10 ring-1 ring-white/10">
                     {genre.imageUrl && (
                       <img
@@ -126,6 +135,8 @@ const EmblaCarouselGenres: React.FC<EmblaCarouselGenresProps> = ({ title, items 
         </div>
         <button
           type="button"
+          data-tv-ignore-focus
+          data-tv-carousel-arrow
           aria-label={t('common.previous')}
           onClick={handlePrev}
           onPointerDown={(e) => { e.preventDefault(); e.stopPropagation(); }}
@@ -137,6 +148,8 @@ const EmblaCarouselGenres: React.FC<EmblaCarouselGenresProps> = ({ title, items 
         </button>
         <button
           type="button"
+          data-tv-ignore-focus
+          data-tv-carousel-arrow
           aria-label={t('common.next')}
           onClick={handleNext}
           onPointerDown={(e) => { e.preventDefault(); e.stopPropagation(); }}

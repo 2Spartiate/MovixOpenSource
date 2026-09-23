@@ -87,8 +87,17 @@ const EmblaCarouselPlatforms: React.FC<EmblaCarouselPlatformsProps> = ({ title, 
     }
   }, [emblaApi, getStep, effectivePrefs.transitions]);
 
+  const handleTVFocus = useCallback((index: number) => {
+    if (!(window as any).MOVIX_TV || !emblaApi) return;
+    try {
+      emblaApi.scrollTo(index, !effectivePrefs.transitions);
+    } catch {
+      // The spatial runtime still performs scrollIntoView as a fallback.
+    }
+  }, [emblaApi, effectivePrefs.transitions]);
+
   return (
-    <div className="w-full relative group/carousel -mx-3 md:-mx-4">
+    <div className="w-full relative group/carousel -mx-3 md:-mx-4" data-tv-focus-group="carousel-row" data-tv-carousel-row>
       {title && (
         <div className="flex justify-between items-center mb-2 px-4 md:px-6 relative z-10">
           <h2 className="section-title">{title}</h2>
@@ -97,9 +106,9 @@ const EmblaCarouselPlatforms: React.FC<EmblaCarouselPlatformsProps> = ({ title, 
       <div className="relative w-full">
         <div className="overflow-visible" ref={emblaRef}>
           <div className="flex gap-6 pr-8 md:pr-16 py-8 pl-4 md:pl-6">
-            {items.map((platform) => (
+            {items.map((platform, index) => (
               <div key={platform.id} className="flex-none">
-                <Link to={platform.route} className="platform-link block w-[250px] h-[150px] group select-none">
+                <Link to={platform.route} data-tv-focus data-tv-card onFocus={() => handleTVFocus(index)} className="platform-link block w-[250px] h-[150px] group select-none">
                   <div
                     className="w-full h-full relative bg-white rounded-xl"
                     onMouseEnter={() => {
@@ -174,6 +183,8 @@ const EmblaCarouselPlatforms: React.FC<EmblaCarouselPlatformsProps> = ({ title, 
         </div>
         <button
           type="button"
+          data-tv-ignore-focus
+          data-tv-carousel-arrow
           aria-label={t('common.previous')}
           onClick={handlePrev}
           onPointerDown={(e) => { e.preventDefault(); e.stopPropagation(); }}
@@ -192,6 +203,8 @@ const EmblaCarouselPlatforms: React.FC<EmblaCarouselPlatformsProps> = ({ title, 
         </button>
         <button
           type="button"
+          data-tv-ignore-focus
+          data-tv-carousel-arrow
           aria-label={t('common.next')}
           onClick={handleNext}
           onPointerDown={(e) => { e.preventDefault(); e.stopPropagation(); }}

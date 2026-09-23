@@ -13,6 +13,7 @@ import { useLightMode } from '@/context/LightModeContext';
 
 const TMDB_API_KEY = import.meta.env.VITE_TMDB_API_KEY || '';
 const AUTO_SLIDE_MS = 6000;
+const TV_AUTO_SLIDE_MS = 10000;
 
 // Sur mobile, taper « Regarder » ratait une fois sur deux : Embla démarre son
 // drag dès le premier `touchmove` et appelle `preventDefault()`, ce qui pousse
@@ -56,13 +57,25 @@ interface HeroSliderProps {
 const HeroSliderInner: React.FC<HeroSliderProps> = ({ items }) => {
   const { t } = useTranslation();
   const { effectivePrefs } = useLightMode();
-  const options = useMemo(() => ({ ...HERO_EMBLA_OPTIONS, duration: effectivePrefs.transitions ? 40 : 0 }), [effectivePrefs.transitions]);
+  const isTvRuntime =
+    typeof window !== 'undefined' && (window as any).MOVIX_TV === true;
+  const autoSlideMs = isTvRuntime ? TV_AUTO_SLIDE_MS : AUTO_SLIDE_MS;
+  const options = useMemo(
+    () => ({
+      ...HERO_EMBLA_OPTIONS,
+      duration: isTvRuntime || effectivePrefs.transitions ? 40 : 0,
+    }),
+    [effectivePrefs.transitions, isTvRuntime],
+  );
   const [emblaRef, emblaApi] = useEmblaCarousel(options);
   const autoSlideInterval = useRef<ReturnType<typeof setTimeout> | null>(null);
   const [logoUrls, setLogoUrls] = useState<{ [key: number]: string | null }>({});
   const [selectedIndex, setSelectedIndex] = useState(0);
   const [userPaused, setUserPaused] = useState(false);
-  const isPaused = userPaused || !effectivePrefs.carouselAutoplay || items.length < 2;
+  const isPaused =
+    userPaused ||
+    (!isTvRuntime && !effectivePrefs.carouselAutoplay) ||
+    items.length < 2;
   const [isVisible, setIsVisible] = useState(true);
   const [documentVisible, setDocumentVisible] = useState(() => !document.hidden);
   const logoCache = useRef<{ [key: number]: string | null }>({});
@@ -226,8 +239,11 @@ const HeroSliderInner: React.FC<HeroSliderProps> = ({ items }) => {
     const scheduleNext = () => {
       if (autoSlideInterval.current) clearTimeout(autoSlideInterval.current);
       const elapsed = performance.now() - progressStartRef.current;
-      const remaining = Math.max(AUTO_SLIDE_MS - elapsed, 50);
-      autoSlideInterval.current = setTimeout(() => emblaApi.scrollNext(!effectivePrefs.transitions), remaining);
+      const remaining = Math.max(autoSlideMs - elapsed, 50);
+      autoSlideInterval.current = setTimeout(
+        () => emblaApi.scrollNext(isTvRuntime ? false : !effectivePrefs.transitions),
+        remaining,
+      );
     };
     scheduleNext();
 
@@ -258,7 +274,17 @@ const HeroSliderInner: React.FC<HeroSliderProps> = ({ items }) => {
       root?.removeEventListener('pointerup', restartCycle);
       root?.removeEventListener('pointercancel', restartCycle);
     };
-  }, [emblaApi, isPaused, isVisible, documentVisible, effectivePrefs.transitions, progressKey, restartCycle]);
+  }, [
+    emblaApi,
+    isPaused,
+    isVisible,
+    documentVisible,
+    effectivePrefs.transitions,
+    progressKey,
+    restartCycle,
+    autoSlideMs,
+    isTvRuntime,
+  ]);
 
   // Horizontal wheel support
   useEffect(() => {
@@ -289,9 +315,9 @@ const HeroSliderInner: React.FC<HeroSliderProps> = ({ items }) => {
   const scrollTo = useCallback((idx: number) => {
     if (emblaApi) {
       restartCycle();
-      emblaApi.scrollTo(idx, !effectivePrefs.transitions);
+      emblaApi.scrollTo(idx, isTvRuntime ? false : !effectivePrefs.transitions);
     }
-  }, [emblaApi, effectivePrefs.transitions, restartCycle]);
+  }, [emblaApi, effectivePrefs.transitions, restartCycle, isTvRuntime]);
 
   const getYear = (item: Media) => {
     const date = item.release_date || item.first_air_date;
@@ -302,6 +328,7 @@ const HeroSliderInner: React.FC<HeroSliderProps> = ({ items }) => {
 
   return (
     <motion.div
+      data-tv-hero-slider={isTvRuntime ? '' : undefined}
       initial={{ opacity: 0, y: 10 }}
       animate={{ opacity: 1, y: 0 }}
       transition={{ duration: 0.6, ease: 'easeOut' }}
@@ -472,6 +499,7 @@ const HeroSliderInner: React.FC<HeroSliderProps> = ({ items }) => {
                 <button
                   key={idx}
                   type="button"
+                  data-tv-hero-dot={isTvRuntime ? '' : undefined}
                   onClick={() => scrollTo(idx)}
                   aria-label={t('settings.carouselSlide', { position: idx + 1, total: items.length })}
                   aria-current={idx === selectedIndex ? 'true' : undefined}
@@ -489,19 +517,19 @@ const HeroSliderInner: React.FC<HeroSliderProps> = ({ items }) => {
             </div>
 
             {/* Divider */}
-            {effectivePrefs.carouselAutoplay && items.length > 1 && <div className="w-px h-4 bg-white/20" />}
+            {(isTvRuntime || effectivePrefs.carouselAutoplay) && items.length > 1 && <div className="w-px h-4 bg-white/20" />}
 
             {/* Progress bar */}
-            {effectivePrefs.carouselAutoplay && items.length > 1 && <div className="w-12 sm:w-20 h-1 bg-white/15 rounded-full overflow-hidden">
+            {(isTvRuntime || effectivePrefs.carouselAutoplay) && items.length > 1 && <div className="w-12 sm:w-20 h-1 bg-white/15 rounded-full overflow-hidden">
               <div
                 key={progressKey}
                 className={`h-full w-full bg-red-500 rounded-full hero-progress-fill ${frozen ? 'is-paused' : ''}`}
-                style={{ ['--hero-duration' as string]: `${AUTO_SLIDE_MS}ms` } as React.CSSProperties}
+                style={{ ['--hero-duration' as string]: `${autoSlideMs}ms` } as React.CSSProperties}
               />
             </div>}
 
             {/* Pause toggle */}
-            {effectivePrefs.carouselAutoplay && items.length > 1 && <button
+            {(isTvRuntime || effectivePrefs.carouselAutoplay) && items.length > 1 && <button
               type="button"
               onClick={() => setUserPaused((p) => !p)}
               aria-label={t(isPaused ? 'settings.carouselResume' : 'settings.carouselPause')}

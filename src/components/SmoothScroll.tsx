@@ -241,7 +241,8 @@ const SmoothScroll = () => {
     const initLenis = () => {
       const userEnabled = getSmoothScrollSetting();
       const reducedMotion = window.matchMedia('(prefers-reduced-motion: reduce)').matches;
-      const isEnabled = userEnabled && !reducedMotion && effectivePrefs.transitions;
+      const isTvRuntime = (window as Window & { MOVIX_TV?: boolean }).MOVIX_TV === true;
+      const isEnabled = userEnabled && !isTvRuntime && !reducedMotion && effectivePrefs.transitions;
 
       if (!isEnabled) {
         if (lenis) {
