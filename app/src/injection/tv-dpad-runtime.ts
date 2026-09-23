@@ -113,6 +113,128 @@ ${domDiscoveryRuntime}
     return null;
   };
 
+  const centerVerticalTarget = (element) => {
+    if (!(element instanceof HTMLElement)) return false;
+    const rect = element.getBoundingClientRect();
+
+    let scroller = element.parentElement;
+    while (
+      scroller &&
+      scroller !== document.body &&
+      scroller !== document.documentElement
+    ) {
+      const style = window.getComputedStyle(scroller);
+      const canScroll = scroller.scrollHeight > scroller.clientHeight + 1;
+      if (canScroll && style.overflowY !== 'visible') {
+        const bounds = scroller.getBoundingClientRect();
+        const delta =
+          (rect.top + rect.height / 2) -
+          (bounds.top + bounds.height / 2);
+        const top = Math.max(0, scroller.scrollTop + delta);
+        if (typeof scroller.scrollTo === 'function') {
+          scroller.scrollTo({ top, left: scroller.scrollLeft, behavior: 'auto' });
+        } else {
+          scroller.scrollTop = top;
+        }
+        return true;
+      }
+      scroller = scroller.parentElement;
+    }
+
+    const top = Math.max(
+      0,
+      window.scrollY + rect.top + rect.height / 2 - window.innerHeight / 2,
+    );
+    try {
+      window.scrollTo({ top, left: window.scrollX, behavior: 'auto' });
+    } catch {
+      window.scrollTo(window.scrollX, top);
+    }
+    return true;
+  };
+
+  const centerCarouselTarget = (element, row) => {
+    if (!(element instanceof HTMLElement) || !(row instanceof HTMLElement)) {
+      return false;
+    }
+
+    // Prefer a real horizontal scroll container belonging to this row. This
+    // keeps left/right movement local to the carousel and never pans the page.
+    const boundary = row.parentElement;
+    let scroller = element.parentElement;
+    while (
+      scroller &&
+      scroller !== document.body &&
+      scroller !== document.documentElement
+    ) {
+      const style = window.getComputedStyle(scroller);
+      const canScroll = scroller.scrollWidth > scroller.clientWidth + 1;
+      if (canScroll && style.overflowX !== 'visible') {
+        const rect = element.getBoundingClientRect();
+        const bounds = scroller.getBoundingClientRect();
+        const delta =
+          (rect.left + rect.width / 2) -
+          (bounds.left + bounds.width / 2);
+        const left = Math.max(0, scroller.scrollLeft + delta);
+        if (typeof scroller.scrollTo === 'function') {
+          scroller.scrollTo({ left, top: scroller.scrollTop, behavior: 'auto' });
+        } else {
+          scroller.scrollLeft = left;
+        }
+        return true;
+      }
+      if (scroller === boundary) break;
+      scroller = scroller.parentElement;
+    }
+
+    // Embla often moves slides with transforms instead of scrollLeft. Let the
+    // browser reveal the focused slide as a fallback, then restore the page
+    // coordinates so only the carousel can move.
+    const pageX = window.scrollX;
+    const pageY = window.scrollY;
+    try {
+      element.scrollIntoView({
+        behavior: 'auto',
+        block: 'nearest',
+        inline: 'center',
+      });
+    } catch {
+      element.scrollIntoView();
+    }
+    try {
+      window.scrollTo({ left: pageX, top: pageY, behavior: 'auto' });
+    } catch {
+      window.scrollTo(pageX, pageY);
+    }
+    return true;
+  };
+
+  const revealFocusedElement = (element, direction) => {
+    if (!(element instanceof HTMLElement)) return false;
+
+    const horizontalMove = direction === 'left' || direction === 'right';
+    const carouselRow = element.closest('[data-tv-carousel-row]');
+
+    if (horizontalMove && carouselRow instanceof HTMLElement) {
+      return centerCarouselTarget(element, carouselRow);
+    }
+
+    if (direction === 'up' || direction === 'down') {
+      return centerVerticalTarget(element);
+    }
+
+    try {
+      element.scrollIntoView({
+        behavior: 'auto',
+        block: 'nearest',
+        inline: 'nearest',
+      });
+    } catch {
+      element.scrollIntoView();
+    }
+    return true;
+  };
+
   const focusWithoutJank = (element, scroll = true) => {
     if (!(element instanceof HTMLElement)) return false;
     try {
@@ -121,17 +243,7 @@ ${domDiscoveryRuntime}
       element.focus();
     }
     if (document.activeElement !== element) return false;
-    if (scroll) {
-      try {
-        element.scrollIntoView({
-          behavior: 'auto',
-          block: 'nearest',
-          inline: element.closest('[data-tv-carousel-row]') ? 'center' : 'nearest',
-        });
-      } catch {
-        element.scrollIntoView();
-      }
-    }
+    if (scroll) centerVerticalTarget(element);
     return true;
   };
 
@@ -155,10 +267,26 @@ ${domDiscoveryRuntime}
     if (api.restoreLastFocus()) return true;
 
     const elements = api.getTVFocusableElements();
+    const contentCard = elements.find(element => element.hasAttribute('data-tv-card'));
+
+    if (api.preferContentAfterNavigation) {
+      if (contentCard) {
+        api.preferContentAfterNavigation = false;
+        api.navigationInProgressUntil = 0;
+        return focusWithoutJank(contentCard);
+      }
+
+      if (performance.now() < Number(api.navigationInProgressUntil || 0)) {
+        return false;
+      }
+
+      api.preferContentAfterNavigation = false;
+    }
+
     const target =
       elements.find(element => element.hasAttribute('data-tv-autofocus')) ||
+      contentCard ||
       elements.find(element => element.hasAttribute('data-tv-primary-focus')) ||
-      elements.find(element => element.hasAttribute('data-tv-card')) ||
       elements[0];
 
     return target ? focusWithoutJank(target) : false;
@@ -182,18 +310,7 @@ ${domDiscoveryRuntime}
       next.element.focus();
     }
 
-    const horizontalMove = direction === 'left' || direction === 'right';
-    const carouselRow = next.element.closest('[data-tv-carousel-row]');
-
-    try {
-      next.element.scrollIntoView({
-        behavior: 'auto',
-        block: 'nearest',
-        inline: horizontalMove && carouselRow ? 'center' : 'nearest',
-      });
-    } catch {
-      next.element.scrollIntoView();
-    }
+    revealFocusedElement(next.element, direction);
 
     return document.activeElement === next.element;
   };
@@ -204,8 +321,11 @@ ${domDiscoveryRuntime}
     const direction = directions[event.key];
     if (!direction) return false;
 
-    const moved = api.moveFocus(direction);
-    if (!moved) return false;
+    // Once an arrow belongs to the TV spatial graph, consume it even when
+    // the current element is already at that edge. Otherwise Chromium falls
+    // back to page scrolling, which feels like a web page instead of a TV app.
+    // Player/native scopes are filtered by shouldSpatialNavigationHandle above.
+    api.moveFocus(direction);
 
     event.preventDefault();
     event.stopPropagation();
@@ -228,6 +348,10 @@ ${domDiscoveryRuntime}
     cancelAnimationFrame(api.focusRecoveryRaf);
     api.focusRecoveryRaf = null;
   }
+  if (api.focusRecoveryTimer) {
+    clearTimeout(api.focusRecoveryTimer);
+    api.focusRecoveryTimer = null;
+  }
 
   const handleFocusIn = (event) => {
     const target = event.target;
@@ -238,11 +362,27 @@ ${domDiscoveryRuntime}
   api.focusinHandler = handleFocusIn;
 
   const scheduleFocusRecovery = () => {
-    if (!pageFocusIsEmpty() || api.focusRecoveryRaf) return;
+    if (!pageFocusIsEmpty() || api.focusRecoveryRaf || api.focusRecoveryTimer) return;
+
     api.focusRecoveryRaf = requestAnimationFrame(() => {
       api.focusRecoveryRaf = null;
       if (!pageFocusIsEmpty()) return;
-      if (!api.restoreLastFocus()) api.ensureInitialFocus();
+
+      // Check immediately on every recovery pass. ensureInitialFocus() will
+      // take the first media card as soon as it exists, but deliberately
+      // refuses to fall back to the header search while a SPA route is still
+      // mounting its content.
+      if (api.restoreLastFocus() || api.ensureInitialFocus()) return;
+
+      const remainingNavigationMs =
+        Number(api.navigationInProgressUntil || 0) - performance.now();
+
+      if (remainingNavigationMs > 0 && api.preferContentAfterNavigation) {
+        api.focusRecoveryTimer = setTimeout(() => {
+          api.focusRecoveryTimer = null;
+          scheduleFocusRecovery();
+        }, Math.min(Math.max(remainingNavigationMs, 80), 250));
+      }
     });
   };
 
@@ -251,8 +391,19 @@ ${domDiscoveryRuntime}
       api.focusObserver = new MutationObserver(scheduleFocusRecovery);
       api.focusObserver.observe(document.body, { childList: true, subtree: true });
     }
+
+    // The remote SPA usually mounts the header before the media rows. Waiting
+    // briefly for a card prevents the search input from stealing initial focus.
+    if (pageFocusIsEmpty()) {
+      api.preferContentAfterNavigation = true;
+      api.navigationInProgressUntil = Math.max(
+        Number(api.navigationInProgressUntil || 0),
+        performance.now() + 5000,
+      );
+    }
+
     requestAnimationFrame(() => {
-      if (pageFocusIsEmpty()) api.ensureInitialFocus();
+      if (pageFocusIsEmpty()) scheduleFocusRecovery();
     });
   };
 
@@ -272,6 +423,10 @@ ${domDiscoveryRuntime}
     if (api.focusRecoveryRaf) {
       cancelAnimationFrame(api.focusRecoveryRaf);
       api.focusRecoveryRaf = null;
+    }
+    if (api.focusRecoveryTimer) {
+      clearTimeout(api.focusRecoveryTimer);
+      api.focusRecoveryTimer = null;
     }
   };
 

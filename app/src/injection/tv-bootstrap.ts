@@ -16,15 +16,38 @@ export function buildTvBootstrap(): string {
       const style = document.createElement('style');
       style.id = 'movix-tv-bootstrap-style';
       style.textContent = \`
+        .movix-tv,
+        .movix-tv body {
+          scroll-behavior: auto !important;
+          scrollbar-width: none !important;
+          -ms-overflow-style: none !important;
+          overscroll-behavior: none !important;
+        }
+
+        .movix-tv::-webkit-scrollbar,
+        .movix-tv body::-webkit-scrollbar,
+        .movix-tv *::-webkit-scrollbar {
+          width: 0 !important;
+          height: 0 !important;
+          display: none !important;
+        }
+
         .movix-tv :focus-visible {
-          outline: 3px solid #ffffff !important;
+          outline: 3px solid #dc2626 !important;
           outline-offset: 3px !important;
+          box-shadow: 0 0 0 1px rgba(220, 38, 38, 0.35) !important;
         }
 
         .movix-tv [data-tv-carousel-arrow],
         .movix-tv [data-tv-favorite-overlay],
         .movix-tv [data-tv-header-telegram] {
           display: none !important;
+        }
+
+        .movix-tv .hero-progress-fill {
+          --hero-duration: 10000ms !important;
+          animation-duration: 10000ms !important;
+          animation-play-state: running !important;
         }
       \`;
       (document.head || root).appendChild(style);
