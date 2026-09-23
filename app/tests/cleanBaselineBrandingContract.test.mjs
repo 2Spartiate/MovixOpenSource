@@ -87,3 +87,28 @@ test('television uiMode overrides the application icon foreground without changi
   assert.match(launcher, /@drawable\/ic_launcher_foreground_scaled/);
   assert.match(round, /@drawable\/ic_launcher_foreground_scaled/);
 });
+
+
+test('Google TV gets same-name television adaptive launcher resources with compact artwork', async () => {
+  const compact = (await bytes('android/app/src/main/res/drawable/ic_launcher_tv_foreground_compact.xml')).toString('utf8');
+  assert.match(compact, /android:width="64dp"/);
+  assert.match(compact, /android:height="64dp"/);
+  assert.match(compact, /android:gravity="center"/);
+
+  for (const path of [
+    'android/app/src/main/res/mipmap-television-anydpi-v26/ic_launcher.xml',
+    'android/app/src/main/res/mipmap-television-anydpi-v26/ic_launcher_round.xml',
+    'android/app/src/main/res/mipmap-television-anydpi-v26/ic_launcher_tv.xml',
+    'android/app/src/main/res/mipmap-television-anydpi-v33/ic_launcher.xml',
+    'android/app/src/main/res/mipmap-television-anydpi-v33/ic_launcher_round.xml',
+    'android/app/src/main/res/mipmap-television-anydpi-v33/ic_launcher_tv.xml',
+  ]) {
+    const source = (await bytes(path)).toString('utf8');
+    assert.match(source, /@drawable\/ic_launcher_tv_foreground_compact/);
+  }
+
+  // Phone/default resources remain on their existing foreground and framing.
+  const phone = (await bytes('android/app/src/main/res/mipmap-anydpi-v26/ic_launcher.xml')).toString('utf8');
+  assert.match(phone, /@drawable\/ic_launcher_foreground_scaled/);
+  assert.doesNotMatch(phone, /ic_launcher_tv_foreground_compact/);
+});

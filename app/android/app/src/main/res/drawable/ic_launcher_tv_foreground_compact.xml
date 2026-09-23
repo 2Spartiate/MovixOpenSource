@@ -1,0 +1,16 @@
+<?xml version="1.0" encoding="utf-8"?>
+<layer-list xmlns:android="http://schemas.android.com/apk/res/android">
+    <!--
+      Google TV circular "Your apps" presentation masks the adaptive icon.
+      Keep the Movix artwork physically smaller inside the 108dp adaptive canvas
+      instead of relying on launcher-side normalization/insets.
+    -->
+    <item
+        android:width="64dp"
+        android:height="64dp"
+        android:gravity="center">
+        <bitmap
+            android:src="@drawable/ic_launcher_foreground"
+            android:gravity="fill" />
+    </item>
+</layer-list>
