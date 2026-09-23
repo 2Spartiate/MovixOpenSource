@@ -132,3 +132,14 @@ test('streaming platform carousel exposes explicit slides and maps TV focus into
   assert.match(source, /emblaApi\.scrollTo\(Math\.min\(maxSnapIndex, Math\.max\(0, target\)\), false\)/);
   assert.match(source, /requestAnimationFrame\(scrollFocusedPlatform\)/);
 });
+
+
+test('TV Home removes team suggestion and promotes recent shows below Tendances without changing phone order', async () => {
+  const source = await text('../src/pages/Home.tsx');
+  assert.match(source, /const isTvRuntime = typeof window !== 'undefined'/);
+  assert.match(source, /recentShowsCategory/);
+  assert.match(source, /category\.id === 'recent-tv'/);
+  assert.match(source, /isTvRuntime && recentShowsCategory/);
+  assert.match(source, /!isTvRuntime && \(/);
+  assert.match(source, /bottomCategories\.map/);
+});

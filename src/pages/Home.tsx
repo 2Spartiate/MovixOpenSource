@@ -342,6 +342,7 @@ const normalizePersonalizedReco = (reco: PersonalizedRecommendations | null): Pe
 
 const Home: React.FC = () => {
   const { t } = useTranslation();
+  const isTvRuntime = typeof window !== 'undefined' && (window as any).MOVIX_TV === true;
   const tmdbLanguage = getTmdbLanguage();
   const [loading, setLoading] = useState(true);
   const [heroItems, setHeroItems] = useState<Media[]>([]);
@@ -1124,6 +1125,18 @@ const Home: React.FC = () => {
     [t]
   );
 
+  const recentShowsCategory = useMemo(
+    () => categories.find((category) => category.id === 'recent-tv') || null,
+    [categories],
+  );
+
+  const bottomCategories = useMemo(
+    () => isTvRuntime
+      ? categories.filter((category) => category.id !== 'recent-tv')
+      : categories,
+    [categories, isTvRuntime],
+  );
+
   const platformsItems = useMemo(() => [
     { id: 8, src: "https://u.cubeupload.com/mystic/8df6ce62504c1ab31aab.png", video: "https://media.tenor.com/hd7jyV_dMS8AAAPo/netflix-media-services-provider.mp4", alt: "Netflix", route: "/provider/8", label: t('home.filmsAndSeries', { count: 2817 }) },
     { id: 119, src: "https://u.cubeupload.com/mystic/b222691607d658c2fa52.png", video: "https://media.tenor.com/T7L_NCdPIvAAAAPo/prime-video.mp4", alt: "Prime Video", route: "/provider/119", label: t('home.filmsAndSeries', { count: 2799 }) },
@@ -1298,6 +1311,20 @@ const Home: React.FC = () => {
                     </LazySection>
                   </div>
 
+                  {/* TV UX: "Dernières séries" remonte juste sous Tendances.
+                      Sur téléphone, son emplacement historique reste inchangé. */}
+                  {isTvRuntime && recentShowsCategory && (
+                    <div className="home-section px-4 md:px-8">
+                      <LazySection index={4} immediateLoadCount={IMMEDIATE_LOAD_COUNT}>
+                        <EmblaCarousel
+                          title={recentShowsCategory.title}
+                          items={recentShowsCategory.items}
+                          mediaType={recentShowsCategory.id}
+                        />
+                      </LazySection>
+                    </div>
+                  )}
+
                   {/* Sagas - Lazy loaded (index 4) — le fetch des 20 collections TMDB est
                       déclenché par onLoad à l'approche du viewport, plus au mount de Home (perf) */}
                   <div className="home-section px-4 md:px-8">
@@ -1318,8 +1345,9 @@ const Home: React.FC = () => {
                     </LazySection>
                   </div>
 
-                  {/* Featured Series - Team Selection — fetch + image différés via LazySection,
-                      image en w1280 au lieu de original (perf) */}
+                  {/* Featured Series / "Notre suggestion": retained on phone,
+                      intentionally removed from Google TV Home UX. */}
+                  {!isTvRuntime && (
                   <LazySection
                     key={`featured-${tmdbLanguage}`}
                     index={5}
@@ -1402,6 +1430,7 @@ const Home: React.FC = () => {
                     </motion.div>
                   )}
                   </LazySection>
+                  )}
 
                   {/* Films Populaires - Lazy loaded (index 5) */}
                   <div className="home-section px-4 md:px-8">
@@ -1415,7 +1444,7 @@ const Home: React.FC = () => {
                   </div>
 
                   {/* Category Genre Rows - Lazy loaded (index 6+) */}
-                  {categories.map((category, catIndex) => (
+                  {bottomCategories.map((category, catIndex) => (
                     <div key={category.id} className="home-section px-4 md:px-8">
                       <LazySection index={6 + catIndex} immediateLoadCount={IMMEDIATE_LOAD_COUNT}>
                         <EmblaCarousel
