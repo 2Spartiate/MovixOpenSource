@@ -15,6 +15,7 @@ on:
       - agent/google-tv-home-focus-platform-v5
       - agent/google-tv-nav-hardening-v6
       - agent/google-tv-header-numeric-shortcuts-v7
+      - agent/google-tv-menu-ime-polish-v8
     paths:
       - 'app/**'
       - 'src/**'
