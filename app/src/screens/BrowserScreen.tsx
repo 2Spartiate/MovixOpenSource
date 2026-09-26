@@ -56,7 +56,7 @@ export default function BrowserScreen() {
   const [dnsEnabled, setDnsEnabled] = useState(false);
   const [settingsVisible, setSettingsVisible] = useState(false);
   const [exitConfirmVisible, setExitConfirmVisible] = useState(false);
-  const [exitChoice, setExitChoice] = useState<'no' | 'yes' | null>('no');
+  const [exitChoice, setExitChoice] = useState<'no' | 'yes' | null>(null);
   const [exitPreferredFocus, setExitPreferredFocus] = useState(false);
   const exitNoButtonRef = useRef<React.ElementRef<typeof Pressable>>(null);
   const exitYesButtonRef = useRef<React.ElementRef<typeof Pressable>>(null);
@@ -96,13 +96,13 @@ export default function BrowserScreen() {
       }
       if (exitConfirmVisible) {
         setExitConfirmVisible(false);
-        setExitChoice('no');
+        setExitChoice(null);
         setExitPreferredFocus(false);
         return true;
       }
       if (isTV) {
         if (isTvHome) {
-          setExitChoice('no');
+          setExitChoice(null);
           setExitPreferredFocus(true);
           setExitConfirmVisible(true);
           return true;
@@ -285,7 +285,7 @@ export default function BrowserScreen() {
         animationType="fade"
         onRequestClose={() => {
           setExitConfirmVisible(false);
-          setExitChoice('no');
+          setExitChoice(null);
           setExitPreferredFocus(false);
         }}>
         <View style={styles.exitOverlay}>
@@ -294,7 +294,26 @@ export default function BrowserScreen() {
             <Text style={styles.exitMessage}>
               Êtes-vous sûr de vouloir quitter l'application ?
             </Text>
-            <View style={styles.exitActions}>
+            <View
+              style={styles.exitActions}
+              onFocusCapture={(event) => {
+                const focusedTarget = event.nativeEvent.target;
+                const noTarget = findNodeHandle(exitNoButtonRef.current);
+                const yesTarget = findNodeHandle(exitYesButtonRef.current);
+                if (focusedTarget === noTarget) {
+                  setExitChoice('no');
+                } else if (focusedTarget === yesTarget) {
+                  setExitChoice('yes');
+                }
+              }}
+              onBlurCapture={(event) => {
+                const blurredTarget = event.nativeEvent.target;
+                const noTarget = findNodeHandle(exitNoButtonRef.current);
+                const yesTarget = findNodeHandle(exitYesButtonRef.current);
+                if (blurredTarget === noTarget || blurredTarget === yesTarget) {
+                  setExitChoice(null);
+                }
+              }}>
               <Pressable
                 ref={exitNoButtonRef}
                 accessibilityRole="button"
@@ -305,16 +324,10 @@ export default function BrowserScreen() {
                   nextFocusLeft: findNodeHandle(exitNoButtonRef.current) ?? undefined,
                   nextFocusRight: findNodeHandle(exitYesButtonRef.current) ?? undefined,
                 } as any)}
-                onFocus={() => {
-                  setExitChoice('no');
-                  setExitPreferredFocus(false);
-                }}
-                onBlur={() => {
-                  setExitChoice(current => current === 'no' ? null : current);
-                }}
+                onFocus={() => setExitPreferredFocus(false)}
                 onPress={() => {
                   setExitConfirmVisible(false);
-                  setExitChoice('no');
+                  setExitChoice(null);
                   setExitPreferredFocus(false);
                 }}
                 style={[
@@ -335,13 +348,7 @@ export default function BrowserScreen() {
                   nextFocusLeft: findNodeHandle(exitNoButtonRef.current) ?? undefined,
                   nextFocusRight: findNodeHandle(exitYesButtonRef.current) ?? undefined,
                 } as any)}
-                onFocus={() => {
-                  setExitChoice('yes');
-                  setExitPreferredFocus(false);
-                }}
-                onBlur={() => {
-                  setExitChoice(current => current === 'yes' ? null : current);
-                }}
+                onFocus={() => setExitPreferredFocus(false)}
                 onPress={() => BackHandler.exitApp()}
                 style={[
                   styles.exitButton,
