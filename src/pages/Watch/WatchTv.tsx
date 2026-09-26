@@ -498,6 +498,7 @@ const WatchTv: React.FC = () => {
   const [isBlocked] = useState(false);
   const [loadingText, setLoadingText] = useState(t('watch.loadingSources'));
   const [showTitle, setShowTitle] = useState<string>('');
+  const [originalLanguage, setOriginalLanguage] = useState<string>('');
   const [episodeTitle, setEpisodeTitle] = useState<string>('');
   const [, setReleaseYear] = useState<number | null>(null);
   const [backdropPath, setBackdropPath] = useState<string | null>(null);
@@ -1177,6 +1178,7 @@ const WatchTv: React.FC = () => {
         // Set show info
         const show = showResponse.data;
         setShowTitle(show.name);
+        setOriginalLanguage(show.original_language || '');
         setReleaseYear(new Date(show.first_air_date).getFullYear());
         setBackdropPath(show.backdrop_path);
         setShowPosterPath(show.poster_path);
@@ -3944,6 +3946,7 @@ const WatchTv: React.FC = () => {
                   <div className="p-4">
                     <HLSPlayer
                       priorityCategory="moviesTv"
+                       originalLanguage={originalLanguage}
                       autoFallbackGuard={autoFallbackGuard}
                       kisskhSources={kisskhSources}
                       kisskhSubtitles={kisskhSubtitles}
@@ -4296,6 +4299,7 @@ const WatchTv: React.FC = () => {
                   <div className="p-4">
                     <HLSPlayer
                       priorityCategory="moviesTv"
+                       originalLanguage={originalLanguage}
                       autoFallbackGuard={autoFallbackGuard}
                       kisskhSources={kisskhSources}
                       kisskhSubtitles={kisskhSubtitles}
@@ -4349,6 +4353,7 @@ const WatchTv: React.FC = () => {
         <div className="w-full h-full flex items-center justify-center">
           <HLSPlayer
             priorityCategory="moviesTv"
+                       originalLanguage={originalLanguage}
             autoFallbackGuard={autoFallbackGuard}
             kisskhSources={kisskhSources}
             kisskhSubtitles={kisskhSubtitles}
@@ -4438,6 +4443,7 @@ const WatchTv: React.FC = () => {
                   <div className="p-4">
                     <HLSPlayer
                       priorityCategory="moviesTv"
+                       originalLanguage={originalLanguage}
                       autoFallbackGuard={autoFallbackGuard}
                       kisskhSources={kisskhSources}
                       kisskhSubtitles={kisskhSubtitles}
@@ -4485,6 +4491,7 @@ const WatchTv: React.FC = () => {
         <div className="w-full h-full flex flex-col items-center justify-center relative bg-black">
           <HLSPlayer
                       priorityCategory="moviesTv"
+                       originalLanguage={originalLanguage}
                       autoFallbackGuard={autoFallbackGuard}
                       kisskhSources={kisskhSources}
                       kisskhSubtitles={kisskhSubtitles}
