@@ -11798,6 +11798,21 @@ const HLSPlayer = forwardRef<HLSPlayerRef, HLSPlayerProps>(({
     !showLeftTapAnimation &&
     !showRightTapAnimation;
 
+  const tvPlaybackQualityLabel = tvPlaybackCandidate?.maxHeight
+    ? String(tvPlaybackCandidate.maxHeight) + 'p'
+    : 'Auto';
+  const tvPlaybackProviderLabel = tvPlaybackCandidate?.provider === 'bravo'
+    ? 'Bravo MULTI'
+    : (tvPlaybackCandidate?.provider === 'nexus' ? 'Nexus VOSTFR' : null);
+  const tvCurrentAudio = audioTracks.find(track => track.id === currentAudioTrack);
+  const tvCurrentSubtitleLabel = (() => {
+    if (currentSubtitle === 'off') return 'Désactivés';
+    const match = /^internal:(\d+)$/.exec(currentSubtitle);
+    if (!match) return 'Personnalisés';
+    const track = subtitles[Number(match[1])];
+    return track?.label || track?.language || 'Actifs';
+  })();
+
   // Return the JSX element
   return (
     <div
@@ -11820,6 +11835,158 @@ const HLSPlayer = forwardRef<HLSPlayerRef, HLSPlayerProps>(({
       onTouchEnd={handleVideoTouchEnd}
       onDoubleClick={handleDoubleTap}
     >
+      {isMovixTvRuntime() && !isCasting && showTvQuickMenu && (
+        <div
+          className="fixed inset-0 z-[32000] flex items-center justify-center bg-black/75 px-8"
+          data-lenis-prevent
+          data-player-controls
+        >
+          <div
+            ref={tvQuickMenuRef}
+            className="w-full max-w-xl rounded-2xl border border-red-500/40 bg-zinc-950/95 p-5 shadow-2xl"
+            data-tv-playback-quick-menu
+            data-player-controls
+          >
+            <div className="mb-4 flex items-center justify-between gap-4">
+              <div>
+                <h3 className="text-xl font-bold text-white">Lecture TV</h3>
+                <p className="mt-1 text-sm text-zinc-400">0 ferme ce menu</p>
+              </div>
+              <button
+                type="button"
+                onClick={closeTvQuickMenu}
+                className="rounded-lg border border-zinc-700 px-3 py-2 text-sm font-semibold text-zinc-200 focus:outline-none focus:ring-2 focus:ring-red-500"
+                data-player-controls
+              >
+                Fermer
+              </button>
+            </div>
+
+            <div className="space-y-2">
+              <div className="rounded-xl border border-zinc-800 bg-zinc-900/80 px-4 py-3">
+                <div className="text-xs uppercase tracking-wide text-zinc-500">Source automatique</div>
+                {tvPlaybackScanStatus === 'running' ? (
+                  <div className="mt-1 font-semibold text-white">Analyse Nexus / Bravo…</div>
+                ) : tvPlaybackCandidate && tvPlaybackProviderLabel ? (
+                  <div className="mt-1 flex items-center justify-between gap-3">
+                    <span className="font-semibold text-white">{tvPlaybackProviderLabel}</span>
+                    <span className="rounded-md bg-red-950/60 px-2 py-1 text-sm font-semibold text-red-300">
+                      {tvPlaybackQualityLabel}
+                    </span>
+                  </div>
+                ) : tvPlaybackSourceCount === 0 ? (
+                  <div className="mt-1 text-sm font-medium text-amber-300">
+                    Aucune source Nexus / Bravo disponible
+                  </div>
+                ) : (
+                  <div className="mt-1 text-sm font-medium text-amber-300">
+                    Aucune source compatible avec ce profil
+                  </div>
+                )}
+              </div>
+
+              {tvPlaybackSourceCount > 0 && (
+                <button
+                  ref={tvQuickMenuFirstActionRef}
+                  type="button"
+                  onClick={toggleTvPlaybackProfile}
+                  className="flex w-full items-center justify-between rounded-xl border border-zinc-800 bg-zinc-900/80 px-4 py-3 text-left text-white focus:outline-none focus:ring-2 focus:ring-red-500"
+                  data-player-controls
+                >
+                  <span>Mode</span>
+                  <span className="font-semibold text-red-300">
+                    {tvPlaybackProfile === 'vo-fr' ? 'VO + FR' : 'VF'}
+                  </span>
+                </button>
+              )}
+
+              {tvPlaybackCandidate?.provider === 'nexus' && (
+                <div className="rounded-xl border border-zinc-800 bg-zinc-900/80 px-4 py-3">
+                  <div className="flex items-center justify-between gap-3">
+                    <span className="text-white">Langue</span>
+                    <span className="font-semibold text-zinc-200">VO + FR incrusté</span>
+                  </div>
+                  <div className="mt-1 text-xs text-zinc-500">
+                    Sous-titres intégrés à l'image
+                  </div>
+                </div>
+              )}
+
+              {tvPlaybackCandidate?.provider === 'bravo' && (
+                <>
+                  <button
+                    type="button"
+                    onClick={() => openTvAdvancedSettings('audio')}
+                    className="flex w-full items-center justify-between rounded-xl border border-zinc-800 bg-zinc-900/80 px-4 py-3 text-left text-white focus:outline-none focus:ring-2 focus:ring-red-500"
+                    data-player-controls
+                  >
+                    <span>Audio</span>
+                    <span className="max-w-[55%] truncate font-semibold text-zinc-300">
+                      {tvCurrentAudio?.name || tvCurrentAudio?.language || (tvPlaybackProfile === 'vf' ? 'Français' : 'VO')}
+                    </span>
+                  </button>
+                  {tvPlaybackProfile === 'vo-fr' && (
+                    <button
+                      type="button"
+                      onClick={() => openTvAdvancedSettings('subtitles')}
+                      className="flex w-full items-center justify-between rounded-xl border border-zinc-800 bg-zinc-900/80 px-4 py-3 text-left text-white focus:outline-none focus:ring-2 focus:ring-red-500"
+                      data-player-controls
+                    >
+                      <span>Sous-titres</span>
+                      <span className="max-w-[55%] truncate font-semibold text-zinc-300">
+                        {tvCurrentSubtitleLabel}
+                      </span>
+                    </button>
+                  )}
+                </>
+              )}
+
+              {tvShowId && (
+                <button
+                  type="button"
+                  onClick={openTvEpisodes}
+                  className="flex w-full items-center justify-between rounded-xl border border-zinc-800 bg-zinc-900/80 px-4 py-3 text-left text-white focus:outline-none focus:ring-2 focus:ring-red-500"
+                  data-player-controls
+                >
+                  <span>Épisodes</span>
+                  <span className="font-semibold text-zinc-300">
+                    S{seasonNumber ?? 1} · E{episodeNumber ?? 1}
+                  </span>
+                </button>
+              )}
+
+              {nextEpisode && onNextEpisode && (
+                <button
+                  type="button"
+                  onClick={() => {
+                    setShowTvQuickMenu(false);
+                    triggerNextEpisode();
+                  }}
+                  className="flex w-full items-center justify-between rounded-xl border border-zinc-800 bg-zinc-900/80 px-4 py-3 text-left text-white focus:outline-none focus:ring-2 focus:ring-red-500"
+                  data-player-controls
+                >
+                  <span>Épisode suivant</span>
+                  <span className="font-semibold text-zinc-300">
+                    S{nextEpisode.seasonNumber} · E{nextEpisode.episodeNumber}
+                  </span>
+                </button>
+              )}
+
+              <button
+                ref={tvPlaybackSourceCount === 0 ? tvQuickMenuFirstActionRef : undefined}
+                type="button"
+                onClick={() => openTvAdvancedSettings('quality')}
+                className="flex w-full items-center justify-between rounded-xl border border-zinc-700 bg-zinc-900 px-4 py-3 text-left font-semibold text-white focus:outline-none focus:ring-2 focus:ring-red-500"
+                data-player-controls
+              >
+                <span>Paramètres avancés</span>
+                <span className="text-zinc-500">›</span>
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
       <CastRelayDisclosure
         open={showCastRelayDisclosure}
         onContinue={() => {
