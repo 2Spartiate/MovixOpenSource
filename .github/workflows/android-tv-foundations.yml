@@ -25,6 +25,7 @@ on:
       - agent/google-tv-playback-ux-v15
       - agent/google-tv-playback-ux-v17
       - agent/google-tv-playback-ux-v18
+      - agent/google-tv-playback-ux-v19
     paths:
       - 'app/**'
       - 'src/**'
@@ -143,19 +144,19 @@ jobs:
           APK="app/build/outputs/apk/release/app-release.apk"
           test -f "$APK"
           unzip -l "$APK" | grep -q 'assets/index.android.bundle'
-          unzip -p "$APK" assets/index.android.bundle > "${RUNNER_TEMP}/movix-v18.bundle"
-          python3 - "${RUNNER_TEMP}/movix-v18.bundle" <<'PY'
+          unzip -p "$APK" assets/index.android.bundle > "${RUNNER_TEMP}/movix-v19.bundle"
+          python3 - "${RUNNER_TEMP}/movix-v19.bundle" <<'PY'
           import pathlib
           import sys
 
           bundle = pathlib.Path(sys.argv[1]).read_bytes()
-          marker = 'tv-playback-v18'
+          marker = 'tv-playback-v19'
           # Hermes stores this large accented template string as UTF-16 LE.
           assert any(marker.encode(codec) in bundle for codec in ('utf-8', 'utf-16-le')), \
-              'V18 TV injection missing from packaged Hermes bundle'
+              'V19 TV injection missing from packaged Hermes bundle'
           PY
-          unzip -p "$APK" 'classes*.dex' > "${RUNNER_TEMP}/movix-v18.dex"
-          grep -aFq 'TvExitDialogModule' "${RUNNER_TEMP}/movix-v18.dex"
+          unzip -p "$APK" 'classes*.dex' > "${RUNNER_TEMP}/movix-v19.dex"
+          grep -aFq 'TvExitDialogModule' "${RUNNER_TEMP}/movix-v19.dex"
           echo "Standalone React Native bundle is packaged in $APK"
 
       - name: Delete previous Movix Android APK/AAB artifacts
