@@ -143,6 +143,16 @@ ${domDiscoveryRuntime}
       : (document.activeElement instanceof HTMLElement ? document.activeElement : null);
     if (!target) return false;
 
+    // The HLS player owns its transport arrows (seek/fullscreen). Its TV quick
+    // menu is the exception: once open, ordinary spatial navigation should
+    // move between the menu rows.
+    if (
+      target.closest('[data-hls-player-root]') &&
+      !target.closest('[data-tv-playback-quick-menu]')
+    ) {
+      return false;
+    }
+
     if (target.closest(
       '[data-tv-consume-arrows], [data-tv-player-control], [data-tv-dpad-scope="native"], [role="slider"]'
     )) {
