@@ -6286,6 +6286,15 @@ const HLSPlayer = forwardRef<HLSPlayerRef, HLSPlayerProps>(({
       setIsFullscreen(nowFullscreen);
       setIsPageFullscreen(fullscreenTarget === 'page' && isHostFullscreenActive());
 
+      // Anchor TV focus restoration to the actual fullscreen transition, not
+      // only to a guessed delay after the remote key press.
+      if (isMovixTvRuntime()) {
+        window.requestAnimationFrame(() => {
+          try { playPauseButtonRef.current?.focus({ preventScroll: true }); }
+          catch { playPauseButtonRef.current?.focus(); }
+        });
+      }
+
       if (nowFullscreen && !wasFullscreenRef.current) {
         // À l'entrée en plein écran, l'interface s'efface d'elle-même. Le
         // masquage automatique existant est déclenché par la souris ; sur une
@@ -8926,7 +8935,11 @@ const HLSPlayer = forwardRef<HLSPlayerRef, HLSPlayerProps>(({
           return;
         }
 
-        if (e.code.startsWith('Arrow')) {
+        const tvArrowCode = e.code.startsWith('Arrow')
+          ? e.code
+          : (key.startsWith('Arrow') ? key : '');
+
+        if (tvArrowCode) {
           // Menus use normal spatial navigation; never turn Up/Down into
           // fullscreen while choosing sources, audio, subtitles or episodes.
           if (tvMenuOpen || isSourceMenuTarget(keyboardTarget)) return;
@@ -8935,17 +8948,17 @@ const HLSPlayer = forwardRef<HLSPlayerRef, HLSPlayerProps>(({
           const playIsFocused = keyboardTarget === playPauseButtonRef.current;
           if (focusedControl && !playIsFocused) return;
 
-          if (e.code === 'ArrowLeft') {
+          if (tvArrowCode === 'ArrowLeft') {
             e.preventDefault();
             skipTime(-10);
             return;
           }
-          if (e.code === 'ArrowRight') {
+          if (tvArrowCode === 'ArrowRight') {
             e.preventDefault();
             skipTime(10);
             return;
           }
-          if (e.code === 'ArrowUp') {
+          if (tvArrowCode === 'ArrowUp') {
             e.preventDefault();
             const videoElement = videoRef.current as HTMLVideoElementWithWebkit | null;
             const fullscreenActive = Boolean(
@@ -8957,7 +8970,7 @@ const HLSPlayer = forwardRef<HLSPlayerRef, HLSPlayerProps>(({
             window.setTimeout(focusTvPlayPause, 220);
             return;
           }
-          if (e.code === 'ArrowDown') {
+          if (tvArrowCode === 'ArrowDown') {
             e.preventDefault();
             const videoElement = videoRef.current as HTMLVideoElementWithWebkit | null;
             const fullscreenActive = Boolean(
