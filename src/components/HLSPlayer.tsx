@@ -5072,6 +5072,89 @@ const HLSPlayer = forwardRef<HLSPlayerRef, HLSPlayerProps>(({
   };
 
   useEffect(() => {
+    if (!isMovixTvRuntime() || !controls || !tvPlaybackCandidate) return;
+    if (src !== tvPlaybackCandidate.url) return;
+
+    const applyKey = [
+      tvPlaybackProfile,
+      src,
+      audioTracks.length,
+      subtitles.length,
+    ].join(':');
+    if (tvProfileAppliedKeyRef.current === applyKey) return;
+
+    if (tvPlaybackCandidate.provider === 'nexus') {
+      // Nexus VOSTFR carries burned-in French captions: never stack a browser
+      // subtitle track over them.
+      handleSubtitleChange('off');
+      tvProfileAppliedKeyRef.current = applyKey;
+      return;
+    }
+
+    const hls = hlsRef.current;
+    if (!hls) return;
+
+    const audioText = (track: AudioTrack) => (
+      (track.language || '') + ' ' + (track.name || '')
+    );
+
+    let desiredAudio: AudioTrack | undefined;
+    if (tvPlaybackProfile === 'vf') {
+      desiredAudio = audioTracks.find(track => isFrenchLanguage(audioText(track)));
+    } else {
+      desiredAudio =
+        audioTracks.find(track => languageMatchesOriginal(audioText(track), originalLanguage))
+        || audioTracks.find(track => !isFrenchLanguage(audioText(track)));
+    }
+
+    // A MULTI source may expose tracks a little after MANIFEST_PARSED. Wait
+    // rather than locking in a wrong default language.
+    if (!desiredAudio && audioTracks.length === 0) return;
+
+    if (desiredAudio) {
+      hls.audioTrack = desiredAudio.id;
+      setCurrentAudioTrack(desiredAudio.id);
+      hlsAudioPreferences.set(contentQualityKey, {
+        language: desiredAudio.language,
+        name: desiredAudio.name,
+      });
+    }
+
+    if (tvPlaybackProfile === 'vf') {
+      handleSubtitleChange('off');
+      tvProfileAppliedKeyRef.current = applyKey;
+      return;
+    }
+
+    const video = videoRef.current;
+    if (!video) return;
+    const liveTracks = Array.from(video.textTracks);
+    const frenchSubtitleIndex = liveTracks.findIndex(track => (
+      isFrenchLanguage((track.language || '') + ' ' + (track.label || ''))
+    ));
+
+    if (frenchSubtitleIndex < 0) {
+      // If the probe advertised French captions they may not have reached the
+      // media element yet; let the next SUBTITLE_TRACKS_UPDATED render retry.
+      if (tvPlaybackCandidate.subtitleLanguages.some(isFrenchLanguage)) return;
+      tvProfileAppliedKeyRef.current = applyKey;
+      return;
+    }
+
+    handleSubtitleChange('internal:' + frenchSubtitleIndex);
+    tvProfileAppliedKeyRef.current = applyKey;
+  }, [
+    audioTracks,
+    contentQualityKey,
+    controls,
+    originalLanguage,
+    src,
+    subtitles,
+    tvPlaybackCandidate,
+    tvPlaybackProfile,
+  ]);
+
+  useEffect(() => {
     const isKisskhSelected = kisskhSources.some(source => source.url === src);
     if (!isKisskhSelected) {
       kisskhAutoSubtitleKeyRef.current = null;
