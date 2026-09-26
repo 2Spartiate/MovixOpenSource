@@ -35,6 +35,7 @@ import {
   type SwiftfluxPlayback,
 } from '../../services/swiftfluxService';
 import type { KisskhSource, KisskhSubtitleTrack } from '../../types/kisskh';
+import { isMovixTvRuntime } from '../../utils/tvRuntime';
 import {
   createHlsAutoFallbackGuard,
   resolveAcceptedWatchSource,
@@ -601,6 +602,18 @@ const WatchMovie: React.FC = () => {
 
   // Ajouter un état pour afficher le menu qualité embed
   const [showEmbedQuality, setShowEmbedQuality] = useState(false);
+
+  useEffect(() => {
+    if (!isMovixTvRuntime() || !isLoading) return;
+    const handleTvLoadingSourceShortcut = (event: KeyboardEvent) => {
+      if (!(event.key === '0' || event.code === 'Digit0' || event.code === 'Numpad0')) return;
+      event.preventDefault();
+      setShowEmbedQuality(true);
+    };
+    document.addEventListener('keydown', handleTvLoadingSourceShortcut);
+    return () => document.removeEventListener('keydown', handleTvLoadingSourceShortcut);
+  }, [isLoading]);
+
 
   useEffect(() => {
     if (!embedUrl) return;
