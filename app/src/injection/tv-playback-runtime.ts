@@ -474,7 +474,11 @@ export function buildTvPlaybackRuntime(): string {
     for (let depth = 0; node && depth < 5; depth += 1, node = node.parentElement) {
       let sibling = node.nextElementSibling;
       while (sibling) {
-        if (sibling instanceof HTMLElement && sibling.querySelector('button')) {
+        if (
+          sibling instanceof HTMLElement &&
+          sibling.classList.contains('border-l-2') &&
+          sibling.querySelector('button')
+        ) {
           return sibling;
         }
         sibling = sibling.nextElementSibling;
@@ -499,7 +503,9 @@ export function buildTvPlaybackRuntime(): string {
       const signature = buttonSignature(button);
       if (!signature) return false;
       if (signature === 'copier' || signature === 'copy') return false;
+      if (signature.includes('copier') || signature.includes('copy')) return false;
       if (signature.includes('epingler') || signature.includes('pin')) return false;
+      if (signature.includes('fermer') || signature.includes('close')) return false;
       return true;
     });
   };
@@ -552,7 +558,7 @@ export function buildTvPlaybackRuntime(): string {
 
     return candidates.sort((left, right) =>
       right.quality - left.quality ||
-      (left.provider === 'nexus' ? -1 : 1) ||
+      (left.provider === right.provider ? 0 : (left.provider === 'nexus' ? -1 : 1)) ||
       left.index - right.index
     );
   };
