@@ -46,7 +46,7 @@ test('0 opens an injected TV quick menu with persistent VF VOSTFR profile', asyn
 
   assert.match(runtime, /PROFILE_KEY = 'movix\.tv\.playback\.profile\.v1'/);
   assert.match(runtime, /key === '0'[\s\S]{0,120}Digit0[\s\S]{0,120}Numpad0/);
-  assert.match(runtime, /toggleQuickMenu\(video, root\)[\s\S]{0,100}consume\(event\)/);
+  assert.match(runtime, /consume\(event\)[\s\S]{0,120}void toggleQuickMenu\(video, root\)/);
   assert.match(runtime, /Mode : VF/);
   assert.match(runtime, /Mode : VOSTFR/);
   assert.match(runtime, /VO \+ sous-titres FR/);
@@ -74,4 +74,24 @@ test('Back closes injected quick menu before fullscreen or SPA navigation', asyn
   assert.ok(handler.indexOf('if (getQuickMenu())') >= 0);
   assert.ok(handler.indexOf('closeQuickMenu()') < handler.indexOf('isFullscreen(video)'));
   assert.match(handler, /event\?\.cancelable[\s\S]{0,80}event\.preventDefault\(\)/);
+});
+
+
+test('quick menu exits fullscreen before mounting and owns modal focus', async () => {
+  const runtime = await text('src/injection/tv-playback-runtime.ts');
+
+  assert.match(runtime, /const waitForFullscreenExit = async \(video, root\)/);
+  assert.match(runtime, /await exitFullscreen\(video, root\)/);
+  assert.match(runtime, /const openQuickMenu = async \(video, root\)/);
+  assert.match(runtime, /await waitForFullscreenExit\(video, root\)/);
+  assert.match(runtime, /overlay\.setAttribute\('aria-modal', 'true'\)/);
+});
+
+test('quick menu blocks player autofocus and transport arrows while open', async () => {
+  const runtime = await text('src/injection/tv-playback-runtime.ts');
+
+  assert.match(runtime, /const focusPlayPause = \(\) => \{[\s\S]{0,120}if \(getQuickMenu\(\)\) return false/);
+  assert.match(runtime, /api\.focusTimer = setTimeout\(\(\) => \{[\s\S]{0,160}if \(getQuickMenu\(\)\) return/);
+  assert.match(runtime, /const hasPriorityOverlay = \(root\) => \{[\s\S]{0,100}if \(getQuickMenu\(\)\) return true/);
+  assert.match(runtime, /if \(getQuickMenu\(\)\) return false;[\s\S]{0,100}hasPriorityOverlay\(root\)/);
 });
