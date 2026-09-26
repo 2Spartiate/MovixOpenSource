@@ -458,10 +458,12 @@ ${domDiscoveryRuntime}
 
     const candidates = api.getTVFocusCandidates()
       .filter(candidate => candidate.element !== current)
-      .filter(candidate =>
-        api.headerNavigationEnabled === true ||
-        !isHeaderElement(candidate.element)
-      );
+      .filter(candidate => {
+        if (api.headerNavigationEnabled === true && isHeaderElement(current)) {
+          return isHeaderElement(candidate.element);
+        }
+        return !isHeaderElement(candidate.element);
+      });
     const currentRect = toRect(current);
     const horizontal = direction === 'left' || direction === 'right';
     const vertical = direction === 'up' || direction === 'down';
