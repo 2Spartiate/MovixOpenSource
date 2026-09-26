@@ -13131,6 +13131,9 @@ const HLSPlayer = forwardRef<HLSPlayerRef, HLSPlayerProps>(({
             <div className="flex items-center gap-2 md:gap-4 flex-1 min-w-0">
               <div className="flex items-center gap-1 md:gap-2">
                 <button
+                  ref={playPauseButtonRef}
+                  data-tv-player-play-pause={isMovixTvRuntime() ? '' : undefined}
+                  data-player-controls
                   onClick={!isWatchPartyGuest ? togglePlay : undefined}
                   onTouchEnd={!isWatchPartyGuest ? (e) => {
                     e.stopPropagation();
