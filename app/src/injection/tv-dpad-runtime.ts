@@ -420,7 +420,7 @@ ${domDiscoveryRuntime}
     return api.restoreContentFocus();
   };
 
-  api.ensureInitialFocus = () => {
+  api.ensureInitialFocus = (allowContentFallback = false) => {
     if (!pageFocusIsEmpty()) return false;
 
     // A dialog that explicitly owns autofocus gets first refusal.
@@ -430,29 +430,25 @@ ${domDiscoveryRuntime}
     );
     if (managedDialog) return false;
 
-    if (api.restoreLastFocus()) return true;
-
     const elements = api.getTVFocusableElements()
       .filter(element => !isHeaderElement(element));
-    const primary = elements.find(element => element.hasAttribute('data-tv-primary-focus'));
-    const contentCard = elements.find(element => element.hasAttribute('data-tv-card'));
 
-    if (api.preferContentAfterNavigation) {
-      if (contentCard) {
-        api.preferContentAfterNavigation = false;
-        api.navigationInProgressUntil = 0;
-        return focusWithoutJank(contentCard);
-      }
-
-      if (performance.now() < Number(api.navigationInProgressUntil || 0)) {
-        return false;
-      }
-
-      api.preferContentAfterNavigation = false;
+    // Automatic TV focus is hero-only. Never auto-scroll the Home down to the
+    // first media card merely because the Hero took a little longer to mount.
+    const heroPlay = getHeroPlay();
+    if (heroPlay instanceof HTMLElement && elements.includes(heroPlay)) {
+      api.heroAutofocusPending = false;
+      return focusWithoutJank(heroPlay, false);
     }
 
+    if (api.restoreLastFocus()) return true;
+    if (!allowContentFallback) return false;
+
+    // A real D-pad press is explicit user navigation, so non-Hero routes may
+    // fall back to their primary control / first card at that point.
+    const primary = elements.find(element => element.hasAttribute('data-tv-primary-focus'));
+    const contentCard = elements.find(element => element.hasAttribute('data-tv-card'));
     const target =
-      elements.find(element => element.hasAttribute('data-tv-autofocus')) ||
       primary ||
       contentCard ||
       elements[0];
@@ -462,7 +458,7 @@ ${domDiscoveryRuntime}
 
   api.moveFocus = (direction) => {
     if (pageFocusIsEmpty()) {
-      return api.ensureInitialFocus();
+      return api.ensureInitialFocus(true);
     }
 
     const current = document.activeElement;
@@ -667,6 +663,52 @@ ${domDiscoveryRuntime}
   };
 
   const findOpenedShortcutScope = (kind, trigger) => {
+    if (kind === 'search') {
+      const input = trigger instanceof HTMLInputElement ? trigger : null;
+      const inputRect = input?.getBoundingClientRect?.();
+
+      const panels = Array.from(document.querySelectorAll('body div')).filter((element) => {
+        if (!(element instanceof HTMLElement)) return false;
+        if (!element.querySelector('a[href*="/search?q="]')) return false;
+        if (element.querySelectorAll('button').length < 1) return false;
+
+        const rect = element.getBoundingClientRect();
+        if (rect.width <= 0 || rect.height <= 0) return false;
+
+        const style = window.getComputedStyle(element);
+        const z = Number.parseInt(style.zIndex || '0', 10);
+        const positioned = style.position === 'fixed' || style.position === 'absolute';
+        if (!positioned || z < 1000) return false;
+
+        if (inputRect) {
+          const horizontalOverlap =
+            rect.right >= inputRect.left - 48 &&
+            rect.left <= inputRect.right + 48;
+          const belowInput = rect.top >= inputRect.top - 8;
+          if (!horizontalOverlap || !belowInput) return false;
+        }
+
+        return true;
+      });
+
+      const panel = panels
+        .sort((a, b) => {
+          const ar = a.getBoundingClientRect();
+          const br = b.getBoundingClientRect();
+          return (ar.width * ar.height) - (br.width * br.height);
+        })[0];
+
+      if (panel instanceof HTMLElement) {
+        panel.setAttribute('data-tv-search-suggestions', '');
+        panel.setAttribute('data-tv-shortcut-scroll-container', '');
+        panel.style.setProperty('max-height', 'calc(100vh - 96px)', 'important');
+        panel.style.setProperty('overflow-y', 'auto', 'important');
+        panel.style.setProperty('overscroll-behavior', 'contain', 'important');
+        panel.style.setProperty('scroll-behavior', 'auto', 'important');
+        return panel;
+      }
+    }
+
     if (kind === 'account') {
       const root = trigger?.parentElement;
       if (root instanceof HTMLElement) {
@@ -730,6 +772,26 @@ ${domDiscoveryRuntime}
 
     return null;
   };
+
+  const syncSearchSuggestionScope = () => {
+    if (api.activeHeaderShortcut !== 'search') return null;
+    const trigger = api.activeShortcutTrigger;
+    const scope = findOpenedShortcutScope('search', trigger);
+    if (!(scope instanceof HTMLElement)) {
+      if (
+        api.activeShortcutScope instanceof HTMLElement &&
+        !api.activeShortcutScope.isConnected
+      ) {
+        api.activeShortcutScope = null;
+      }
+      return null;
+    }
+
+    api.activeShortcutScope = scope;
+    unlockShortcutScope(scope);
+    return scope;
+  };
+  api.syncSearchSuggestionScope = syncSearchSuggestionScope;
 
   const focusFirstScopeItem = (scope, trigger) => {
     if (!(scope instanceof HTMLElement)) return false;
@@ -895,11 +957,58 @@ ${domDiscoveryRuntime}
     const direction = directions[event.key];
     if (!direction) return false;
 
-    // A real text input must keep the whole D-pad while the Android TV IME is
-    // open. In particular ArrowDown is needed to leave the edit field and
-    // navigate the virtual keyboard (including its microphone/voice action).
-    // shouldSpatialNavigationHandle() returns false for text inputs, so no
-    // arrow is consumed by our page-level spatial engine in that state.
+    const active = document.activeElement instanceof HTMLElement
+      ? document.activeElement
+      : null;
+
+    if (api.activeHeaderShortcut === 'search') {
+      const input = api.activeShortcutTrigger instanceof HTMLInputElement
+        ? api.activeShortcutTrigger
+        : null;
+      const scope = syncSearchSuggestionScope();
+
+      // Search keeps the IME completely native until real suggestions exist.
+      // Once the dropdown is present, ↓ deliberately exits the keyboard and
+      // enters the first result, turning autocomplete into a proper TV menu.
+      if (
+        direction === 'down' &&
+        input instanceof HTMLInputElement &&
+        active === input &&
+        scope instanceof HTMLElement
+      ) {
+        try { input.blur(); } catch {}
+        if (focusFirstScopeItem(scope, input)) {
+          consumeEvent(event);
+          return true;
+        }
+      }
+
+      // ↑ from the first suggestion returns to the Search input and therefore
+      // re-opens the Android TV keyboard/voice path.
+      if (
+        direction === 'up' &&
+        scope instanceof HTMLElement &&
+        active instanceof HTMLElement &&
+        scope.contains(active)
+      ) {
+        const items = api.getTVFocusableElements()
+          .filter((element) => scope.contains(element))
+          .sort((a, b) => {
+            const ar = a.getBoundingClientRect();
+            const br = b.getBoundingClientRect();
+            return ar.top - br.top || ar.left - br.left;
+          });
+
+        if (items[0] === active && input instanceof HTMLInputElement) {
+          try { input.focus({ preventScroll: true }); } catch { input.focus(); }
+          consumeEvent(event);
+          return true;
+        }
+      }
+    }
+
+    // Plain text editing remains native whenever no suggestion transition above
+    // applies, preserving Android TV keyboard and voice behavior.
     if (!api.shouldSpatialNavigationHandle(event)) return false;
 
     // Once an arrow belongs to the TV spatial graph, consume it even when
@@ -970,42 +1079,42 @@ ${domDiscoveryRuntime}
   const scheduleFocusRecovery = () => {
     if (!pageFocusIsEmpty() || api.focusRecoveryRaf || api.focusRecoveryTimer) return;
 
+    const remainingHeroWait =
+      Number(api.heroAutofocusReadyAt || 0) - performance.now();
+    if (remainingHeroWait > 0) {
+      api.focusRecoveryTimer = setTimeout(() => {
+        api.focusRecoveryTimer = null;
+        scheduleFocusRecovery();
+      }, Math.min(Math.max(remainingHeroWait, 40), 250));
+      return;
+    }
+
     api.focusRecoveryRaf = requestAnimationFrame(() => {
       api.focusRecoveryRaf = null;
       if (!pageFocusIsEmpty()) return;
 
-      // Check immediately on every recovery pass. ensureInitialFocus() will
-      // take the first media card as soon as it exists, but deliberately
-      // refuses to fall back to the header search while a SPA route is still
-      // mounting its content.
-      if (api.restoreLastFocus() || api.ensureInitialFocus()) return;
-
-      const remainingNavigationMs =
-        Number(api.navigationInProgressUntil || 0) - performance.now();
-
-      if (remainingNavigationMs > 0 && api.preferContentAfterNavigation) {
-        api.focusRecoveryTimer = setTimeout(() => {
-          api.focusRecoveryTimer = null;
-          scheduleFocusRecovery();
-        }, Math.min(Math.max(remainingNavigationMs, 80), 250));
-      }
+      // Automatic recovery is deliberately Hero-only. If the Hero is still
+      // absent, remain visually at the top and let a real D-pad press choose a
+      // fallback on routes that genuinely have no Hero.
+      api.ensureInitialFocus(false);
     });
   };
 
   const setupFocusLifecycle = () => {
     if (typeof MutationObserver === 'function' && document.body) {
-      api.focusObserver = new MutationObserver(scheduleFocusRecovery);
+      api.focusObserver = new MutationObserver(() => {
+        syncSearchSuggestionScope();
+        scheduleFocusRecovery();
+      });
       api.focusObserver.observe(document.body, { childList: true, subtree: true });
     }
 
-    // The remote SPA usually mounts the header before the media rows. Waiting
-    // briefly for a card prevents the search input from stealing initial focus.
     if (pageFocusIsEmpty()) {
-      api.preferContentAfterNavigation = true;
-      api.navigationInProgressUntil = Math.max(
-        Number(api.navigationInProgressUntil || 0),
-        performance.now() + 5000,
-      );
+      api.heroAutofocusPending = true;
+      // Give the remote Hero a short, deterministic mount window so the page
+      // appears settled before focus lands on Play, without ever auto-scrolling
+      // to the first content row.
+      api.heroAutofocusReadyAt = performance.now() + 300;
     }
 
     requestAnimationFrame(() => {
