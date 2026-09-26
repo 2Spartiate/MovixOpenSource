@@ -915,6 +915,19 @@ export function buildAppSiteOverrides(): string {
     schedule(10000);
   };
 
+  const publishTvRouteState = () => {
+    if (window.MOVIX_TV !== true) return;
+    const bridge = window.ReactNativeWebView;
+    if (!bridge || typeof bridge.postMessage !== 'function') return;
+    try {
+      bridge.postMessage(JSON.stringify({
+        type: 'MOVIX_TV_ROUTE',
+        href: window.location.href,
+        pathname: window.location.pathname,
+      }));
+    } catch {}
+  };
+
   const markTvRouteTransition = () => {
     if (window.MOVIX_TV !== true) return;
 
@@ -940,11 +953,15 @@ export function buildAppSiteOverrides(): string {
       history[methodName] = function (...args) {
         const result = original.apply(this, args);
         markTvRouteTransition();
+        publishTvRouteState();
         return result;
       };
     });
 
-    window.addEventListener('popstate', markTvRouteTransition);
+    window.addEventListener('popstate', () => {
+      markTvRouteTransition();
+      publishTvRouteState();
+    });
   };
 
   const apply = () => {
@@ -981,6 +998,7 @@ export function buildAppSiteOverrides(): string {
 
   const start = () => {
     patchHistory();
+    publishTvRouteState();
     apply();
     if (typeof MutationObserver === 'function' && document.documentElement) {
       const observer = new MutationObserver(scheduleApply);
