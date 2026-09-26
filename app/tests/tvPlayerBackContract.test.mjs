@@ -53,3 +53,24 @@ test('France TV Back closes settings, then fullscreen, then exits its route', as
   assert.ok(handler.lastIndexOf('navigate(-1);') > handler.indexOf('if (document.fullscreenElement || isFullscreen)'));
   assert.match(handler, /event\.preventDefault\(\)/);
 });
+
+test('Android TV Home Back opens an exit confirmation with No preferred by default', async () => {
+  const browser = await text('src/screens/BrowserScreen.tsx');
+
+  assert.match(browser, /const isTvHome = useMemo\(\(\) => \{/);
+  assert.match(browser, /if \(isTV && isTvHome\) \{/);
+  assert.match(browser, /setExitChoice\('no'\)/);
+  assert.match(browser, /setExitConfirmVisible\(true\)/);
+  assert.match(browser, /visible=\{!isPictureInPictureActive && isTV && exitConfirmVisible\}/);
+  assert.match(browser, /Êtes-vous sûr de vouloir quitter l'application \?/);
+  assert.match(browser, /hasTVPreferredFocus=\{isTV\}/);
+  assert.match(browser, />Non<\/Text>/);
+  assert.match(browser, /onPress=\{\(\) => BackHandler\.exitApp\(\)\}/);
+});
+
+test('Back while the TV exit confirmation is visible cancels instead of exiting', async () => {
+  const browser = await text('src/screens/BrowserScreen.tsx');
+
+  assert.match(browser, /if \(exitConfirmVisible\) \{[\s\S]{0,180}setExitConfirmVisible\(false\)[\s\S]{0,180}return true/);
+  assert.match(browser, /onRequestClose=\{\(\) => \{[\s\S]{0,180}setExitConfirmVisible\(false\)/);
+});
