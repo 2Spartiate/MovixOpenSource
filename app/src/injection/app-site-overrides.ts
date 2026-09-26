@@ -506,9 +506,9 @@ export function buildAppSiteOverrides(): string {
   };
 
   const markTvHeaderShortcutTargets = () => {
-    if (window.MOVIX_TV !== true) return;
+    if (window.MOVIX_TV !== true) return null;
     const header = document.querySelector('header');
-    if (!(header instanceof HTMLElement)) return;
+    if (!(header instanceof HTMLElement)) return null;
 
     const search = Array.from(
       header.querySelectorAll('input[type="search"], input[type="text"]')
@@ -544,22 +544,86 @@ export function buildAppSiteOverrides(): string {
     if (account instanceof HTMLElement) {
       account.setAttribute('data-tv-header-shortcut', 'account');
     }
+
+    return { header, search, account, explore };
   };
 
-  const syncTvHeaderFocusGate = () => {
-    if (window.MOVIX_TV !== true) return;
-    markTvHeaderShortcutTargets();
+  const restoreTvHeaderInteractive = (element) => {
+    if (!(element instanceof HTMLElement)) return;
 
+    const previous = element.getAttribute('data-tv-header-lock-tabindex');
+    if (previous === '__none__') {
+      element.removeAttribute('tabindex');
+    } else if (previous !== null) {
+      element.setAttribute('tabindex', previous);
+    }
+    element.removeAttribute('data-tv-header-lock-tabindex');
+    element.removeAttribute('data-tv-header-locked');
+
+    if (
+      !element.hasAttribute('data-movix-brand-inert') &&
+      !element.hasAttribute('data-tv-header-telegram')
+    ) {
+      element.removeAttribute('data-tv-ignore-focus');
+    }
+
+    element.style.setProperty('pointer-events', 'auto', 'important');
+  };
+
+  const lockTvHeaderPointerNavigation = () => {
+    if (window.MOVIX_TV !== true) return;
+    const targets = markTvHeaderShortcutTargets();
+    if (!targets) return;
+
+    const { header } = targets;
+    header.setAttribute('data-tv-pointer-locked', '');
+    header.style.setProperty('pointer-events', 'none', 'important');
+
+    const interactive = header.querySelectorAll(
+      'a[href], button, input, select, textarea, [role="button"], [tabindex], [data-tv-focus]'
+    );
+
+    interactive.forEach((element) => {
+      if (!(element instanceof HTMLElement)) return;
+
+      const activeScope = element.closest('[data-tv-header-active-scope]');
+      const activeShortcut =
+        element.hasAttribute('data-tv-header-shortcut-active') ||
+        activeScope instanceof HTMLElement;
+
+      if (activeShortcut) {
+        restoreTvHeaderInteractive(element);
+        return;
+      }
+
+      if (!element.hasAttribute('data-tv-header-locked')) {
+        const previous = element.getAttribute('tabindex');
+        element.setAttribute(
+          'data-tv-header-lock-tabindex',
+          previous === null ? '__none__' : previous
+        );
+        element.setAttribute('data-tv-header-locked', '');
+      }
+
+      element.setAttribute('data-tv-ignore-focus', '');
+      element.setAttribute('tabindex', '-1');
+      element.style.setProperty('pointer-events', 'none', 'important');
+    });
+
+    // If Chromium/WebView ever retained a stale header focus across a React
+    // commit, eject it synchronously. Normal D-pad navigation should never
+    // enter header chrome at all.
     const active = document.activeElement;
-    const api = window.__MOVIX_TV_FOCUS;
     if (
       active instanceof HTMLElement &&
       active.closest('header') &&
-      api?.headerNavigationEnabled !== true
+      !active.hasAttribute('data-tv-header-shortcut-active') &&
+      !(active.closest('[data-tv-header-active-scope]') instanceof HTMLElement)
     ) {
       try { active.blur(); } catch {}
+      const api = window.__MOVIX_TV_FOCUS;
       if (api && typeof api.restoreContentFocus === 'function') {
-        requestAnimationFrame(() => api.restoreContentFocus());
+        api.restoreContentFocus();
       }
     }
   };
@@ -804,7 +868,7 @@ export function buildAppSiteOverrides(): string {
     // Product behavior below is TV-only.
     makeMovixBrandInert();
     markTvHeroFocusPolicy();
-    syncTvHeaderFocusGate();
+    lockTvHeaderPointerNavigation();
     ensureTvHomeLayout();
     installTvUserClickGuards();
     removeFooter();
@@ -827,10 +891,6 @@ export function buildAppSiteOverrides(): string {
   const start = () => {
     patchHistory();
     apply();
-    if (!window.__MOVIX_TV_HEADER_GATE_READY) {
-      window.__MOVIX_TV_HEADER_GATE_READY = true;
-      window.addEventListener('scroll', syncTvHeaderFocusGate, { passive: true });
-    }
     if (typeof MutationObserver === 'function' && document.documentElement) {
       const observer = new MutationObserver(scheduleApply);
       observer.observe(document.documentElement, {
