@@ -524,7 +524,7 @@ export function buildAppSiteOverrides(): string {
     }
 
     let account = header.querySelector(
-      '[data-tv-primary-focus="account"], [data-tv-header-shortcut="account"]'
+      '[data-tv-header-shortcut="account"]'
     );
     if (!(account instanceof HTMLElement)) {
       const avatar = Array.from(header.querySelectorAll('img')).find((image) => {
