@@ -180,8 +180,11 @@ test('TV header exposes subtle left-aligned neon 1 2 3 shortcut rings without to
   assert.match(overrides, /const installTvShortcutBadgeStyle = \(\) =>/);
   assert.match(overrides, /movix-tv-shortcut-badges/);
   assert.match(overrides, /data-tv-shortcut-badge/);
-  assert.match(overrides, /left:-23px/);
+  assert.match(overrides, /margin-left:18px/);
+  assert.match(overrides, /left:-24px/);
   assert.match(overrides, /top:50%/);
+  assert.match(overrides, /width:15px/);
+  assert.match(overrides, /height:15px/);
   assert.match(overrides, /background:transparent/);
   assert.match(overrides, /border:1px solid rgba\(248,113,113,\.88\)/);
   assert.match(overrides, /box-shadow:0 0 5px rgba\(239,68,68,\.52\)/);
@@ -190,6 +193,7 @@ test('TV header exposes subtle left-aligned neon 1 2 3 shortcut rings without to
   assert.match(overrides, /markTvShortcutBadge\(search, '1'\)/);
   assert.match(overrides, /markTvShortcutBadge\(account, '2'\)/);
   assert.match(overrides, /markTvShortcutBadge\(explore, '3'\)/);
+  assert.match(overrides, /form\.parentElement instanceof HTMLElement/);
   assert.match(overrides, /if \(window\.MOVIX_TV !== true\) return/);
 });
 
