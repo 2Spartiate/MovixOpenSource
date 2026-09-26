@@ -38,3 +38,39 @@ test('TV injected player restores Play Pause focus when a remote player appears'
   assert.match(runtime, /schedulePlayPauseFocus/);
   assert.match(runtime, /data-tv-player-play-pause/);
 });
+
+
+test('0 opens an injected TV quick menu with persistent VF VOSTFR profile', async () => {
+  const runtime = await text('src/injection/tv-playback-runtime.ts');
+
+  assert.match(runtime, /PROFILE_KEY = 'movix\.tv\.playback\.profile\.v1'/);
+  assert.match(runtime, /key === '0'[\s\S]{0,120}Digit0[\s\S]{0,120}Numpad0/);
+  assert.match(runtime, /toggleQuickMenu\(video, root\)[\s\S]{0,100}consume\(event\)/);
+  assert.match(runtime, /Mode : VF/);
+  assert.match(runtime, /Mode : VOSTFR/);
+  assert.match(runtime, /VO \+ sous-titres FR/);
+  assert.match(runtime, /audio français/);
+  assert.match(runtime, /localStorage\.setItem\(PROFILE_KEY, profile\)/);
+  assert.match(runtime, /movix-tv-playback-profile-change/);
+});
+
+test('injected TV quick menu reuses remote episodes and settings controls', async () => {
+  const runtime = await text('src/injection/tv-playback-runtime.ts');
+
+  assert.match(runtime, /findActionButton\(root, \['episodes', 'episode'\]/);
+  assert.match(runtime, /data-tv-player-menu-trigger="settings"/);
+  assert.match(runtime, /Sources avancées/);
+  assert.match(runtime, /data-tv-playback-quick-menu/);
+  assert.match(runtime, /data-tv-shortcut-scope/);
+});
+
+test('Back closes injected quick menu before fullscreen or SPA navigation', async () => {
+  const runtime = await text('src/injection/tv-playback-runtime.ts');
+  const start = runtime.indexOf('const handleTvBack');
+  const end = runtime.indexOf('api.getActiveVideo', start);
+  const handler = runtime.slice(start, end);
+
+  assert.ok(handler.indexOf('if (getQuickMenu())') >= 0);
+  assert.ok(handler.indexOf('closeQuickMenu()') < handler.indexOf('isFullscreen(video)'));
+  assert.match(handler, /event\?\.cancelable[\s\S]{0,80}event\.preventDefault\(\)/);
+});

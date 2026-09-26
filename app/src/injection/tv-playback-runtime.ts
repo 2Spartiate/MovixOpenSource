@@ -228,12 +228,228 @@ export function buildTvPlaybackRuntime(): string {
     });
   };
 
+  const PROFILE_KEY = 'movix.tv.playback.profile.v1';
+  const MENU_ID = 'movix-tv-injected-playback-menu';
+  const MENU_STYLE_ID = 'movix-tv-injected-playback-menu-style';
+
+  const getPlaybackProfile = () => {
+    try { return localStorage.getItem(PROFILE_KEY) === 'vf' ? 'vf' : 'vo-fr'; }
+    catch { return 'vo-fr'; }
+  };
+
+  const isFrenchLanguage = (value) => {
+    const language = normalise(value).split('-')[0];
+    return (
+      language === 'fr' ||
+      language === 'fra' ||
+      language === 'fre' ||
+      normalise(value).includes('french') ||
+      normalise(value).includes('francais')
+    );
+  };
+
+  const applyProfileToCurrentTracks = (video, profile) => {
+    if (!(video instanceof HTMLVideoElement)) return;
+
+    // Best effort on the current manifest only. Cross-source Nexus/Bravo
+    // selection remains owned by the full V12 resolver when that frontend is
+    // actually deployed; the injected fallback never invents compatibility.
+    try {
+      const audioTracks = video.audioTracks;
+      if (audioTracks && typeof audioTracks.length === 'number') {
+        let selected = -1;
+        for (let index = 0; index < audioTracks.length; index += 1) {
+          const track = audioTracks[index];
+          const french = isFrenchLanguage(track.language || track.label || '');
+          if (profile === 'vf' ? french : !french) {
+            selected = index;
+            break;
+          }
+        }
+        if (selected >= 0) {
+          for (let index = 0; index < audioTracks.length; index += 1) {
+            audioTracks[index].enabled = index === selected;
+          }
+        }
+      }
+    } catch {}
+
+    try {
+      const tracks = video.textTracks;
+      if (tracks && typeof tracks.length === 'number') {
+        let frenchSubtitle = -1;
+        for (let index = 0; index < tracks.length; index += 1) {
+          const track = tracks[index];
+          if (isFrenchLanguage(track.language || track.label || '')) {
+            frenchSubtitle = index;
+            break;
+          }
+        }
+        for (let index = 0; index < tracks.length; index += 1) {
+          tracks[index].mode =
+            profile === 'vo-fr' && index === frenchSubtitle ? 'showing' : 'disabled';
+        }
+      }
+    } catch {}
+  };
+
+  const setPlaybackProfile = (profile) => {
+    try { localStorage.setItem(PROFILE_KEY, profile); } catch {}
+    const video = getActiveVideo();
+    applyProfileToCurrentTracks(video, profile);
+    try {
+      window.dispatchEvent(new CustomEvent('movix-tv-playback-profile-change', {
+        detail: { profile, origin: 'tv-webview-injection' },
+      }));
+    } catch {}
+    return profile;
+  };
+
+  const ensureQuickMenuStyle = () => {
+    if (document.getElementById(MENU_STYLE_ID)) return;
+    const style = document.createElement('style');
+    style.id = MENU_STYLE_ID;
+    style.textContent = [
+      '#'+MENU_ID+'{position:fixed;inset:0;z-index:2147483600;display:flex;align-items:center;justify-content:center;background:rgba(0,0,0,.58);font-family:system-ui,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;}',
+      '#'+MENU_ID+' .movix-tv-menu-card{width:min(520px,82vw);padding:22px;border:1px solid rgba(239,68,68,.58);border-radius:18px;background:#111;color:#fff;box-shadow:0 24px 80px rgba(0,0,0,.55);}',
+      '#'+MENU_ID+' .movix-tv-menu-title{font-size:22px;font-weight:800;margin:0 0 14px;}',
+      '#'+MENU_ID+' .movix-tv-menu-action{width:100%;display:flex;align-items:center;justify-content:space-between;gap:18px;margin-top:10px;padding:14px 16px;border-radius:12px;border:1px solid #3f3f46;background:#18181b;color:#fff;font-size:17px;text-align:left;}',
+      '#'+MENU_ID+' .movix-tv-menu-action:focus{outline:3px solid #ef4444;outline-offset:2px;background:#3f1418;}',
+      '#'+MENU_ID+' .movix-tv-menu-sub{font-size:13px;color:#a1a1aa;font-weight:500;}'
+    ].join('');
+    (document.head || document.documentElement).appendChild(style);
+  };
+
+  const getQuickMenu = () => document.getElementById(MENU_ID);
+
+  const closeQuickMenu = () => {
+    const menu = getQuickMenu();
+    if (menu) menu.remove();
+    setTimeout(focusPlayPause, 0);
+  };
+
+  const findActionButton = (root, labels, explicitSelector) => {
+    if (explicitSelector && root instanceof HTMLElement) {
+      const explicit = root.querySelector(explicitSelector);
+      if (explicit instanceof HTMLElement && visible(explicit)) return explicit;
+    }
+    const scope = root instanceof HTMLElement ? root : document;
+    return Array.from(scope.querySelectorAll('button, [role="button"]')).find((button) => {
+      if (!(button instanceof HTMLElement) || !visible(button)) return false;
+      const signature = buttonSignature(button);
+      return labels.some((label) => signature === label || signature.includes(label));
+    }) || null;
+  };
+
+  const openExistingEpisodes = (root) => {
+    const button = findActionButton(root, ['episodes', 'episode'], null);
+    closeQuickMenu();
+    if (button instanceof HTMLElement) {
+      button.click();
+      return true;
+    }
+    try { window.dispatchEvent(new Event('movix-tv-open-episodes')); } catch {}
+    return false;
+  };
+
+  const openExistingSettings = (root) => {
+    const button = findActionButton(
+      root,
+      ['parametres', 'settings', 'sources'],
+      '[data-tv-player-menu-trigger="settings"]'
+    );
+    closeQuickMenu();
+    if (button instanceof HTMLElement) {
+      button.click();
+      return true;
+    }
+    try { window.dispatchEvent(new Event('movix-tv-open-sources')); } catch {}
+    return false;
+  };
+
+  const openQuickMenu = (video, root) => {
+    if (!(video instanceof HTMLVideoElement) || getQuickMenu()) return false;
+    ensureQuickMenuStyle();
+
+    const overlay = document.createElement('div');
+    overlay.id = MENU_ID;
+    overlay.setAttribute('data-tv-playback-quick-menu', '');
+    overlay.setAttribute('data-tv-shortcut-scope', '');
+    overlay.setAttribute('role', 'dialog');
+    overlay.setAttribute('aria-label', 'Menu lecture TV');
+
+    const card = document.createElement('div');
+    card.className = 'movix-tv-menu-card';
+
+    const title = document.createElement('div');
+    title.className = 'movix-tv-menu-title';
+    title.textContent = 'Lecture';
+    card.appendChild(title);
+
+    const addAction = (label, sublabel, onPress) => {
+      const button = document.createElement('button');
+      button.type = 'button';
+      button.className = 'movix-tv-menu-action';
+      button.setAttribute('data-tv-focus', '');
+      button.innerHTML =
+        '<span>' + label + '</span>' +
+        '<span class="movix-tv-menu-sub">' + sublabel + '</span>';
+      button.addEventListener('click', onPress);
+      card.appendChild(button);
+      return button;
+    };
+
+    const profileButton = addAction('', '', () => {
+      const next = getPlaybackProfile() === 'vo-fr' ? 'vf' : 'vo-fr';
+      setPlaybackProfile(next);
+      updateProfileLabel();
+    });
+
+    const updateProfileLabel = () => {
+      const profile = getPlaybackProfile();
+      profileButton.innerHTML = profile === 'vf'
+        ? '<span>Mode : VF</span><span class="movix-tv-menu-sub">audio français</span>'
+        : '<span>Mode : VOSTFR</span><span class="movix-tv-menu-sub">VO + sous-titres FR</span>';
+    };
+    updateProfileLabel();
+
+    const episodeButton = findActionButton(root, ['episodes', 'episode'], null);
+    if (episodeButton instanceof HTMLElement) {
+      addAction('Épisodes', 'ouvrir', () => openExistingEpisodes(root));
+    }
+
+    addAction('Sources avancées', 'ouvrir les réglages', () => openExistingSettings(root));
+    addAction('Fermer', '0 ou Back', closeQuickMenu);
+
+    overlay.appendChild(card);
+    document.body.appendChild(overlay);
+
+    requestAnimationFrame(() => {
+      try { profileButton.focus({ preventScroll: true }); } catch { profileButton.focus(); }
+    });
+    return true;
+  };
+
+  const toggleQuickMenu = (video, root) => {
+    if (getQuickMenu()) {
+      closeQuickMenu();
+      return false;
+    }
+    return openQuickMenu(video, root);
+  };
+
   const consume = (event) => {
     event.preventDefault();
     event.stopPropagation();
     if (typeof event.stopImmediatePropagation === 'function') {
       event.stopImmediatePropagation();
     }
+  };
+
+  const isZeroKey = (event) => {
+    const key = String(event.key || '');
+    const code = String(event.code || '');
+    return key === '0' || code === 'Digit0' || code === 'Numpad0';
   };
 
   const isNumericOneToNine = (event) => {
@@ -248,6 +464,12 @@ export function buildTvPlaybackRuntime(): string {
     const video = getActiveVideo();
     if (!(video instanceof HTMLVideoElement)) return false;
     const root = getPlayerRoot(video);
+
+    if (isZeroKey(event)) {
+      toggleQuickMenu(video, root);
+      consume(event);
+      return true;
+    }
 
     if (isNumericOneToNine(event)) {
       consume(event);
@@ -283,6 +505,12 @@ export function buildTvPlaybackRuntime(): string {
   };
 
   const handleTvBack = (event) => {
+    if (getQuickMenu()) {
+      closeQuickMenu();
+      if (event?.cancelable) event.preventDefault();
+      return;
+    }
+
     const video = getActiveVideo();
     if (!(video instanceof HTMLVideoElement) || !isFullscreen(video)) return;
     const root = getPlayerRoot(video);
@@ -293,6 +521,12 @@ export function buildTvPlaybackRuntime(): string {
   api.getActiveVideo = getActiveVideo;
   api.getPlayerRoot = getPlayerRoot;
   api.focusPlayPause = focusPlayPause;
+  api.openQuickMenu = () => {
+    const video = getActiveVideo();
+    const root = getPlayerRoot(video);
+    return openQuickMenu(video, root);
+  };
+  api.closeQuickMenu = closeQuickMenu;
   api.keydownHandler = handleKeydown;
   api.backHandler = handleTvBack;
 
