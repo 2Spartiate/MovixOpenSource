@@ -5,20 +5,24 @@ import test from 'node:test';
 const root = new URL('../', import.meta.url);
 const text = path => readFile(new URL(path, root), 'utf8');
 
-test('initial TV focus uses explicit priority order', async () => {
+test('automatic TV startup focus is Hero Play only', async () => {
   const source = await text('src/injection/tv-dpad-runtime.ts');
 
-  assert.match(
-    source,
-    /const target =\s*elements\.find\(element => element\.hasAttribute\('data-tv-autofocus'\)\) \|\|\s*primary \|\|\s*contentCard \|\|\s*elements\[0\];/,
-  );
+  assert.match(source, /api\.ensureInitialFocus = \(allowContentFallback = false\) =>/);
+  assert.match(source, /const heroPlay = getHeroPlay\(\)/);
+  assert.match(source, /focusWithoutJank\(heroPlay, false\)/);
+  assert.match(source, /if \(!allowContentFallback\) return false/);
+  assert.doesNotMatch(source, /preferContentAfterNavigation/);
 });
 
-test('initial TV focus waits briefly for media content instead of stealing focus to search', async () => {
+test('Hero autofocus waits briefly for async mount without auto-scrolling to a card', async () => {
   const source = await text('src/injection/tv-dpad-runtime.ts');
-  assert.match(source, /preferContentAfterNavigation = true/);
-  assert.match(source, /performance\.now\(\) \+ 5000/);
-  assert.match(source, /scheduleFocusRecovery\(\)/);
+
+  assert.match(source, /heroAutofocusReadyAt = performance\.now\(\) \+ 300/);
+  assert.match(source, /remainingHeroWait/);
+  assert.match(source, /api\.ensureInitialFocus\(false\)/);
+  assert.match(source, /remain visually at the top/);
+  assert.doesNotMatch(source, /return focusWithoutJank\(contentCard\)/);
 });
 
 test('initial focus never replaces an already meaningful active element', async () => {
@@ -38,21 +42,22 @@ test('focus memory uses stable identifiers and hrefs for SPA restoration', async
   assert.match(source, /api\.restoreLastFocus/);
 });
 
-test('mutation recovery is guarded and only scans when focus is lost', async () => {
+test('mutation recovery is guarded and also syncs async Search suggestions', async () => {
   const source = await text('src/injection/tv-dpad-runtime.ts');
-  assert.match(source, /new MutationObserver\(scheduleFocusRecovery\)/);
+  assert.match(source, /new MutationObserver\(\(\) => \{/);
+  assert.match(source, /syncSearchSuggestionScope\(\)/);
+  assert.match(source, /scheduleFocusRecovery\(\)/);
   assert.match(source, /api\.focusRecoveryRaf \|\| api\.focusRecoveryTimer/);
   assert.match(source, /requestAnimationFrame/);
   assert.match(source, /api\.focusObserver\.disconnect\(\)/);
 });
 
-test('SPA route recovery waits for content cards before falling back to header search', async () => {
+test('explicit D-pad navigation may fall back to content on routes with no Hero', async () => {
   const source = await text('src/injection/tv-dpad-runtime.ts');
-  assert.match(source, /preferContentAfterNavigation/);
-  assert.match(source, /navigationInProgressUntil/);
+  assert.match(source, /return api\.ensureInitialFocus\(true\)/);
   assert.match(source, /const contentCard = elements\.find/);
-  assert.match(source, /return focusWithoutJank\(contentCard\)/);
-  assert.match(source, /api\.focusRecoveryTimer = setTimeout/);
+  assert.match(source, /A real D-pad press is explicit user navigation/);
+  assert.match(source, /primary \|\|\s*contentCard \|\|\s*elements\[0\]/);
 });
 
 test('focus lifecycle listeners are replaceable and cleanable', async () => {
