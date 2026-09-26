@@ -89,18 +89,22 @@ function candidateScore(
   const height = qualityScore(candidate.maxHeight);
 
   if (profile === 'vf') {
-    if (candidate.provider !== 'bravo') return null;
+    // In the TV source taxonomy, Nexus VOSTFR and Bravo MULTI belong to the
+    // VOSTFR pool. VF intentionally uses the complementary sources.
+    if (candidate.provider === 'nexus' && candidate.burnedFrenchSubtitles) return null;
+    if (candidate.provider === 'bravo' && candidate.likelyMulti) return null;
+
     const hasFrenchAudio = candidate.audioLanguages.some(isFrenchLanguage);
-    // A MULTI label is discovery metadata, not proof of a French rendition.
-    // VF is compatible only when the manifest actually exposes French audio.
-    if (!hasFrenchAudio) return null;
-    return height * 100 + 10;
+    // Quality dominates; explicit French audio wins exact-quality ties.
+    return height * 100 + (hasFrenchAudio ? 10 : 0);
   }
 
   if (candidate.provider === 'nexus') {
     if (!candidate.burnedFrenchSubtitles) return null;
     return height * 100;
   }
+
+  if (!candidate.likelyMulti) return null;
 
   const hasOriginalAudio = candidate.audioLanguages.some(language =>
     languageMatchesOriginal(language, originalLanguage),

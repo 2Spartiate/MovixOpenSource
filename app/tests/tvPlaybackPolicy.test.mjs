@@ -135,3 +135,33 @@ test('automatic source-change origins never create a manual override', async () 
     assert.equal(isAutomaticTvSourceChangeOrigin(origin), false, origin);
   }
 });
+
+
+test('VF uses the complement of Nexus VOSTFR and Bravo MULTI pools', async () => {
+  const { chooseTvPlaybackCandidate } = await loadPolicy();
+  const candidates = [
+    candidate({ provider: 'nexus', label: 'Nexus VF 1080p', maxHeight: 1080, burnedFrenchSubtitles: false }),
+    candidate({ provider: 'nexus', label: 'Nexus VOSTFR 2160p', maxHeight: 2160, burnedFrenchSubtitles: true }),
+    candidate({ provider: 'bravo', label: 'Bravo VF 720p', maxHeight: 720, likelyMulti: false }),
+    candidate({ provider: 'bravo', label: 'Bravo MULTI 2160p', maxHeight: 2160, likelyMulti: true }),
+  ];
+
+  const result = chooseTvPlaybackCandidate(candidates, 'vf', 'en');
+  assert.equal(result.candidate?.label, 'Nexus VF 1080p');
+});
+
+test('VOSTFR rejects a Bravo source that is not labelled MULTI', async () => {
+  const { chooseTvPlaybackCandidate } = await loadPolicy();
+  const result = chooseTvPlaybackCandidate([
+    candidate({
+      provider: 'bravo',
+      label: 'Bravo plain',
+      maxHeight: 2160,
+      likelyMulti: false,
+      audioLanguages: ['en', 'fr'],
+      subtitleLanguages: ['fr'],
+    }),
+  ], 'vo-fr', 'en');
+
+  assert.equal(result.candidate, null);
+});

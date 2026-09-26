@@ -2665,29 +2665,43 @@ const HLSPlayer = forwardRef<HLSPlayerRef, HLSPlayerProps>(({
     if (!contentKey) return;
 
     const nexusCandidates = nexusHlsSources
-      .map((source, index) => ({ source, index }))
-      .filter(({ source }) => looksLikeNexusVostfr(source))
+      .map((source, index) => ({
+        source,
+        index,
+        isVostfr: looksLikeNexusVostfr(source),
+      }))
+      .filter(({ isVostfr }) => (
+        tvPlaybackProfile === 'vo-fr' ? isVostfr : !isVostfr
+      ))
       .slice(0, 4)
-      .map(({ source, index }) => ({
+      .map(({ source, index, isVostfr }) => ({
         provider: 'nexus' as const,
         sourceType: 'nexus_hls' as const,
         url: source.url,
-        label: source.label || ('Nexus VOSTFR ' + (index + 1)),
+        label: source.label || ('Nexus ' + (index + 1)),
         index,
-        burnedFrenchSubtitles: true,
+        burnedFrenchSubtitles: isVostfr,
         likelyMulti: false,
       }));
 
     const bravoCandidates = purstreamSources
-      .slice(0, 4)
       .map((source, index) => ({
+        source,
+        index,
+        isMulti: looksLikeBravoMulti(source.label),
+      }))
+      .filter(({ isMulti }) => (
+        tvPlaybackProfile === 'vo-fr' ? isMulti : !isMulti
+      ))
+      .slice(0, 4)
+      .map(({ source, index, isMulti }) => ({
         provider: 'bravo' as const,
         sourceType: 'bravo' as const,
         url: source.url,
         label: source.label || ('Bravo ' + (index + 1)),
         index,
         burnedFrenchSubtitles: false,
-        likelyMulti: looksLikeBravoMulti(source.label),
+        likelyMulti: isMulti,
       }));
 
     const baseCandidates = [...nexusCandidates, ...bravoCandidates];
@@ -2723,6 +2737,15 @@ const HLSPlayer = forwardRef<HLSPlayerRef, HLSPlayerProps>(({
       setTvPlaybackCandidate(winner);
 
       if (!winner) {
+        if (tvPlaybackProfile === 'vo-fr') {
+          // Default TV policy: prefer VOSTFR, but do not leave the user on an
+          // incompatible source when this title only exposes VF candidates.
+          // This is an effective fallback for the current player state; the
+          // persisted preference is changed only by an explicit menu action.
+          setTvPlaybackScanStatus('idle');
+          setTvPlaybackProfile('vf');
+          return;
+        }
         setTvPlaybackScanStatus('unavailable');
         return;
       }
@@ -8859,6 +8882,45 @@ const HLSPlayer = forwardRef<HLSPlayerRef, HLSPlayerProps>(({
     setTvPlaybackScanStatus('idle');
     setTvPlaybackProfile(next);
   }, [episodeNumber, movieId, seasonNumber, tvPlaybackProfile, tvShowId]);
+
+  useEffect(() => {
+    if (!isMovixTvRuntime()) return;
+
+    const tvWindow = window as Window & {
+      __MOVIX_TV_PROFILE_RESOLVER?: boolean;
+    };
+    tvWindow.__MOVIX_TV_PROFILE_RESOLVER = true;
+
+    const handleInjectedProfileChange = (event: Event) => {
+      const detail = (event as CustomEvent).detail || {};
+      const next: TvPlaybackProfile = detail.profile === 'vf' ? 'vf' : 'vo-fr';
+      const contentKey = movieId
+        ? 'movie:' + movieId
+        : (tvShowId
+          ? 'tv:' + tvShowId + ':' + (seasonNumber ?? 0) + ':' + (episodeNumber ?? 0)
+          : null);
+
+      if (contentKey) {
+        try {
+          sessionStorage.removeItem('movix.tv.playback.manual:' + contentKey + ':' + next);
+        } catch {}
+      }
+
+      writeTvPlaybackProfile(next);
+      tvProfileAppliedKeyRef.current = null;
+      setTvPlaybackCandidate(null);
+      setTvPlaybackScanStatus('idle');
+      setTvPlaybackProfile(next);
+    };
+
+    window.addEventListener('movix-tv-playback-profile-change', handleInjectedProfileChange);
+    return () => {
+      window.removeEventListener('movix-tv-playback-profile-change', handleInjectedProfileChange);
+      if (tvWindow.__MOVIX_TV_PROFILE_RESOLVER === true) {
+        delete tvWindow.__MOVIX_TV_PROFILE_RESOLVER;
+      }
+    };
+  }, [episodeNumber, movieId, seasonNumber, tvShowId]);
 
   useEffect(() => {
     if (!isMovixTvRuntime() || !controls || onlyQualityMenu || isWatchPartyGuest) return;
