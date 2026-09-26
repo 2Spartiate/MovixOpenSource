@@ -169,3 +169,16 @@ test('TV Home promotes the recent-series row before its lazy title exists withou
   assert.match(overrides, /notre suggestion/);
   assert.doesNotMatch(overrides, /insertBefore|appendChild/);
 });
+
+test('TV header exposes red 1 2 3 shortcut badges without touching handheld markup', async () => {
+  const overrides = await text('src/injection/app-site-overrides.ts');
+
+  assert.match(overrides, /const installTvShortcutBadgeStyle = \(\) =>/);
+  assert.match(overrides, /movix-tv-shortcut-badges/);
+  assert.match(overrides, /data-tv-shortcut-badge/);
+  assert.match(overrides, /background:rgba\(220,38,38,\.96\)/);
+  assert.match(overrides, /markTvShortcutBadge\(search, '1'\)/);
+  assert.match(overrides, /markTvShortcutBadge\(account, '2'\)/);
+  assert.match(overrides, /markTvShortcutBadge\(explore, '3'\)/);
+  assert.match(overrides, /if \(window\.MOVIX_TV !== true\) return/);
+});
