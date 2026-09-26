@@ -2595,6 +2595,200 @@ const HLSPlayer = forwardRef<HLSPlayerRef, HLSPlayerProps>(({
     });
   }, [formatDetectedStreamQuality, rememberSourceQuality]);
 
+  const probeTvPlaybackSource = useCallback(async (
+    source: Omit<TvPlaybackCandidate, 'maxHeight' | 'audioLanguages' | 'subtitleLanguages'>,
+    HlsCtor: typeof HlsType,
+  ): Promise<TvPlaybackCandidate | null> => {
+    const cached = tvPlaybackProbeCache.get(source.url);
+    if (cached) return { ...source, ...cached };
+
+    return new Promise<TvPlaybackCandidate | null>((resolve) => {
+      let settled = false;
+      const hls = new HlsCtor(createHlsConfig(source.url));
+      const finish = (metadata: TvProbeMetadata | null) => {
+        if (settled) return;
+        settled = true;
+        clearTimeout(timer);
+        try { hls.destroy(); } catch { /* noop */ }
+        if (metadata) tvPlaybackProbeCache.set(source.url, metadata);
+        resolve(metadata ? { ...source, ...metadata } : null);
+      };
+      const timer = setTimeout(() => finish(null), 6500);
+
+      hls.on(HlsCtor.Events.MANIFEST_PARSED, (_event, data) => {
+        const levels = data?.levels || [];
+        const top = [...levels].sort((a, b) => (b.height || 0) - (a.height || 0))[0];
+        const maxHeight = Number(top?.height) > 0 ? Number(top.height) : null;
+        const audioEntries = ((hls as any).audioTracks || (data as any)?.audioTracks || []) as Array<any>;
+        const subtitleEntries = ((hls as any).subtitleTracks || (data as any)?.subtitleTracks || []) as Array<any>;
+
+        const audioLanguages = audioEntries
+          .flatMap(track => [track?.lang, track?.language, track?.name])
+          .filter((value): value is string => typeof value === 'string' && value.trim().length > 0);
+        const subtitleLanguages = subtitleEntries
+          .flatMap(track => [track?.lang, track?.language, track?.name])
+          .filter((value): value is string => typeof value === 'string' && value.trim().length > 0);
+
+        const qualityOptions = buildHlsQualityOptions(levels);
+        const qualityLabel = qualityOptions.length > 1
+          ? formatAvailableHlsQualities(qualityOptions)
+          : formatDetectedStreamQuality(top);
+        rememberSourceQuality(source.url, qualityLabel);
+
+        finish({ maxHeight, audioLanguages, subtitleLanguages });
+      });
+
+      hls.on(HlsCtor.Events.ERROR, (_event, data) => {
+        if (data?.fatal) finish(null);
+      });
+
+      try {
+        hls.loadSource(source.url);
+      } catch {
+        finish(null);
+      }
+    });
+  }, [formatDetectedStreamQuality, rememberSourceQuality]);
+
+  useEffect(() => {
+    if (!isMovixTvRuntime() || !controls || onlyQualityMenu || isWatchPartyGuest) return;
+
+    const contentKey = movieId
+      ? 'movie:' + movieId
+      : (tvShowId ? 'tv:' + tvShowId + ':' + (seasonNumber ?? 0) + ':' + (episodeNumber ?? 0) : null);
+    if (!contentKey) return;
+
+    const nexusCandidates = nexusHlsSources
+      .map((source, index) => ({ source, index }))
+      .filter(({ source }) => looksLikeNexusVostfr(source))
+      .slice(0, 4)
+      .map(({ source, index }) => ({
+        provider: 'nexus' as const,
+        sourceType: 'nexus_hls' as const,
+        url: source.url,
+        label: source.label || ('Nexus VOSTFR ' + (index + 1)),
+        index,
+        burnedFrenchSubtitles: true,
+        likelyMulti: false,
+      }));
+
+    const bravoCandidates = purstreamSources
+      .slice(0, 4)
+      .map((source, index) => ({
+        provider: 'bravo' as const,
+        sourceType: 'bravo' as const,
+        url: source.url,
+        label: source.label || ('Bravo ' + (index + 1)),
+        index,
+        burnedFrenchSubtitles: false,
+        likelyMulti: looksLikeBravoMulti(source.label),
+      }));
+
+    const baseCandidates = [...nexusCandidates, ...bravoCandidates];
+    if (baseCandidates.length === 0) {
+      setTvPlaybackCandidate(null);
+      setTvPlaybackScanStatus('unavailable');
+      return;
+    }
+
+    let cancelled = false;
+    setTvPlaybackScanStatus('running');
+
+    void (async () => {
+      const HlsCtor = Hls || await loadHls();
+      const probed = (await Promise.all(
+        baseCandidates.map(candidate => probeTvPlaybackSource(candidate, HlsCtor)),
+      )).filter((candidate): candidate is TvPlaybackCandidate => candidate !== null)
+        .map(candidate => (
+          candidate.provider === 'bravo' && candidate.audioLanguages.length > 1
+            ? { ...candidate, likelyMulti: true }
+            : candidate
+        ));
+
+      if (cancelled) return;
+
+      const resolution = chooseTvPlaybackCandidate(
+        probed,
+        tvPlaybackProfile,
+        originalLanguage,
+      );
+      const winner = resolution.candidate;
+      setTvPlaybackCandidate(winner);
+
+      if (!winner) {
+        setTvPlaybackScanStatus('unavailable');
+        return;
+      }
+
+      setTvPlaybackScanStatus('ready');
+
+      const autoKey = contentKey + ':' + tvPlaybackProfile;
+      const manualKey = 'movix.tv.playback.manual:' + autoKey;
+      let manualOverride = false;
+      try {
+        manualOverride = sessionStorage.getItem(manualKey) === '1';
+      } catch {}
+
+      if (manualOverride) return;
+
+      tvPlaybackAutoWinnerByContent.set(autoKey, winner.url);
+      if (src === winner.url) return;
+
+      window.dispatchEvent(new CustomEvent('sourceChange', {
+        detail: {
+          type: winner.sourceType,
+          id: winner.sourceType + '_' + winner.index,
+          url: winner.url,
+          origin: 'tv-profile-auto',
+          fromSrc: src,
+        },
+      }));
+    })().catch(() => {
+      if (!cancelled) {
+        setTvPlaybackCandidate(null);
+        setTvPlaybackScanStatus('unavailable');
+      }
+    });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [
+    Hls,
+    controls,
+    episodeNumber,
+    isWatchPartyGuest,
+    movieId,
+    nexusHlsSources,
+    onlyQualityMenu,
+    originalLanguage,
+    probeTvPlaybackSource,
+    purstreamSources,
+    seasonNumber,
+    src,
+    tvPlaybackProfile,
+    tvShowId,
+  ]);
+
+  useEffect(() => {
+    if (!isMovixTvRuntime() || !controls || onlyQualityMenu) return;
+    const contentKey = movieId
+      ? 'movie:' + movieId
+      : (tvShowId ? 'tv:' + tvShowId + ':' + (seasonNumber ?? 0) + ':' + (episodeNumber ?? 0) : null);
+    if (!contentKey) return;
+
+    const listener = (event: Event) => {
+      const detail = (event as CustomEvent).detail || {};
+      const origin = String(detail.origin || '');
+      if (origin === 'tv-profile-auto' || origin === 'auto-fallback') return;
+      const manualKey = 'movix.tv.playback.manual:' + contentKey + ':' + tvPlaybackProfile;
+      try { sessionStorage.setItem(manualKey, '1'); } catch {}
+    };
+
+    window.addEventListener('sourceChange', listener);
+    return () => window.removeEventListener('sourceChange', listener);
+  }, [controls, episodeNumber, movieId, onlyQualityMenu, seasonNumber, tvPlaybackProfile, tvShowId]);
+
   const probeFileQuality = useCallback((url: string): Promise<void> => {
     if (!url || url === '#') return Promise.resolve();
     return new Promise<void>((resolve) => {
