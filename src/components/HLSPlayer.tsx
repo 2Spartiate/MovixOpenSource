@@ -78,6 +78,7 @@ import { isLowLatencyEnabled } from '../utils/lowLatencyPref';
 import { isMovixTvRuntime } from '../utils/tvRuntime';
 import {
   chooseTvPlaybackCandidate,
+  isAutomaticTvSourceChangeOrigin,
   isFrenchLanguage,
   languageMatchesOriginal,
   looksLikeBravoMulti,
@@ -2786,7 +2787,7 @@ const HLSPlayer = forwardRef<HLSPlayerRef, HLSPlayerProps>(({
     const listener = (event: Event) => {
       const detail = (event as CustomEvent).detail || {};
       const origin = String(detail.origin || '');
-      if (origin === 'tv-profile-auto' || origin === 'auto-fallback') return;
+      if (isAutomaticTvSourceChangeOrigin(origin)) return;
       const manualKey = 'movix.tv.playback.manual:' + contentKey + ':' + tvPlaybackProfile;
       try { sessionStorage.setItem(manualKey, '1'); } catch {}
     };
@@ -8831,12 +8832,24 @@ const HLSPlayer = forwardRef<HLSPlayerRef, HLSPlayerProps>(({
 
   const toggleTvPlaybackProfile = useCallback(() => {
     const next: TvPlaybackProfile = tvPlaybackProfile === 'vo-fr' ? 'vf' : 'vo-fr';
+    const contentKey = movieId
+      ? 'movie:' + movieId
+      : (tvShowId ? 'tv:' + tvShowId + ':' + (seasonNumber ?? 0) + ':' + (episodeNumber ?? 0) : null);
+
+    // An explicit profile change is a new automatic-selection request. Clear
+    // any session override previously recorded for the target profile only.
+    if (contentKey) {
+      try {
+        sessionStorage.removeItem('movix.tv.playback.manual:' + contentKey + ':' + next);
+      } catch {}
+    }
+
     writeTvPlaybackProfile(next);
     tvProfileAppliedKeyRef.current = null;
     setTvPlaybackCandidate(null);
     setTvPlaybackScanStatus('idle');
     setTvPlaybackProfile(next);
-  }, [tvPlaybackProfile]);
+  }, [episodeNumber, movieId, seasonNumber, tvPlaybackProfile, tvShowId]);
 
   useEffect(() => {
     if (!isMovixTvRuntime() || !controls || onlyQualityMenu || isWatchPartyGuest) return;

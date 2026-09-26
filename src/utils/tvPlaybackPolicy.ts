@@ -91,7 +91,9 @@ function candidateScore(
   if (profile === 'vf') {
     if (candidate.provider !== 'bravo') return null;
     const hasFrenchAudio = candidate.audioLanguages.some(isFrenchLanguage);
-    if (!hasFrenchAudio && !candidate.likelyMulti) return null;
+    // A MULTI label is discovery metadata, not proof of a French rendition.
+    // VF is compatible only when the manifest actually exposes French audio.
+    if (!hasFrenchAudio) return null;
     return height * 100 + 10;
   }
 
@@ -107,16 +109,15 @@ function candidateScore(
     language && !isFrenchLanguage(language),
   );
   const hasFrenchSubtitles = candidate.subtitleLanguages.some(isFrenchLanguage);
+  const originalIsFrench = isFrenchLanguage(originalLanguage);
 
-  // MULTI labels are useful when the manifest omits rendition metadata until
-  // playback starts. If tracks are exposed, require a coherent VO + FR combo.
+  // MULTI labels help us decide what to probe, but compatibility must come
+  // from manifest evidence. For French-original content, French audio is
+  // already the original track and does not require synthetic FR subtitles.
   const audioCompatible =
     hasOriginalAudio ||
-    (!normalizeMediaLanguage(originalLanguage) && hasNonFrenchAudio) ||
-    (candidate.likelyMulti && candidate.audioLanguages.length === 0);
-  const subtitleCompatible =
-    hasFrenchSubtitles ||
-    (candidate.likelyMulti && candidate.subtitleLanguages.length === 0);
+    (!normalizeMediaLanguage(originalLanguage) && hasNonFrenchAudio);
+  const subtitleCompatible = originalIsFrench ? hasOriginalAudio : hasFrenchSubtitles;
 
   if (!audioCompatible || !subtitleCompatible) return null;
 
@@ -158,4 +159,11 @@ export function looksLikeNexusVostfr(source: {
 
 export function looksLikeBravoMulti(label: string | undefined): boolean {
   return /\bmulti\b|multi[-_ ]?audio|vo\s*\/\s*vf/i.test(String(label || ''));
+}
+
+export function isAutomaticTvSourceChangeOrigin(origin: string | null | undefined): boolean {
+  const value = String(origin || '');
+  return value === 'tv-profile-auto'
+    || value === 'auto-fallback'
+    || value === 'dns-auto-fallback';
 }
