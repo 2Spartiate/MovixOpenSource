@@ -1589,6 +1589,7 @@ const HLSPlayer = forwardRef<HLSPlayerRef, HLSPlayerProps>(({
   const [tvPlaybackProfile, setTvPlaybackProfile] = useState<TvPlaybackProfile>(() => readTvPlaybackProfile());
   const [tvPlaybackScanStatus, setTvPlaybackScanStatus] = useState<'idle' | 'running' | 'ready' | 'unavailable'>('idle');
   const [tvPlaybackCandidate, setTvPlaybackCandidate] = useState<TvPlaybackCandidate | null>(null);
+  const [tvPlaybackSourceCount, setTvPlaybackSourceCount] = useState(0);
   const [showTvQuickMenu, setShowTvQuickMenu] = useState(false);
   const tvQuickMenuRef = useRef<HTMLDivElement>(null);
   const tvQuickMenuFirstActionRef = useRef<HTMLButtonElement>(null);
@@ -2685,6 +2686,7 @@ const HLSPlayer = forwardRef<HLSPlayerRef, HLSPlayerProps>(({
       }));
 
     const baseCandidates = [...nexusCandidates, ...bravoCandidates];
+    setTvPlaybackSourceCount(baseCandidates.length);
     if (baseCandidates.length === 0) {
       setTvPlaybackCandidate(null);
       setTvPlaybackScanStatus('unavailable');
