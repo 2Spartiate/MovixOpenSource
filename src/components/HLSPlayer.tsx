@@ -8871,16 +8871,81 @@ const HLSPlayer = forwardRef<HLSPlayerRef, HLSPlayerProps>(({
       }
 
       const keyboardTarget = e.target instanceof HTMLElement ? e.target : document.activeElement;
+      const key = e.key;
+      const tvRuntime = isMovixTvRuntime();
 
-      // On television, D-pad arrows belong to the focused interactive control
-      // (or to spatial navigation) before they belong to player seek/volume.
-      // Desktop keeps the historical global Arrow shortcuts unchanged.
-      if (
-        isMovixTvRuntime()
-        && e.code.startsWith('Arrow')
-        && isPlayerControlInteractionTarget(keyboardTarget)
-      ) {
-        return;
+      if (tvRuntime) {
+        const tvMenuOpen =
+          showTvQuickMenu ||
+          showSettings ||
+          showCastMenu ||
+          showInternalEpisodesMenu ||
+          showSeasonDropdown ||
+          studioOpen ||
+          showStreamInfo ||
+          showShortcutsHelp ||
+          showVolumeSlider;
+
+        if (key === '0' || e.code === 'Digit0' || e.code === 'Numpad0') {
+          e.preventDefault();
+          setShowSettings(false);
+          setShowInternalEpisodesMenu(false);
+          setShowSeasonDropdown(false);
+          setShowTvQuickMenu(previous => !previous);
+          return;
+        }
+
+        // Desktop percentage seeking is actively disabled on TV. Number keys
+        // are reserved for app-level shortcuts and 0 owns the playback menu.
+        if (/^[1-9]$/.test(key) || /^Digit[1-9]$/.test(e.code) || /^Numpad[1-9]$/.test(e.code)) {
+          e.preventDefault();
+          return;
+        }
+
+        if (e.code.startsWith('Arrow')) {
+          // Menus use normal spatial navigation; never turn Up/Down into
+          // fullscreen while choosing sources, audio, subtitles or episodes.
+          if (tvMenuOpen || isSourceMenuTarget(keyboardTarget)) return;
+
+          const focusedControl = isPlayerControlInteractionTarget(keyboardTarget);
+          const playIsFocused = keyboardTarget === playPauseButtonRef.current;
+          if (focusedControl && !playIsFocused) return;
+
+          if (e.code === 'ArrowLeft') {
+            e.preventDefault();
+            skipTime(-10);
+            return;
+          }
+          if (e.code === 'ArrowRight') {
+            e.preventDefault();
+            skipTime(10);
+            return;
+          }
+          if (e.code === 'ArrowUp') {
+            e.preventDefault();
+            const videoElement = videoRef.current as HTMLVideoElementWithWebkit | null;
+            const fullscreenActive = Boolean(
+              getFullscreenElement() ||
+              videoElement?.webkitDisplayingFullscreen ||
+              isFullscreen
+            );
+            if (!fullscreenActive) void toggleFullscreen();
+            window.setTimeout(focusTvPlayPause, 220);
+            return;
+          }
+          if (e.code === 'ArrowDown') {
+            e.preventDefault();
+            const videoElement = videoRef.current as HTMLVideoElementWithWebkit | null;
+            const fullscreenActive = Boolean(
+              getFullscreenElement() ||
+              videoElement?.webkitDisplayingFullscreen ||
+              isFullscreen
+            );
+            if (fullscreenActive) void toggleFullscreen();
+            window.setTimeout(focusTvPlayPause, 220);
+            return;
+          }
+        }
       }
 
       if (isSourceMenuTarget(keyboardTarget)) {
@@ -8892,8 +8957,6 @@ const HLSPlayer = forwardRef<HLSPlayerRef, HLSPlayerProps>(({
       if (isLocked) {
         return;
       }
-
-      const key = e.key;
 
       // Entrée — confirme la popup affichée (saut d'intro/outro, épisode
       // suivant, film suivant). On ne consomme la touche que si une popup a
@@ -9113,7 +9176,12 @@ const HLSPlayer = forwardRef<HLSPlayerRef, HLSPlayerProps>(({
     return () => {
       document.removeEventListener('keydown', handleKeyPress);
     };
-  }, [playbackSpeed, showStreamInfo, showShortcutsHelp, currentSubtitle, subtitles, showOsd, isSourceMenuTarget, isLocked]);
+  }, [
+    playbackSpeed, showStreamInfo, showShortcutsHelp, currentSubtitle, subtitles,
+    showOsd, isSourceMenuTarget, isLocked, showTvQuickMenu, showSettings,
+    showCastMenu, showInternalEpisodesMenu, showSeasonDropdown, studioOpen,
+    showVolumeSlider, isFullscreen, focusTvPlayPause,
+  ]);
 
   useEffect(() => {
     const fetchNextMovieDetails = async () => {
