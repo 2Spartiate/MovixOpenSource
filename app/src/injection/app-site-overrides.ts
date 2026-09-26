@@ -789,7 +789,8 @@ export function buildAppSiteOverrides(): string {
 
   const applyTvDetailExternalLinkPolicy = () => {
     if (window.MOVIX_TV !== true) return;
-    if (!/^\/(?:movie|tv)\//.test(window.location.pathname)) return;
+    const pathname = window.location.pathname;
+    if (!pathname.startsWith('/movie/') && !pathname.startsWith('/tv/')) return;
 
     // TVmaze is useful provenance on the web, but on TV the whole source line
     // only creates a dead-end external navigation target. Keep React ownership
