@@ -4,7 +4,7 @@ import test from 'node:test';
 import vm from 'node:vm';
 import ts from 'typescript';
 
-async function harness(tvMode = true) {
+async function harness(tvMode = true, sourceFixtures = []) {
   const source = await readFile(new URL('../src/injection/tv-playback-runtime.ts', import.meta.url), 'utf8');
   const js = ts.transpileModule(source, { compilerOptions: { module: ts.ModuleKind.CommonJS } }).outputText;
   const module = { exports: {} };
@@ -26,8 +26,17 @@ async function harness(tvMode = true) {
     set innerHTML(value) { this.textContent = value.replace(/<[^>]*>/g, ' '); }
     setAttribute(key, value) { this.attributes[key] = value; }
     getAttribute(key) { return this.attributes[key] ?? null; }
-    appendChild(child) { child.parentElement = this; this.children.push(child); return child; }
+    appendChild(child) { child.parentElement = this; child.isConnected = true; this.children.push(child); return child; }
     remove() { this.parentElement?.children.splice(this.parentElement.children.indexOf(this), 1); this.parentElement = null; this.isConnected = false; }
+    get nextElementSibling() {
+      const siblings = this.parentElement?.children || [];
+      return siblings[siblings.indexOf(this) + 1] || null;
+    }
+    get classList() { return {
+      contains: name => this.className.split(' ').includes(name),
+      add: name => { this.className += ` ${name}`; },
+      remove: name => { this.className = this.className.split(' ').filter(part => part !== name).join(' '); },
+    }; }
     getBoundingClientRect() { return { width: 320, height: 180 }; }
     addEventListener(name, callback) { (this.listeners[name] ||= []).push(callback); }
     click() { this.clicks++; for (const callback of this.listeners.click || []) callback(); }
@@ -43,6 +52,7 @@ async function harness(tvMode = true) {
     }
     querySelector(selector) {
       if (selector === '[data-tv-settings-tab="quality"]') return this.querySelectorAll('*').find(element => element.getAttribute('data-tv-settings-tab') === 'quality') || null;
+      if (selector === '[data-source-menu]') return this.querySelectorAll('*').find(element => element.getAttribute('data-source-menu') !== null) || null;
       if (selector === 'button') return this.querySelectorAll('button')[0] || null;
       return null;
     }
@@ -68,6 +78,46 @@ async function harness(tvMode = true) {
     const quality = new Element('button');
     quality.setAttribute('data-tv-settings-tab', 'quality');
     panel.appendChild(quality);
+    const close = new Element('button');
+    close.textContent = 'Fermer';
+    close.addEventListener('click', () => panel.remove());
+    panel.appendChild(close);
+    if (sourceFixtures.length) {
+      const scope = new Element('div');
+      scope.setAttribute('data-source-menu', '');
+      const scan = new Element('button');
+      scan.textContent = 'Vérification de la qualité';
+      scan.addEventListener('click', () => {
+        scan.remove();
+        setTimeout(() => {
+          const complete = new Element('button');
+          complete.textContent = 'Vérification de la qualité';
+          scope.appendChild(complete);
+        }, 20);
+      });
+      scope.appendChild(scan);
+      for (const provider of ['nexus', 'bravo']) {
+        const header = new Element('div');
+        const group = new Element('button');
+        group.textContent = provider;
+        header.appendChild(group);
+        scope.appendChild(header);
+        const list = new Element('div');
+        list.className = 'border-l-2';
+        for (const source of sourceFixtures.filter(item => item.provider === provider)) {
+          const choice = new Element('button');
+          choice.textContent = `${source.label} ${source.quality}p`;
+          if (source.audio) choice.setAttribute('data-tv-source-audio', source.audio);
+          if (source.subtitles) choice.setAttribute('data-tv-source-subtitles', source.subtitles);
+          choice.addEventListener('click', () => window.dispatchEvent(new context.CustomEvent('sourceChange', {
+            detail: { type: provider === 'bravo' ? 'bravo' : 'nexus_hls', url: source.label },
+          })));
+          list.appendChild(choice);
+        }
+        scope.appendChild(list);
+      }
+      panel.appendChild(scope);
+    }
     body.appendChild(panel);
   });
 
@@ -83,11 +133,12 @@ async function harness(tvMode = true) {
     querySelectorAll(selector) { return selector === 'video' ? [video] : []; },
     querySelector(selector) {
       if (selector === '[data-tv-player-menu-trigger="settings"]') return settings;
+      if (selector === '[data-tv-original-language]') return document.documentElement;
       if (selector.startsWith('.settings-menu')) return body.querySelectorAll('*').find(element => element.className === 'settings-menu') || null;
       return null;
     },
   };
-  document.documentElement.classList = { add() {}, remove() {} };
+  document.documentElement.setAttribute('data-tv-original-language', 'ja');
 
   const windowListeners = {};
   const storage = new Map();
@@ -154,4 +205,36 @@ test('0 and Back close the TV menu and non-TV never installs this listener', asy
   const handheld = await harness(false);
   assert.equal(handheld.press('0', 'Digit0').prevented, undefined);
   assert.equal(handheld.actions().length, 0);
+});
+
+test('injected resolver actually clicks the quality-ranked compatible Nexus/Bravo source', async () => {
+  const app = await harness(true, [
+    { provider: 'nexus', label: 'Nexus VOSTFR', quality: 720 },
+    { provider: 'bravo', label: 'Bravo MULTI', quality: 1080, audio: 'ja,fr', subtitles: 'fr' },
+    { provider: 'bravo', label: 'Bravo MULTI wrong audio', quality: 2160, audio: 'en', subtitles: 'fr' },
+    { provider: 'nexus', label: 'Nexus VF', quality: 1080, audio: 'fr' },
+  ]);
+  const selected = [];
+  app.window.addEventListener('sourceChange', event => selected.push(event.detail.url));
+  const vostfr = await app.window.__MOVIX_TV_PLAYBACK.selectBestProfileSource('vo-fr');
+  assert.equal(vostfr.status, 'selected');
+  assert.equal(vostfr.provider, 'bravo');
+  assert.equal(vostfr.quality, 1080);
+  assert.equal(vostfr.qualityVerified, true);
+  assert.deepEqual(selected, ['Bravo MULTI']);
+  const vf = await app.window.__MOVIX_TV_PLAYBACK.selectBestProfileSource('vf');
+  assert.equal(vf.status, 'selected');
+  assert.equal(vf.provider, 'nexus');
+  assert.deepEqual(selected, ['Bravo MULTI', 'Nexus VF']);
+});
+
+test('VOSTFR fallback is title-local and leaves the saved preference untouched', async () => {
+  const app = await harness(true, [
+    { provider: 'nexus', label: 'Nexus VF', quality: 1080, audio: 'fr' },
+  ]);
+  const result = await app.window.__MOVIX_TV_PLAYBACK.selectBestProfileSource('vo-fr', { allowVfFallback: true });
+  assert.equal(result.status, 'selected');
+  assert.equal(result.profile, 'vf');
+  assert.equal(result.requestedProfile, 'vo-fr');
+  assert.equal(app.storage.get('movix.tv.playback.profile.v1'), 'vo-fr');
 });

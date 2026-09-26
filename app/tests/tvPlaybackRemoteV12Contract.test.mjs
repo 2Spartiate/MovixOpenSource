@@ -48,7 +48,8 @@ test('TV episodes reuse the existing episode callbacks, season menu and previous
 test('injected profile event is bridged to the HLS resolver', async () => {
   const hls = await text('../src/components/HLSPlayer.tsx');
 
-  assert.match(hls, /__MOVIX_TV_PROFILE_RESOLVER = true/);
+  assert.match(hls, /__MOVIX_TV_PROFILE_RESOLVER = \{ version: 2 \}/);
+  assert.match(hls, /movix-tv-playback-profile-result/);
   assert.match(hls, /movix-tv-playback-profile-change/);
   assert.match(hls, /handleInjectedProfileChange/);
   assert.match(hls, /setTvPlaybackProfile\(next\)/);
@@ -58,8 +59,8 @@ test('TV candidate discovery splits Nexus VOSTFR and Bravo MULTI from VF alterna
   const hls = await text('../src/components/HLSPlayer.tsx');
 
   assert.match(hls, /isVostfr: looksLikeNexusVostfr\(source\)/);
-  assert.match(hls, /tvPlaybackProfile === 'vo-fr' \? isVostfr : !isVostfr/);
   assert.match(hls, /isMulti: looksLikeBravoMulti\(source\.label\)/);
-  assert.match(hls, /tvPlaybackProfile === 'vo-fr' \? isMulti : !isMulti/);
-  assert.match(hls, /tvPlaybackProfile === 'vo-fr'[\s\S]{0,400}setTvPlaybackProfile\('vf'\)/);
+  assert.match(hls, /chooseTvPlaybackCandidate\(probed, 'vf', originalLanguage\)/);
+  assert.match(hls, /setTvPlaybackEffectiveProfile\(effectiveProfile\)/);
+  assert.doesNotMatch(hls, /setTvPlaybackProfile\('vf'\)/);
 });

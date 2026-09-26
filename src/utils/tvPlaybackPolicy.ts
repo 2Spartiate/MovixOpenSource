@@ -95,6 +95,7 @@ function candidateScore(
     if (candidate.provider === 'bravo' && candidate.likelyMulti) return null;
 
     const hasFrenchAudio = candidate.audioLanguages.some(isFrenchLanguage);
+    if (candidate.audioLanguages.length > 0 && !hasFrenchAudio) return null;
     // Quality dominates; explicit French audio wins exact-quality ties.
     return height * 100 + (hasFrenchAudio ? 10 : 0);
   }

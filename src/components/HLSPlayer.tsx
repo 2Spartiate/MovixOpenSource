@@ -1588,6 +1588,7 @@ const HLSPlayer = forwardRef<HLSPlayerRef, HLSPlayerProps>(({
   const fallbackLevelRef = useRef<number | null>(null);
   const [sourceStreamQualities, setSourceStreamQualities] = useState<Record<string, string>>(() => getInitialSourceQualityState());
   const [tvPlaybackProfile, setTvPlaybackProfile] = useState<TvPlaybackProfile>(() => readTvPlaybackProfile());
+  const [tvPlaybackEffectiveProfile, setTvPlaybackEffectiveProfile] = useState<TvPlaybackProfile>(() => readTvPlaybackProfile());
   const [tvPlaybackScanStatus, setTvPlaybackScanStatus] = useState<'idle' | 'running' | 'ready' | 'unavailable'>('idle');
   const [tvPlaybackCandidate, setTvPlaybackCandidate] = useState<TvPlaybackCandidate | null>(null);
   const [tvPlaybackSourceCount, setTvPlaybackSourceCount] = useState(0);
@@ -2670,10 +2671,7 @@ const HLSPlayer = forwardRef<HLSPlayerRef, HLSPlayerProps>(({
         index,
         isVostfr: looksLikeNexusVostfr(source),
       }))
-      .filter(({ isVostfr }) => (
-        tvPlaybackProfile === 'vo-fr' ? isVostfr : !isVostfr
-      ))
-      .slice(0, 4)
+      .slice(0, 8)
       .map(({ source, index, isVostfr }) => ({
         provider: 'nexus' as const,
         sourceType: 'nexus_hls' as const,
@@ -2690,10 +2688,7 @@ const HLSPlayer = forwardRef<HLSPlayerRef, HLSPlayerProps>(({
         index,
         isMulti: looksLikeBravoMulti(source.label),
       }))
-      .filter(({ isMulti }) => (
-        tvPlaybackProfile === 'vo-fr' ? isMulti : !isMulti
-      ))
-      .slice(0, 4)
+      .slice(0, 8)
       .map(({ source, index, isMulti }) => ({
         provider: 'bravo' as const,
         sourceType: 'bravo' as const,
@@ -2733,20 +2728,19 @@ const HLSPlayer = forwardRef<HLSPlayerRef, HLSPlayerProps>(({
         tvPlaybackProfile,
         originalLanguage,
       );
-      const winner = resolution.candidate;
+      const fallback = !resolution.candidate && tvPlaybackProfile === 'vo-fr'
+        ? chooseTvPlaybackCandidate(probed, 'vf', originalLanguage)
+        : null;
+      const winner = resolution.candidate ?? fallback?.candidate ?? null;
+      const effectiveProfile: TvPlaybackProfile = fallback?.candidate ? 'vf' : tvPlaybackProfile;
+      setTvPlaybackEffectiveProfile(effectiveProfile);
       setTvPlaybackCandidate(winner);
 
       if (!winner) {
-        if (tvPlaybackProfile === 'vo-fr') {
-          // Default TV policy: prefer VOSTFR, but do not leave the user on an
-          // incompatible source when this title only exposes VF candidates.
-          // This is an effective fallback for the current player state; the
-          // persisted preference is changed only by an explicit menu action.
-          setTvPlaybackScanStatus('idle');
-          setTvPlaybackProfile('vf');
-          return;
-        }
         setTvPlaybackScanStatus('unavailable');
+        window.dispatchEvent(new CustomEvent('movix-tv-playback-profile-result', {
+          detail: { status: 'no-match', requestedProfile: tvPlaybackProfile },
+        }));
         return;
       }
 
@@ -2762,7 +2756,16 @@ const HLSPlayer = forwardRef<HLSPlayerRef, HLSPlayerProps>(({
       if (manualOverride) return;
 
       tvPlaybackAutoWinnerByContent.set(autoKey, winner.url);
-      if (src === winner.url) return;
+      if (src === winner.url) {
+        window.dispatchEvent(new CustomEvent('movix-tv-playback-profile-result', {
+          detail: {
+            status: 'selected', requestedProfile: tvPlaybackProfile,
+            profile: effectiveProfile, provider: winner.provider,
+            url: winner.url, quality: winner.maxHeight,
+          },
+        }));
+        return;
+      }
 
       window.dispatchEvent(new CustomEvent('sourceChange', {
         detail: {
@@ -5106,7 +5109,7 @@ const HLSPlayer = forwardRef<HLSPlayerRef, HLSPlayerProps>(({
     if (src !== tvPlaybackCandidate.url) return;
 
     const applyKey = [
-      tvPlaybackProfile,
+      tvPlaybackEffectiveProfile,
       src,
       audioTracks.length,
       subtitles.length,
@@ -5129,7 +5132,7 @@ const HLSPlayer = forwardRef<HLSPlayerRef, HLSPlayerProps>(({
     );
 
     let desiredAudio: AudioTrack | undefined;
-    if (tvPlaybackProfile === 'vf') {
+    if (tvPlaybackEffectiveProfile === 'vf') {
       desiredAudio = audioTracks.find(track => isFrenchLanguage(audioText(track)));
     } else {
       desiredAudio =
@@ -5153,7 +5156,7 @@ const HLSPlayer = forwardRef<HLSPlayerRef, HLSPlayerProps>(({
       });
     }
 
-    if (tvPlaybackProfile === 'vf') {
+    if (tvPlaybackEffectiveProfile === 'vf') {
       handleSubtitleChange('off');
       tvProfileAppliedKeyRef.current = applyKey;
       return;
@@ -5184,7 +5187,7 @@ const HLSPlayer = forwardRef<HLSPlayerRef, HLSPlayerProps>(({
     src,
     subtitles,
     tvPlaybackCandidate,
-    tvPlaybackProfile,
+    tvPlaybackEffectiveProfile,
   ]);
 
   useEffect(() => {
@@ -8887,9 +8890,9 @@ const HLSPlayer = forwardRef<HLSPlayerRef, HLSPlayerProps>(({
     if (!isMovixTvRuntime()) return;
 
     const tvWindow = window as Window & {
-      __MOVIX_TV_PROFILE_RESOLVER?: boolean;
+      __MOVIX_TV_PROFILE_RESOLVER?: { version: number };
     };
-    tvWindow.__MOVIX_TV_PROFILE_RESOLVER = true;
+    tvWindow.__MOVIX_TV_PROFILE_RESOLVER = { version: 2 };
 
     const handleInjectedProfileChange = (event: Event) => {
       const detail = (event as CustomEvent).detail || {};
@@ -8916,7 +8919,7 @@ const HLSPlayer = forwardRef<HLSPlayerRef, HLSPlayerProps>(({
     window.addEventListener('movix-tv-playback-profile-change', handleInjectedProfileChange);
     return () => {
       window.removeEventListener('movix-tv-playback-profile-change', handleInjectedProfileChange);
-      if (tvWindow.__MOVIX_TV_PROFILE_RESOLVER === true) {
+      if (tvWindow.__MOVIX_TV_PROFILE_RESOLVER?.version === 2) {
         delete tvWindow.__MOVIX_TV_PROFILE_RESOLVER;
       }
     };

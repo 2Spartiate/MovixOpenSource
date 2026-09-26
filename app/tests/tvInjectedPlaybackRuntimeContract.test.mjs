@@ -145,6 +145,7 @@ test('profile toggle now invokes source resolver instead of only changing curren
   const runtime = await text('src/injection/tv-playback-runtime.ts');
 
   assert.match(runtime, /selectBestProfileSource\(next, \{ allowVfFallback: false \}\)/);
-  assert.match(runtime, /window\.__MOVIX_TV_PROFILE_RESOLVER === true/);
+  assert.match(runtime, /window\.__MOVIX_TV_PROFILE_RESOLVER\?\.version !== 2/);
+  assert.match(runtime, /movix-tv-playback-profile-result/);
   assert.match(runtime, /api\.selectBestProfileSource = selectBestProfileSource/);
 });

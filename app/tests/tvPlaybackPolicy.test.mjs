@@ -87,6 +87,21 @@ test('VF rejects Nexus VOSTFR and MULTI labels without a proven French audio ren
   assert.equal(chooseTvPlaybackCandidate([nexus, fakeMulti, french], 'vf', 'en').candidate?.url, french.url);
 });
 
+test('VF rejects an explicitly non-French audio manifest before comparing resolution', async () => {
+  const { chooseTvPlaybackCandidate } = await loadPolicy();
+  const wrong4k = candidate({
+    provider: 'nexus', sourceType: 'nexus_hls',
+    url: 'https://example.invalid/nexus-en.m3u8',
+    maxHeight: 2160, audioLanguages: ['en'],
+  });
+  const french720 = candidate({
+    provider: 'nexus', sourceType: 'nexus_hls',
+    url: 'https://example.invalid/nexus-fr.m3u8',
+    maxHeight: 720, audioLanguages: ['fr'],
+  });
+  assert.equal(chooseTvPlaybackCandidate([wrong4k, french720], 'vf', 'en').candidate?.url, french720.url);
+});
+
 test('original_language gates compatibility before resolution', async () => {
   const { chooseTvPlaybackCandidate } = await loadPolicy();
   const wrong4k = candidate({

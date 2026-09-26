@@ -27,6 +27,8 @@ export function buildTvPlaybackRuntime(): string {
     api.autoProfileTimer = null;
   }
   api.profileSelectionBusy = false;
+  const runtimeGeneration = (api.runtimeGeneration || 0) + 1;
+  api.runtimeGeneration = runtimeGeneration;
 
   const normalise = (value) => String(value || '')
     .normalize('NFD')
@@ -455,12 +457,8 @@ export function buildTvPlaybackRuntime(): string {
       1800,
       60
     );
-    if (started) {
-      await waitUntil(() => getQualityScanButton(scope), 50000, 180);
-    } else {
-      await sleep(500);
-    }
-    return true;
+    if (!started) return false;
+    return Boolean(await waitUntil(() => getQualityScanButton(scope), 50000, 180));
   };
 
   const findGroupButton = (scope, token) => {
@@ -517,14 +515,41 @@ export function buildTvPlaybackRuntime(): string {
   const qualityScoreForButton = (button) => {
     if (!(button instanceof HTMLElement)) return 0;
     const text = String(button.textContent || '');
-    if (/\b4\s*k\b/i.test(text) || /\buhd\b/i.test(text)) return 2160;
-    const heights = Array.from(text.matchAll(/(\d{3,4})\s*p\b/gi))
+    if (/\\b4\\s*k\\b/i.test(text) || /\\buhd\\b/i.test(text)) return 2160;
+    const heights = Array.from(text.matchAll(/(\\d{3,4})\\s*p\\b/gi))
       .map((match) => Number(match[1]))
       .filter((value) => Number.isFinite(value));
     if (heights.length > 0) return Math.max(...heights);
-    if (/\bfhd\b/i.test(text)) return 1080;
-    if (/\bhd\b/i.test(text)) return 720;
+    if (/\\bfhd\\b/i.test(text)) return 1080;
+    if (/\\bhd\\b/i.test(text)) return 720;
     return 0;
+  };
+
+  const trackLanguagesForButton = (button, attribute) =>
+    String(button.getAttribute(attribute) || '').split(',').map(normalise).filter(Boolean);
+
+  const compatibleCandidate = (button, provider, profile, signature) => {
+    const vostfr = signature.includes('vostfr');
+    const multi = signature.includes('multi');
+    const audio = trackLanguagesForButton(button, 'data-tv-source-audio');
+    const subtitles = trackLanguagesForButton(button, 'data-tv-source-subtitles');
+    const original = normalise(document.querySelector('[data-tv-original-language]')
+      ?.getAttribute('data-tv-original-language'));
+
+    if (profile === 'vf') {
+      if (provider === 'nexus' && vostfr) return false;
+      if (provider === 'bravo' && multi) return false;
+      // Unknown metadata on the legacy remote site is provisional; explicit
+      // manifest metadata, when supplied, must actually contain French audio.
+      return audio.length === 0 || audio.some(isFrenchLanguage);
+    }
+    if (provider === 'nexus') return vostfr;
+    if (!multi) return false;
+    if (audio.length > 0 && !audio.some((language) =>
+      original ? language.split('-')[0] === original.split('-')[0] : !isFrenchLanguage(language)
+    )) return false;
+    if (subtitles.length > 0 && !subtitles.some(isFrenchLanguage)) return false;
+    return true;
   };
 
   const buildProfileCandidates = async (scope, profile) => {
@@ -534,8 +559,7 @@ export function buildTvPlaybackRuntime(): string {
     const candidates = [];
     nexusButtons.forEach((button, index) => {
       const signature = buttonSignature(button);
-      const vostfr = signature.includes('vostfr');
-      if ((profile === 'vo-fr' && vostfr) || (profile === 'vf' && !vostfr)) {
+      if (compatibleCandidate(button, 'nexus', profile, signature)) {
         candidates.push({
           provider: 'nexus',
           button,
@@ -548,8 +572,7 @@ export function buildTvPlaybackRuntime(): string {
 
     bravoButtons.forEach((button, index) => {
       const signature = buttonSignature(button);
-      const multi = signature.includes('multi');
-      if ((profile === 'vo-fr' && multi) || (profile === 'vf' && !multi)) {
+      if (compatibleCandidate(button, 'bravo', profile, signature)) {
         candidates.push({
           provider: 'bravo',
           button,
@@ -573,30 +596,78 @@ export function buildTvPlaybackRuntime(): string {
     });
   };
 
-  const selectBestProfileSource = async (profile, options = {}) => {
-    if (api.profileSelectionBusy) {
-      return { status: 'busy', profile };
-    }
+  const waitForFrontendResolution = (profile) => {
+    // A V12/V14 boolean only proves that a listener exists, not that it
+    // actually chose a source. Only the versioned completion event counts.
+    if (window.__MOVIX_TV_PROFILE_RESOLVER?.version !== 2) return null;
+    let finish;
+    const promise = new Promise((resolve) => { finish = resolve; });
+    const listener = (event) => {
+      if (event.detail?.requestedProfile !== profile) return;
+      cleanup();
+      finish(event.detail);
+    };
+    const timer = setTimeout(() => { cleanup(); finish(null); }, 18000);
+    const cleanup = () => {
+      clearTimeout(timer);
+      window.removeEventListener('movix-tv-playback-profile-result', listener);
+    };
+    window.addEventListener('movix-tv-playback-profile-result', listener);
+    return { promise, cleanup };
+  };
 
+  const clickSourceAndConfirm = async (winner) => {
+    let finish;
+    const confirmation = new Promise((resolve) => { finish = resolve; });
+    const listener = (event) => {
+      const type = String(event.detail?.type || '');
+      if (winner.provider === 'nexus' ? !type.startsWith('nexus') : type !== 'bravo') return;
+      cleanup();
+      finish(event.detail);
+    };
+    const timer = setTimeout(() => { cleanup(); finish(null); }, 1500);
+    const cleanup = () => {
+      clearTimeout(timer);
+      window.removeEventListener('sourceChange', listener);
+    };
+    window.addEventListener('sourceChange', listener);
+    winner.button.click();
+    return confirmation;
+  };
+
+  const performBestProfileSource = async (profile, options, requestId) => {
+    if (requestId !== api.profileRequestId || api.runtimeGeneration !== runtimeGeneration) {
+      return { status: 'superseded', profile };
+    }
     api.profileSelectionBusy = true;
     try {
+      const frontend = waitForFrontendResolution(profile);
       setPlaybackProfile(profile);
 
-      // A newer deployed HLSPlayer can own the resolver directly. The APK
-      // fallback below exists for the currently deployed remote frontend.
-      if (window.__MOVIX_TV_PROFILE_RESOLVER === true) {
-        scheduleTrackProfileApplication(profile);
-        return { status: 'delegated', profile };
+      if (frontend) {
+        const result = await frontend.promise;
+        if (result?.status === 'selected') {
+          scheduleTrackProfileApplication(result.profile || profile);
+          return { ...result, status: 'selected', requestedProfile: profile };
+        }
+      }
+
+      if (requestId !== api.profileRequestId || api.runtimeGeneration !== runtimeGeneration) {
+        return { status: 'superseded', profile };
       }
 
       const opened = await openHiddenQualitySettings();
       if (!opened) {
-        scheduleTrackProfileApplication(profile);
         return { status: 'settings-unavailable', profile };
       }
 
       const scope = opened.sourceMenu;
-      await runQualityScan(scope);
+      const qualityVerified = await runQualityScan(scope);
+
+      if (requestId !== api.profileRequestId || api.runtimeGeneration !== runtimeGeneration) {
+        await closeHiddenSettings();
+        return { status: 'superseded', profile };
+      }
 
       let candidates = await buildProfileCandidates(scope, profile);
       let effectiveProfile = profile;
@@ -609,7 +680,6 @@ export function buildTvPlaybackRuntime(): string {
       const winner = candidates[0] || null;
       if (!(winner?.button instanceof HTMLElement)) {
         await closeHiddenSettings();
-        scheduleTrackProfileApplication(profile);
         return { status: 'no-match', profile };
       }
 
@@ -624,9 +694,11 @@ export function buildTvPlaybackRuntime(): string {
         } catch {}
       }
 
-      winner.button.click();
-      await sleep(120);
+      const changed = await clickSourceAndConfirm(winner);
       await closeHiddenSettings();
+      if (!changed) {
+        return { status: 'selection-unconfirmed', profile: effectiveProfile };
+      }
       scheduleTrackProfileApplication(effectiveProfile);
       api.lastEffectiveProfile = effectiveProfile;
 
@@ -636,10 +708,27 @@ export function buildTvPlaybackRuntime(): string {
         requestedProfile: profile,
         provider: winner.provider,
         quality: winner.quality,
+        qualityVerified,
       };
     } finally {
+      if (document.documentElement.classList.contains(AUTO_SETTINGS_CLASS)) {
+        await closeHiddenSettings();
+      }
       api.profileSelectionBusy = false;
     }
+  };
+
+  const selectBestProfileSource = (profile, options = {}) => {
+    const requestId = (api.profileRequestId || 0) + 1;
+    api.profileRequestId = requestId;
+    // A manual toggle supersedes a running automatic scan. It waits for the
+    // old hidden panel to close, then selects the requested profile itself.
+    const previous = api.profileQueue || Promise.resolve();
+    const queued = previous.catch(() => {}).then(() =>
+      performBestProfileSource(profile, options, requestId)
+    );
+    api.profileQueue = queued;
+    return queued;
   };
 
   const scheduleAutomaticProfileSelection = () => {
@@ -696,16 +785,19 @@ export function buildTvPlaybackRuntime(): string {
     if (button instanceof HTMLElement) {
       api.advancedSettingsPending = true;
       closeQuickMenu(false);
-      button.click();
-      const panel = await waitUntil(() => getSettingsPanel(), 3500, 50);
-      const qualityTab = panel?.querySelector('[data-tv-settings-tab="quality"]');
-      const target = qualityTab instanceof HTMLElement ? qualityTab
-        : panel?.querySelector('button');
-      if (target instanceof HTMLElement) {
-        try { target.focus({ preventScroll: true }); } catch { target.focus(); }
+      try {
+        button.click();
+        const panel = await waitUntil(() => getSettingsPanel(), 3500, 50);
+        const qualityTab = panel?.querySelector('[data-tv-settings-tab="quality"]');
+        const target = qualityTab instanceof HTMLElement ? qualityTab
+          : panel?.querySelector('button');
+        if (target instanceof HTMLElement) {
+          try { target.focus({ preventScroll: true }); } catch { target.focus(); }
+        }
+        return panel instanceof HTMLElement;
+      } finally {
+        api.advancedSettingsPending = false;
       }
-      api.advancedSettingsPending = false;
-      return panel instanceof HTMLElement;
     }
     return false;
   };
@@ -778,9 +870,8 @@ export function buildTvPlaybackRuntime(): string {
 
     let profileStatus = '';
     const profileButton = addAction('', '', () => {
-      if (api.profileSelectionBusy) return;
       const next = getPlaybackProfile() === 'vo-fr' ? 'vf' : 'vo-fr';
-      setPlaybackProfile(next);
+      try { localStorage.setItem(PROFILE_KEY, next); } catch {}
       profileStatus = 'Recherche de la meilleure source…';
       updateProfileLabel();
 
@@ -789,16 +880,19 @@ export function buildTvPlaybackRuntime(): string {
           const quality = Number(result.quality) > 0 ? ' · ' + result.quality + 'p' : '';
           profileStatus =
             (result.provider === 'nexus' ? 'Nexus' : result.provider === 'bravo' ? 'Bravo' : '') +
-            quality;
+            quality + (result.qualityVerified === false ? ' · qualité non vérifiée' : '');
         } else if (result?.status === 'delegated') {
           profileStatus = 'Sélection automatique…';
         } else if (result?.status === 'no-match') {
           profileStatus = 'Aucune source compatible';
+        } else if (result?.status === 'selection-unconfirmed') {
+          profileStatus = 'Changement de source non confirmé';
         } else {
           profileStatus = '';
         }
         updateProfileLabel();
         requestAnimationFrame(() => {
+          if (!getQuickMenu()?.contains(profileButton)) return;
           try { profileButton.focus({ preventScroll: true }); } catch { profileButton.focus(); }
         });
       });
