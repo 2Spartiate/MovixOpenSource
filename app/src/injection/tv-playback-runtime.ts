@@ -1200,6 +1200,17 @@ export function buildTvPlaybackRuntime(): string {
       return;
     }
 
+    // The Watch page can expose its real HLS settings panel from the red
+    // Sources control before any HLS video has mounted. Adopt it only after
+    // the user actually focuses one of its controls; a DOM-wide search here
+    // would seize Home/detail posters and other unrelated overlays again.
+    if (!getOpenPlayerPanel() && onWatchRoute() && event.target instanceof HTMLElement) {
+      const focusedPanel = event.target.closest('.settings-menu');
+      if (focusedPanel instanceof HTMLElement && visible(focusedPanel)) {
+        ownPlayerPanel('settings', focusedPanel);
+      }
+    }
+
     const open = getOpenPlayerPanel();
     if (!open) return;
     if (open.panel.contains(event.target)) {

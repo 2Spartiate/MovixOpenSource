@@ -46,6 +46,11 @@ async function harness(tvMode = true, sourceFixtures = [], options = {}) {
     scrollIntoView() { this.scrollRequests = (this.scrollRequests || 0) + 1; }
     closest(selector) {
       if (selector === '[data-hls-player-root]') return this.playerRoot || null;
+      if (selector === '.settings-menu') {
+        for (let node = this; node; node = node.parentElement) {
+          if (node.className.split(' ').includes('settings-menu')) return node;
+        }
+      }
       if (selector === '.video-container') {
         for (let node = this; node; node = node.parentElement) {
           if (node.className.split(' ').includes('video-container')) return node;
@@ -223,7 +228,7 @@ async function harness(tvMode = true, sourceFixtures = [], options = {}) {
     createElement(tag) { return new Element(tag); },
     getElementById(id) { return [body, head].flatMap(node => [node, ...node.querySelectorAll('*')]).find(node => node.id === id) || null; },
     querySelectorAll(selector) {
-      if (selector === 'video') return [video];
+      if (selector === 'video') return options.noPlayerVideo ? [] : [video];
       if (selector === 'div') return body.querySelectorAll('div');
       return [];
     },
@@ -324,6 +329,19 @@ test('legacy remote HLS video-container still opens its real advanced panel', as
   assert.equal(app.document.activeElement.getAttribute('data-tv-settings-tab'), 'quality');
   assert.equal(app.press('ArrowDown').prevented, true);
   assert.equal(app.document.activeElement.textContent, 'Qualité auto');
+});
+
+test('an actually focused Watch sources panel remains navigable while a series video loads', async () => {
+  const app = await harness(true, [], { noPlayerVideo: true });
+  app.settings.click(); // The existing Watch Sources control opens the real panel.
+  const panel = app.document.body.querySelectorAll('*').find(item => item.className === 'settings-menu');
+  const quality = panel.querySelector('[data-tv-settings-tab="quality"]');
+  quality.focus();
+  assert.equal(app.window.__MOVIX_TV_PLAYBACK.getActiveVideo(), null);
+  assert.equal(app.press('ArrowDown').prevented, true);
+  assert.equal(app.document.activeElement.textContent, 'Qualité auto');
+  assert.equal(app.press('ArrowUp').prevented, true);
+  assert.equal(app.document.activeElement, quality);
 });
 
 test('packaged TV script owns D-pad focus and transport while the injected menu is visible', async () => {
