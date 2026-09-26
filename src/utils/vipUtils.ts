@@ -9,6 +9,12 @@
 
 const MAIN_API = import.meta.env.VITE_MAIN_API;
 
+// Développement local uniquement : permet de tester les écrans/chemins VIP
+// sans transformer ce statut en droit serveur. Les headers x-access-key restent
+// inchangés et les endpoints protégés continuent de valider leur propre clé.
+const DEV_FORCE_VIP_UI =
+  import.meta.env.DEV && import.meta.env.VITE_FORCE_VIP_UI === 'true';
+
 // Intervalle de vérification : toutes les 10 minutes
 const VIP_CHECK_INTERVAL = 10 * 60 * 1000;
 
@@ -32,6 +38,10 @@ export function getAccessKey(): string | null {
  * @returns true si VIP valide, false sinon
  */
 export async function checkVipStatus(force = false): Promise<boolean> {
+  if (DEV_FORCE_VIP_UI) {
+    return true;
+  }
+
   const accessKey = getAccessKey();
 
   // Pas de clé stockée → pas VIP
@@ -147,6 +157,10 @@ export function revokeVipStatus(): void {
  * @returns true si le localStorage indique VIP (sera corrigé en arrière-plan si invalide)
  */
 export function isUserVip(): boolean {
+  if (DEV_FORCE_VIP_UI) {
+    return true;
+  }
+
   const localVip = localStorage.getItem('is_vip') === 'true';
 
   if (localVip) {
@@ -179,6 +193,14 @@ export function getVipHeaders(): Record<string, string> {
 let intervalId: ReturnType<typeof setInterval> | null = null;
 
 export function startVipVerification(): void {
+  if (DEV_FORCE_VIP_UI) {
+    if (intervalId) {
+      clearInterval(intervalId);
+      intervalId = null;
+    }
+    return;
+  }
+
   // Vérification initiale
   if (getAccessKey()) {
     checkVipStatus(true).catch(() => { /* ignore */ });
