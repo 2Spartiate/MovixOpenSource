@@ -224,6 +224,29 @@ const WebViewBrowser = forwardRef<WebViewBrowserRef, WebViewBrowserProps>(
       [journalConsole, isTV],
     );
 
+    const requestTvWebViewFocus = useCallback(() => {
+      if (!isTV) return;
+      try {
+        (webViewRef.current as any)?.requestFocus?.();
+      } catch {
+        // Some WebView builds do not expose requestFocus; focusable below
+        // still lets Android TV grant focus on the first remote event.
+      }
+    }, [isTV]);
+
+    useEffect(() => {
+      if (!isTV) return;
+      // Native Android focus and DOM focus are separate. Request the WebView
+      // itself immediately, then once more after mount settles, so 1/2/3 work
+      // even before the user has moved the D-pad inside the page.
+      const early = setTimeout(requestTvWebViewFocus, 80);
+      const settled = setTimeout(requestTvWebViewFocus, 450);
+      return () => {
+        clearTimeout(early);
+        clearTimeout(settled);
+      };
+    }, [isTV, url, requestTvWebViewFocus]);
+
     // Sur iOS, laisser WKWebView annoncer la version réelle de WebKit et de
     // l'appareil : un User-Agent Safari figé peut perturber Turnstile.
     const userAgent = Platform.OS === 'ios' ? undefined : CONFIG.USER_AGENT;
@@ -233,6 +256,8 @@ const WebViewBrowser = forwardRef<WebViewBrowserRef, WebViewBrowserProps>(
         ref={webViewRef}
         source={{ uri: url }}
         style={{ flex: 1, backgroundColor: '#0a0a0a' }}
+        focusable={isTV ? true : undefined}
+        onLoadEnd={requestTvWebViewFocus}
         // Injection du bridge + userscript avant le chargement
         injectedJavaScriptBeforeContentLoaded={injectedJS}
         // Garder les iframes Turnstile sans bridge ni userscript Movix.
