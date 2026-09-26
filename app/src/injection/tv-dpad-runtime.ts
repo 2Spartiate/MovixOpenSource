@@ -247,6 +247,7 @@ ${domDiscoveryRuntime}
   const centerVerticalTarget = (element) => {
     if (!(element instanceof HTMLElement)) return false;
     const rect = element.getBoundingClientRect();
+    const shortcutScope = element.closest('[data-tv-shortcut-scope]');
 
     let scroller = element.parentElement;
     while (
@@ -269,8 +270,18 @@ ${domDiscoveryRuntime}
         }
         return true;
       }
+
+      // Shortcut menus are isolated navigation surfaces. Even when every item
+      // currently fits and no internal scroll is needed, never continue up to
+      // body/window and pan the underlying Home page.
+      if (shortcutScope instanceof HTMLElement && scroller === shortcutScope) {
+        return true;
+      }
+
       scroller = scroller.parentElement;
     }
+
+    if (shortcutScope instanceof HTMLElement) return true;
 
     const top = Math.max(
       0,
