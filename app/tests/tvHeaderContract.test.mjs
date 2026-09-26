@@ -27,19 +27,19 @@ test('final PNG brand stays a phone Home link but TV makes it inert in the live 
   assert.match(overrides, /data-tv-ignore-focus/);
 });
 
-test('header retains stable TV markers for Telegram and primary search focus', async () => {
+test('header retains Telegram marker but no obsolete primary-focus hooks for Search', async () => {
   const header = await text('../src/components/Header.tsx');
 
   assert.match(header, /href="https:\/\/t\.me\/movix_site"[\s\S]{0,180}data-tv-ignore-focus[\s\S]{0,180}data-tv-header-telegram/);
-  assert.match(header, /ref=\{searchInputRef\}[\s\S]{0,120}data-tv-primary-focus="search"[\s\S]{0,120}type="text"/);
+  assert.match(header, /ref=\{searchInputRef\}[\s\S]{0,120}type="text"/);
+  assert.doesNotMatch(header, /data-tv-primary-focus="search"/);
 });
 
-test('profile/account trigger is a native focusable button', async () => {
+test('profile/account trigger stays a semantic native button without obsolete primary-focus hook', async () => {
   const profile = await text('../src/components/ProfileMenu.tsx');
-  assert.match(profile, /<motion\.button[\s\S]{0,220}data-tv-primary-focus="account"/);
-  assert.match(profile, /aria-haspopup="menu"/);
+  assert.match(profile, /<motion\.button[\s\S]{0,220}aria-haspopup="menu"/);
   assert.match(profile, /aria-expanded=\{isOpen\}/);
-  assert.doesNotMatch(profile, /<motion\.div[\s\S]{0,220}data-tv-primary-focus="account"/);
+  assert.doesNotMatch(profile, /data-tv-primary-focus="account"/);
 });
 
 test('live TV injection discovers header shortcuts even when remote frontend lacks branch markers', async () => {
