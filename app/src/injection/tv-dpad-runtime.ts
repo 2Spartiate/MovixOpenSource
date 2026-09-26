@@ -124,8 +124,9 @@ ${domDiscoveryRuntime}
     ArrowDown: 'down',
   };
 
-  api.headerNavigationEnabled = false;
-  api.headerShortcutKind = null;
+  api.activeHeaderShortcut = null;
+  api.activeShortcutScope = null;
+  api.activeShortcutTrigger = null;
 
   // Re-injection can happen during WebView/document lifecycle transitions.
   // Always detach the exact previous capture listener before installing one.
@@ -421,7 +422,7 @@ ${domDiscoveryRuntime}
     if (api.restoreLastFocus()) return true;
 
     const elements = api.getTVFocusableElements()
-      .filter(element => api.headerNavigationEnabled === true || !isHeaderElement(element));
+      .filter(element => !isHeaderElement(element));
     const primary = elements.find(element => element.hasAttribute('data-tv-primary-focus'));
     const contentCard = elements.find(element => element.hasAttribute('data-tv-card'));
 
@@ -456,11 +457,12 @@ ${domDiscoveryRuntime}
     const current = document.activeElement;
     if (!(current instanceof HTMLElement)) return false;
 
+    const activeScope = current.closest('[data-tv-shortcut-scope]');
     const candidates = api.getTVFocusCandidates()
       .filter(candidate => candidate.element !== current)
       .filter(candidate => {
-        if (api.headerNavigationEnabled === true && isHeaderElement(current)) {
-          return isHeaderElement(candidate.element);
+        if (activeScope instanceof HTMLElement) {
+          return activeScope.contains(candidate.element);
         }
         return !isHeaderElement(candidate.element);
       });
@@ -557,6 +559,7 @@ ${domDiscoveryRuntime}
   const rememberCurrentContentFocus = () => {
     const current = document.activeElement;
     if (!(current instanceof HTMLElement) || isHeaderElement(current)) return;
+    if (current.closest('[data-tv-shortcut-scope]')) return;
     const key = focusKeyFor(current);
     if (key) api.lastFocusKey = key;
   };
@@ -601,42 +604,166 @@ ${domDiscoveryRuntime}
     return null;
   };
 
-  const focusFirstOpenedHeaderItem = (trigger) => {
-    requestAnimationFrame(() => requestAnimationFrame(() => {
-      if (api.headerNavigationEnabled !== true) return;
+  const getHeaderPolicy = () => window.__MOVIX_TV_HEADER_POLICY || null;
 
-      const candidates = api.getTVFocusableElements()
-        .filter((element) =>
-          isHeaderElement(element) &&
-          element !== trigger &&
-          !element.hasAttribute('data-tv-header-shortcut') &&
-          !element.hasAttribute('data-movix-brand-inert')
-        )
-        .filter((element) => {
-          const rect = element.getBoundingClientRect();
-          return rect.width > 0 && rect.height > 0 && rect.top >= 52;
-        })
-        .sort((a, b) => {
-          const ar = a.getBoundingClientRect();
-          const br = b.getBoundingClientRect();
-          return ar.top - br.top || ar.left - br.left;
-        });
-
-      if (candidates[0] instanceof HTMLElement) {
-        focusWithoutJank(candidates[0], false);
-      }
-    }));
+  const unlockHeaderElement = (element) => {
+    if (!(element instanceof HTMLElement)) return;
+    const policy = getHeaderPolicy();
+    if (policy && typeof policy.restoreInteractive === 'function') {
+      policy.restoreInteractive(element);
+      return;
+    }
+    element.removeAttribute('data-tv-ignore-focus');
+    if (element.getAttribute('tabindex') === '-1') element.removeAttribute('tabindex');
+    element.style.setProperty('pointer-events', 'auto', 'important');
   };
+
+  const unlockShortcutScope = (scope) => {
+    if (!(scope instanceof HTMLElement)) return false;
+
+    scope.setAttribute('data-tv-shortcut-scope', '');
+    if (scope.closest('header')) {
+      scope.setAttribute('data-tv-header-active-scope', '');
+    }
+
+    scope.querySelectorAll(
+      'a[href], button, input, select, textarea, [role="button"], [tabindex], [data-tv-focus]'
+    ).forEach((element) => {
+      if (!(element instanceof HTMLElement)) return;
+      unlockHeaderElement(element);
+    });
+    return true;
+  };
+
+  const clearShortcutMarkers = () => {
+    document.querySelectorAll('[data-tv-header-shortcut-active]').forEach((element) => {
+      if (element instanceof HTMLElement) {
+        element.removeAttribute('data-tv-header-shortcut-active');
+      }
+    });
+    document.querySelectorAll('[data-tv-header-active-scope]').forEach((element) => {
+      if (element instanceof HTMLElement) {
+        element.removeAttribute('data-tv-header-active-scope');
+      }
+    });
+    document.querySelectorAll('[data-tv-shortcut-scope]').forEach((element) => {
+      if (element instanceof HTMLElement) {
+        element.removeAttribute('data-tv-shortcut-scope');
+      }
+    });
+
+    const policy = getHeaderPolicy();
+    if (policy && typeof policy.lock === 'function') {
+      policy.lock();
+    }
+  };
+
+  const findOpenedShortcutScope = (kind, trigger) => {
+    if (kind === 'account') {
+      const root = trigger?.parentElement;
+      if (root instanceof HTMLElement) return root;
+    }
+
+    if (kind === 'explore') {
+      const portal = Array.from(document.querySelectorAll('[data-lenis-prevent]'))
+        .find((element) => {
+          if (!(element instanceof HTMLElement)) return false;
+          const rect = element.getBoundingClientRect();
+          return rect.width > 0 && rect.height > 0;
+        });
+      if (portal instanceof HTMLElement) return portal;
+
+      const header = document.querySelector('header');
+      if (header instanceof HTMLElement) {
+        const panels = Array.from(header.querySelectorAll('div')).filter((element) => {
+          if (!(element instanceof HTMLElement)) return false;
+          const rect = element.getBoundingClientRect();
+          if (rect.width <= 0 || rect.height <= 0 || rect.top < 48) return false;
+          return element.querySelectorAll('a[href], button').length >= 3;
+        });
+        if (panels[0] instanceof HTMLElement) return panels[0];
+      }
+    }
+
+    return null;
+  };
+
+  const focusFirstScopeItem = (scope, trigger) => {
+    if (!(scope instanceof HTMLElement)) return false;
+    const candidates = api.getTVFocusableElements()
+      .filter((element) =>
+        scope.contains(element) &&
+        element !== trigger &&
+        !element.hasAttribute('data-movix-brand-inert')
+      )
+      .filter((element) => {
+        const rect = element.getBoundingClientRect();
+        return rect.width > 0 && rect.height > 0;
+      })
+      .sort((a, b) => {
+        const ar = a.getBoundingClientRect();
+        const br = b.getBoundingClientRect();
+        return ar.top - br.top || ar.left - br.left;
+      });
+
+    return candidates[0] instanceof HTMLElement
+      ? focusWithoutJank(candidates[0], false)
+      : false;
+  };
+
+  const deactivateHeaderShortcut = (toggleUi = false, restoreFocus = true) => {
+    const kind = api.activeHeaderShortcut;
+    const trigger = api.activeShortcutTrigger;
+
+    if (toggleUi && (kind === 'account' || kind === 'explore') && trigger instanceof HTMLElement) {
+      try { trigger.click(); } catch {}
+    }
+
+    const active = document.activeElement;
+    if (active instanceof HTMLElement && (
+      active.hasAttribute('data-tv-header-shortcut-active') ||
+      active.closest('[data-tv-shortcut-scope]')
+    )) {
+      try { active.blur(); } catch {}
+    }
+
+    api.activeHeaderShortcut = null;
+    api.activeShortcutScope = null;
+    api.activeShortcutTrigger = null;
+    clearShortcutMarkers();
+
+    if (restoreFocus) {
+      const restored = api.restoreContentFocus();
+      const heroPlay = getHeroPlay();
+      if (!restored && heroPlay) focusWithoutJank(heroPlay);
+    }
+  };
+  api.deactivateHeaderShortcut = deactivateHeaderShortcut;
 
   const activateHeaderShortcut = (kind) => {
     const target = findHeaderShortcutTarget(kind);
     if (!(target instanceof HTMLElement)) return false;
 
+    if (api.activeHeaderShortcut === kind) {
+      if (kind === 'search') {
+        try { target.focus({ preventScroll: true }); } catch { target.focus(); }
+        return true;
+      }
+      deactivateHeaderShortcut(true, true);
+      return true;
+    }
+
+    if (api.activeHeaderShortcut) {
+      deactivateHeaderShortcut(true, false);
+    }
+
     rememberCurrentContentFocus();
-    api.headerNavigationEnabled = true;
-    api.headerShortcutKind = kind;
+    api.activeHeaderShortcut = kind;
+    api.activeShortcutTrigger = target;
 
     if (kind === 'search') {
+      target.setAttribute('data-tv-header-shortcut-active', '');
+      unlockHeaderElement(target);
       try {
         target.focus({ preventScroll: true });
       } catch {
@@ -648,42 +775,60 @@ ${domDiscoveryRuntime}
       return document.activeElement === target;
     }
 
-    try { target.click(); } catch { return false; }
-    focusFirstOpenedHeaderItem(target);
+    try { target.click(); } catch {
+      api.activeHeaderShortcut = null;
+      api.activeShortcutTrigger = null;
+      return false;
+    }
+
+    requestAnimationFrame(() => requestAnimationFrame(() => {
+      if (api.activeHeaderShortcut !== kind) return;
+      const scope = findOpenedShortcutScope(kind, target);
+      if (!(scope instanceof HTMLElement)) return;
+
+      api.activeShortcutScope = scope;
+      unlockShortcutScope(scope);
+      focusFirstScopeItem(scope, target);
+    }));
     return true;
   };
   api.activateHeaderShortcut = activateHeaderShortcut;
 
   const shortcutForEvent = (event) => {
-    const key = String(event.key || '').toLowerCase();
-    const code = Number(event.keyCode || event.which || 0);
+    if (event.repeat) return null;
 
-    // Android: SEARCH=84, ASSIST=219, VOICE_ASSIST=231.
-    if (
-      code === 84 || code === 219 || code === 231 ||
-      key === 'search' || key === 'browsersearch' ||
-      key === 'assist' || key === 'assistant' || key === 'voiceassist'
-    ) {
+    const target = event.target instanceof HTMLElement
+      ? event.target
+      : (document.activeElement instanceof HTMLElement ? document.activeElement : null);
+    if (target) {
+      const tag = target.tagName.toLowerCase();
+      if (
+        target.isContentEditable ||
+        tag === 'textarea' ||
+        tag === 'select' ||
+        (tag === 'input' && !['button', 'submit', 'reset'].includes(
+          (target.getAttribute('type') || 'text').toLowerCase()
+        )) ||
+        target.closest(
+          '[data-tv-consume-arrows], [data-tv-player-control], [data-tv-dpad-scope="native"]'
+        )
+      ) {
+        return null;
+      }
+    }
+
+    const key = String(event.key || '');
+    const code = String(event.code || '');
+    const legacy = Number(event.keyCode || event.which || 0);
+
+    if (key === '1' || code === 'Digit1' || code === 'Numpad1' || legacy === 49 || legacy === 97) {
       return 'search';
     }
-
-    // Android: MENU=82, SETTINGS=176. On the Metz remote this is the gear key
-    // when the OEM forwards it to the WebView instead of consuming it globally.
-    if (
-      code === 82 || code === 176 ||
-      key === 'contextmenu' || key === 'settings'
-    ) {
-      return 'explore';
-    }
-
-    // Android 14+: PROFILE_SWITCH=288. OEM user/profile keys may expose a
-    // semantic key string instead.
-    if (
-      code === 288 ||
-      key === 'profile' || key === 'profileswitch' ||
-      key === 'user' || key === 'account'
-    ) {
+    if (key === '2' || code === 'Digit2' || code === 'Numpad2' || legacy === 50 || legacy === 98) {
       return 'account';
+    }
+    if (key === '3' || code === 'Digit3' || code === 'Numpad3' || legacy === 51 || legacy === 99) {
+      return 'explore';
     }
 
     return null;
@@ -709,35 +854,16 @@ ${domDiscoveryRuntime}
 
     const eventTarget = event.target;
 
-    // Down from an explicitly opened Search field returns to the previous
-    // content focus (or Hero Play) instead of letting Chromium wander in header.
+    // Search is entered only through shortcut 1. ↓ leaves it and restores
+    // the exact content anchor; ordinary D-pad navigation never enters header.
     if (
       direction === 'down' &&
       eventTarget instanceof HTMLElement &&
       eventTarget.getAttribute('data-tv-header-shortcut') === 'search'
     ) {
-      api.headerNavigationEnabled = false;
-      api.headerShortcutKind = null;
-      const restored = api.restoreContentFocus();
-      const heroPlay = getHeroPlay();
-      if (!restored && heroPlay) focusWithoutJank(heroPlay);
+      deactivateHeaderShortcut(false, true);
       consumeEvent(event);
       return true;
-    }
-
-    if (
-      api.headerNavigationEnabled !== true &&
-      direction === 'down' &&
-      window.location.pathname === '/' &&
-      eventTarget instanceof HTMLElement &&
-      eventTarget.closest('header')
-    ) {
-      const heroPlay = getHeroPlay();
-      if (heroPlay) {
-        focusWithoutJank(heroPlay);
-        consumeEvent(event);
-        return true;
-      }
     }
 
     if (!api.shouldSpatialNavigationHandle(event)) return false;
@@ -758,6 +884,9 @@ ${domDiscoveryRuntime}
   if (typeof api.focusinHandler === 'function') {
     document.removeEventListener('focusin', api.focusinHandler, true);
   }
+  if (typeof api.backShortcutHandler === 'function') {
+    window.removeEventListener('movix-tv-back', api.backShortcutHandler);
+  }
   if (api.focusObserver && typeof api.focusObserver.disconnect === 'function') {
     api.focusObserver.disconnect();
   }
@@ -775,20 +904,34 @@ ${domDiscoveryRuntime}
     if (!(target instanceof HTMLElement)) return;
 
     if (isHeaderElement(target)) {
-      if (api.headerNavigationEnabled !== true) {
-        requestAnimationFrame(() => {
-          if (api.headerNavigationEnabled !== true) api.restoreContentFocus();
-        });
+      const intentional =
+        target.hasAttribute('data-tv-header-shortcut-active') ||
+        target.closest('[data-tv-header-active-scope]');
+      if (!intentional) {
+        try { target.blur(); } catch {}
+        api.restoreContentFocus();
       }
       return;
     }
 
-    api.headerNavigationEnabled = false;
-    api.headerShortcutKind = null;
+    if (target.closest('[data-tv-shortcut-scope]')) return;
+
+    if (api.activeHeaderShortcut) {
+      deactivateHeaderShortcut(false, false);
+    }
+
     const key = focusKeyFor(target);
     if (key) api.lastFocusKey = key;
   };
   api.focusinHandler = handleFocusIn;
+
+  const handleTvBack = (event) => {
+    if (!api.activeHeaderShortcut) return;
+    deactivateHeaderShortcut(true, true);
+    if (event?.cancelable) event.preventDefault();
+  };
+  api.backShortcutHandler = handleTvBack;
+  window.addEventListener('movix-tv-back', handleTvBack);
 
   const scheduleFocusRecovery = () => {
     if (!pageFocusIsEmpty() || api.focusRecoveryRaf || api.focusRecoveryTimer) return;
@@ -844,6 +987,10 @@ ${domDiscoveryRuntime}
     if (api.focusinHandler === handleFocusIn) {
       document.removeEventListener('focusin', handleFocusIn, true);
       api.focusinHandler = null;
+    }
+    if (api.backShortcutHandler === handleTvBack) {
+      window.removeEventListener('movix-tv-back', handleTvBack);
+      api.backShortcutHandler = null;
     }
     if (api.focusObserver && typeof api.focusObserver.disconnect === 'function') {
       api.focusObserver.disconnect();
