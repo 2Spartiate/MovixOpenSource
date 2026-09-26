@@ -409,7 +409,7 @@ export function buildTvPlaybackRuntime(): string {
       if (!(node instanceof HTMLElement) || !visible(node)) return false;
       const classes = String(node.className || '');
       if (!classes.includes('z-[11000]') && !classes.includes('z-[12000]')) return false;
-      return Boolean(node.querySelector('h3') && node.querySelector('.overflow-y-auto button'));
+      return Boolean(node.querySelector('h3') && node.querySelector('.overflow-y-auto'));
     });
     return candidates[0] || null;
   };
@@ -879,8 +879,9 @@ export function buildTvPlaybackRuntime(): string {
       if (!(panel instanceof HTMLElement)) return false;
       api.episodesPanel = panel;
       closeQuickMenu(false);
-      const first = getPanelFocusables(panel).find((item) =>
-        item.closest('.overflow-y-auto')) || getPanelFocusables(panel)[0];
+      const items = getPanelFocusables(panel);
+      const first = items.find((item) => item.closest('.overflow-y-auto')) ||
+        items.find((item) => item !== getPanelCloseButton(panel)) || items[0];
       focusPanelItem(first);
       return true;
     } finally {

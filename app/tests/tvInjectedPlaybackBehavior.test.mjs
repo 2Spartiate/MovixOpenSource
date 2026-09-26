@@ -70,6 +70,7 @@ async function harness(tvMode = true, sourceFixtures = [], options = {}) {
       if (selector === '[data-tv-episodes-menu]') return this.querySelectorAll('*').find(element => element.hasAttribute('data-tv-episodes-menu')) || null;
       if (selector === '[data-source-menu]') return this.querySelectorAll('*').find(element => element.getAttribute('data-source-menu') !== null) || null;
       if (selector === 'h3') return this.querySelectorAll('h3')[0] || null;
+      if (selector === '.overflow-y-auto') return this.querySelectorAll('*').find(element => element.className.split(' ').includes('overflow-y-auto')) || null;
       if (selector === '.overflow-y-auto button') return this.querySelectorAll('*').find(element => element.tagName === 'BUTTON' && element.closest('.overflow-y-auto')) || null;
       if (selector === 'button') return this.querySelectorAll('button')[0] || null;
       return null;
@@ -180,12 +181,16 @@ async function harness(tvMode = true, sourceFixtures = [], options = {}) {
       panel.appendChild(season);
       const list = new Element('div');
       list.className = 'overflow-y-auto';
-      for (let number = 1; number <= 3; number++) {
-        const choice = new Element('button');
-        choice.textContent = `Épisode ${number}`;
-        choice.addEventListener('click', () => { episodeClicks.push(number); panel.remove(); });
-        list.appendChild(choice);
-      }
+      const loadEpisodes = () => {
+        for (let number = 1; number <= 3; number++) {
+          const choice = new Element('button');
+          choice.textContent = `Épisode ${number}`;
+          choice.addEventListener('click', () => { episodeClicks.push(number); panel.remove(); });
+          list.appendChild(choice);
+        }
+      };
+      if (options.episodesLoading) setTimeout(loadEpisodes, 20);
+      else loadEpisodes();
       panel.appendChild(list);
       body.appendChild(panel);
     });
@@ -377,6 +382,19 @@ test('Back closes Épisodes before transport or SPA navigation', async () => {
   assert.equal(back.prevented, true);
   assert.deepEqual(app.episodeClicks, []);
   assert.equal(app.document.body.querySelectorAll('div').some(item => item.className.includes('z-[11000]')), false);
+});
+
+test('Épisodes takes focus on its season control while episode rows are still loading', async () => {
+  const app = await harness(true, [], { episodes: true, episodesLoading: true });
+  app.press('0', 'Digit0');
+  await new Promise(resolve => setImmediate(resolve));
+  app.press('ArrowDown');
+  app.press('Enter');
+  await new Promise(resolve => setImmediate(resolve));
+  assert.equal(app.document.activeElement.textContent, 'Saison 1');
+  await new Promise(resolve => setTimeout(resolve, 25));
+  app.press('ArrowDown');
+  assert.equal(app.document.activeElement.textContent, 'Épisode 1');
 });
 
 test('0 and Back close the TV menu and non-TV never installs this listener', async () => {
