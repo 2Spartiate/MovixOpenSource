@@ -6,6 +6,7 @@ export type TvPlaybackProvider = 'nexus' | 'bravo';
 
 export interface TvPlaybackCandidate {
   provider: TvPlaybackProvider;
+  sourceType: 'nexus_hls' | 'bravo';
   url: string;
   label: string;
   index: number;
