@@ -86,7 +86,7 @@ test('Android TV Home Back opens BlueNight exit confirmation with NON preferred'
   assert.match(browser, /const isTvHome = useMemo\(\(\) => \{/);
   assert.match(browser, /if \(isTvHome\) \{[\s\S]{0,200}setExitChoice\('no'\)[\s\S]{0,120}setExitConfirmVisible\(true\)/);
   assert.match(browser, /visible=\{!isPictureInPictureActive && isTV && exitConfirmVisible\}/);
-  assert.match(browser, /Quitter BlueNight \?/);
+  assert.match(browser, /Quitter Movix \?/);
   assert.match(browser, /setExitPreferredFocus\(true\)[\s\S]{0,120}setExitConfirmVisible\(true\)/);
   assert.match(browser, /hasTVPreferredFocus=\{isTV && exitPreferredFocus\}/);
   assert.match(browser, /nextFocusRight=\{findNodeHandle\(exitYesButtonRef\.current\) \?\? undefined\}/);

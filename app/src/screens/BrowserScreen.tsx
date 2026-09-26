@@ -289,7 +289,7 @@ export default function BrowserScreen() {
         }}>
         <View style={styles.exitOverlay}>
           <View style={styles.exitDialog}>
-            <Text style={styles.exitTitle}>Quitter BlueNight ?</Text>
+            <Text style={styles.exitTitle}>Quitter Movix ?</Text>
             <Text style={styles.exitMessage}>
               Êtes-vous sûr de vouloir quitter l'application ?
             </Text>
