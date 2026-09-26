@@ -167,7 +167,11 @@ test('TV Home promotes the recent-series row before its lazy title exists withou
   assert.match(overrides, /flex-direction', 'column'/);
   assert.match(overrides, /recent\.style\.setProperty\('order'/);
   assert.match(overrides, /notre suggestion/);
-  assert.doesNotMatch(overrides, /insertBefore|appendChild/);
+  const withoutSafeHeadStyleInstall = overrides.replace(
+    "document.head.appendChild(style);",
+    '',
+  );
+  assert.doesNotMatch(withoutSafeHeadStyleInstall, /insertBefore|appendChild/);
 });
 
 test('TV header exposes red 1 2 3 shortcut badges without touching handheld markup', async () => {
