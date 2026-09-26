@@ -585,9 +585,6 @@ ${domDiscoveryRuntime}
     }
 
     if (kind === 'account') {
-      const explicit = header.querySelector('[data-tv-primary-focus="account"]');
-      if (explicit instanceof HTMLElement) return explicit;
-
       const avatar = Array.from(header.querySelectorAll('img')).find((image) => {
         if (!(image instanceof HTMLImageElement)) return false;
         const label = String(image.alt || '').toLowerCase();
