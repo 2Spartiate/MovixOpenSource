@@ -50,6 +50,7 @@ export default function BrowserScreen() {
   const [canGoForward, setCanGoForward] = useState(false);
   const [loading, setLoading] = useState(true);
   const [currentUrl, setCurrentUrl] = useState('');
+  const [tvPathname, setTvPathname] = useState('');
   const [dnsEnabled, setDnsEnabled] = useState(false);
   const [settingsVisible, setSettingsVisible] = useState(false);
   const [exitConfirmVisible, setExitConfirmVisible] = useState(false);
@@ -69,6 +70,7 @@ export default function BrowserScreen() {
 
   const isTvHome = useMemo(() => {
     if (!isTV) return false;
+    if (tvPathname) return tvPathname.replace(/\/+$/, '') === '';
     const candidate = currentUrl || activeUrl;
     if (!candidate) return false;
     try {
@@ -77,7 +79,7 @@ export default function BrowserScreen() {
     } catch {
       return false;
     }
-  }, [activeUrl, currentUrl, isTV]);
+  }, [activeUrl, currentUrl, isTV, tvPathname]);
 
   useEffect(() => {
     if (Platform.OS !== 'android') return;
@@ -92,24 +94,30 @@ export default function BrowserScreen() {
         setExitChoice('no');
         return true;
       }
-      if (isTV && isTvHome) {
-        setExitChoice('no');
-        setExitConfirmVisible(true);
+      if (isTV) {
+        if (isTvHome) {
+          setExitChoice('no');
+          setExitConfirmVisible(true);
+          return true;
+        }
+        // TV always consumes Back inside the native shell. SPA routes do not
+        // reliably update WebView.canGoBack, so never let Android fall through
+        // and close the Activity just because React Router used pushState.
+        webViewRef.current?.injectJavaScript(`
+          (() => {
+            const event = new Event('movix-tv-back', { cancelable: true });
+            window.dispatchEvent(event);
+            if (!event.defaultPrevented) {
+              if (window.history.length > 1) window.history.back();
+              else window.location.href = '/';
+            }
+          })();
+          true;
+        `);
         return true;
       }
       if (canGoBack) {
-        if (isTV) {
-          webViewRef.current?.injectJavaScript(`
-            (() => {
-              const event = new Event('movix-tv-back', { cancelable: true });
-              window.dispatchEvent(event);
-              if (!event.defaultPrevented) window.history.back();
-            })();
-            true;
-          `);
-        } else {
-          webViewRef.current?.goBack();
-        }
+        webViewRef.current?.goBack();
         return true;
       }
       return false;
@@ -221,6 +229,10 @@ export default function BrowserScreen() {
           onNavigationStateChange={onNavigationStateChange}
           onError={onWebViewError}
           onPictureInPictureModeChange={onPictureInPictureModeChange}
+          onTvRouteChange={(pathname, href) => {
+            setTvPathname(pathname);
+            setCurrentUrl(href);
+          }}
         />
       </View>
 
