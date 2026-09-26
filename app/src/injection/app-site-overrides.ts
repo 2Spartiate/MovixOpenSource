@@ -361,44 +361,96 @@ export function buildAppSiteOverrides(): string {
   const makeMovixBrandInert = () => {
     if (window.MOVIX_TV !== true) return;
 
+    const candidates = new Set();
     document.querySelectorAll(
-      'header [data-tv-header-logo], header a, header [role="link"]'
+      'header [data-tv-header-logo], header [data-movix-app-brand-logo], header a, header [role="link"]'
     ).forEach((element) => {
-      if (!(element instanceof HTMLElement)) return;
+      if (element instanceof HTMLElement) candidates.add(element);
+    });
 
-      const marked = element.hasAttribute('data-tv-header-logo');
-      const image = element.querySelector(
-        'img[data-movix-app-brand-logo="1"], img[alt="Movix"], img[alt="MOVIX"]'
+    document.querySelectorAll('header img').forEach((image) => {
+      if (!(image instanceof HTMLImageElement)) return;
+      const signature = normalise(
+        String(image.alt || '') + ' ' +
+        String(image.getAttribute('src') || '')
       );
+      if (!signature.includes('movix')) return;
+      const owner = image.closest(
+        '[data-tv-header-logo], [data-movix-app-brand-logo], a, [role="link"], [class*="cursor-pointer"]'
+      );
+      if (owner instanceof HTMLElement) candidates.add(owner);
+    });
+
+    candidates.forEach((element) => {
+      const marked =
+        element.hasAttribute('data-tv-header-logo') ||
+        element.hasAttribute('data-movix-app-brand-logo');
+      const image = element.querySelector('img');
+      const imageSignature = image instanceof HTMLImageElement
+        ? normalise(String(image.alt || '') + ' ' + String(image.getAttribute('src') || ''))
+        : '';
       const label = normalise(
         String(element.textContent || '') + ' ' +
-        String(element.getAttribute('aria-label') || '')
+        String(element.getAttribute('aria-label') || '') + ' ' +
+        String(element.style.backgroundImage || '')
       );
 
-      if (!marked && !image && label !== 'movix') return;
+      if (
+        !marked &&
+        !imageSignature.includes('movix') &&
+        !label.includes('movix')
+      ) return;
 
-      element.removeAttribute('href');
-      element.setAttribute('tabindex', '-1');
-      element.setAttribute('aria-disabled', 'true');
-      element.setAttribute('data-tv-ignore-focus', '');
-      element.setAttribute('data-movix-brand-inert', '');
-      element.style.pointerEvents = 'none';
-      element.style.cursor = 'default';
+      if (element.hasAttribute('href')) element.removeAttribute('href');
+      if (element.getAttribute('tabindex') !== '-1') element.setAttribute('tabindex', '-1');
+      if (element.getAttribute('aria-disabled') !== 'true') element.setAttribute('aria-disabled', 'true');
+      if (!element.hasAttribute('data-tv-ignore-focus')) element.setAttribute('data-tv-ignore-focus', '');
+      if (!element.hasAttribute('data-movix-brand-inert')) element.setAttribute('data-movix-brand-inert', '');
+      element.style.setProperty('pointer-events', 'none', 'important');
+      element.style.setProperty('cursor', 'default', 'important');
+
+      if (document.activeElement === element || element.contains(document.activeElement)) {
+        try { document.activeElement?.blur?.(); } catch {}
+      }
     });
+  };
+
+  const getTvHeroRoot = () => {
+    const markedRoot = document.querySelector('[data-tv-hero-slider]');
+    if (markedRoot instanceof HTMLElement) return markedRoot;
+
+    const progressRoot = document.querySelector('.hero-progress-fill')?.closest('.embla');
+    if (progressRoot instanceof HTMLElement) return progressRoot;
+
+    const fallbackRoot = Array.from(document.querySelectorAll('.embla')).find((candidate) => {
+      if (!(candidate instanceof HTMLElement)) return false;
+      if (candidate.querySelectorAll('.embla__slide').length < 2) return false;
+      return Boolean(candidate.querySelector('button[aria-current="true"]'));
+    });
+    return fallbackRoot instanceof HTMLElement ? fallbackRoot : null;
+  };
+
+  const getTvHeroDots = (root) => {
+    if (!(root instanceof HTMLElement)) return [];
+
+    const explicit = Array.from(root.querySelectorAll('button[data-tv-hero-dot]'))
+      .filter((button) => button instanceof HTMLButtonElement);
+    if (explicit.length > 1) return explicit;
+
+    const active = root.querySelector('button[aria-current="true"]');
+    const group = active?.parentElement;
+    if (!(group instanceof HTMLElement)) return explicit;
+
+    const siblings = Array.from(group.children)
+      .filter((child) => child instanceof HTMLButtonElement);
+    return siblings.length > 1 ? siblings : explicit;
   };
 
   const markTvHeroFocusPolicy = () => {
     if (window.MOVIX_TV !== true) return;
     if (window.location.pathname !== '/') return;
 
-    const markedRoot = document.querySelector('[data-tv-hero-slider]');
-    const progressRoot = document.querySelector('.hero-progress-fill')?.closest('.embla');
-    const root =
-      markedRoot instanceof HTMLElement
-        ? markedRoot
-        : progressRoot instanceof HTMLElement
-          ? progressRoot
-          : null;
+    const root = getTvHeroRoot();
     if (!(root instanceof HTMLElement)) return;
 
     // One and only one TV entry point for the hero: the red Play CTA.
@@ -413,94 +465,203 @@ export function buildAppSiteOverrides(): string {
       Boolean(link.querySelector('svg.lucide-play, .lucide-play'))
     ));
     if (playLink instanceof HTMLElement) {
-      playLink.setAttribute('data-tv-primary-focus', 'hero-play');
-      playLink.setAttribute('data-tv-autofocus', '');
-      playLink.setAttribute('data-tv-focus-id', 'hero-play');
-      playLink.setAttribute('tabindex', '0');
+      if (playLink.getAttribute('data-tv-primary-focus') !== 'hero-play') {
+        playLink.setAttribute('data-tv-primary-focus', 'hero-play');
+      }
+      if (!playLink.hasAttribute('data-tv-autofocus')) playLink.setAttribute('data-tv-autofocus', '');
+      if (playLink.getAttribute('data-tv-focus-id') !== 'hero-play') {
+        playLink.setAttribute('data-tv-focus-id', 'hero-play');
+      }
+      if (playLink.getAttribute('tabindex') !== '0') playLink.setAttribute('tabindex', '0');
       playLink.removeAttribute('data-tv-ignore-focus');
     }
 
-    // "More info" and slide dots remain clickable on handheld but are outside
-    // the TV D-pad graph. Autoplay can still click dots programmatically.
+    const dots = new Set(getTvHeroDots(root));
+
+    // "More info" stays available on handheld but never belongs to the TV graph.
+    // Hero dots are stronger: on TV they are not user-clickable either. Autoplay
+    // still advances them through programmatic .click() calls (isTrusted=false).
     root.querySelectorAll('a, button').forEach((element) => {
       if (!(element instanceof HTMLElement) || element === playLink) return;
       const isInfo = Boolean(
         element.querySelector('svg.lucide-info, .lucide-info')
       );
       const isDot =
+        dots.has(element) ||
         element.hasAttribute('data-tv-hero-dot') ||
         element.getAttribute('aria-current') === 'true' ||
         normalise(element.getAttribute('aria-label')).includes('slide');
 
       if (!isInfo && !isDot) return;
-      element.setAttribute('data-tv-ignore-focus', '');
-      element.setAttribute('tabindex', '-1');
+      if (!element.hasAttribute('data-tv-ignore-focus')) element.setAttribute('data-tv-ignore-focus', '');
+      if (element.getAttribute('tabindex') !== '-1') element.setAttribute('tabindex', '-1');
+
+      if (isDot) {
+        if (!element.hasAttribute('data-tv-hero-user-inert')) {
+          element.setAttribute('data-tv-hero-user-inert', '');
+        }
+        element.style.setProperty('pointer-events', 'none', 'important');
+      }
     });
   };
 
-  const syncTvHeaderFocusGate = () => {
+  const markTvHeaderShortcutTargets = () => {
     if (window.MOVIX_TV !== true) return;
     const header = document.querySelector('header');
     if (!(header instanceof HTMLElement)) return;
 
-    const documentScrollTop = Math.max(
-      Number(window.scrollY || 0),
-      Number(document.documentElement?.scrollTop || 0),
-      Number(document.body?.scrollTop || 0),
+    const search = Array.from(
+      header.querySelectorAll('input[type="search"], input[type="text"]')
+    ).find((element) => element instanceof HTMLInputElement && element.offsetParent !== null);
+    if (search instanceof HTMLElement) {
+      search.setAttribute('data-tv-header-shortcut', 'search');
+    }
+
+    const explore = Array.from(header.querySelectorAll('[data-explore-trigger]'))
+      .find((element) => element instanceof HTMLElement && element.offsetParent !== null);
+    if (explore instanceof HTMLElement) {
+      explore.setAttribute('data-tv-header-shortcut', 'explore');
+    }
+
+    let account = header.querySelector(
+      '[data-tv-primary-focus="account"], [data-tv-header-shortcut="account"]'
     );
-    const hero = window.location.pathname === '/'
-      ? document.querySelector('[data-tv-hero-slider]')
-      : null;
-    const heroMovedUnderHeader =
-      hero instanceof HTMLElement && hero.getBoundingClientRect().top < 40;
-    const gated = documentScrollTop > 8 || heroMovedUnderHeader;
-    const interactive = header.querySelectorAll(
-      'a[href], button, input, select, textarea, [role="button"], [tabindex]'
-    );
-
-    interactive.forEach((element) => {
-      if (!(element instanceof HTMLElement)) return;
-
-      if (gated) {
-        if (!element.hasAttribute('data-tv-header-gated-focus')) {
-          const previous = element.getAttribute('tabindex');
-          element.setAttribute('data-tv-header-gated-tabindex', previous === null ? '__none__' : previous);
-          element.setAttribute('data-tv-header-gated-focus', '');
-        }
-        element.setAttribute('data-tv-ignore-focus', '');
-        element.setAttribute('tabindex', '-1');
-        return;
+    if (!(account instanceof HTMLElement)) {
+      const avatar = Array.from(header.querySelectorAll('img')).find((image) => {
+        if (!(image instanceof HTMLImageElement)) return false;
+        const label = normalise(
+          String(image.alt || '') + ' ' +
+          String(image.getAttribute('title') || '')
+        );
+        return label.includes('profil') || label.includes('profile') || label.includes('account');
+      });
+      if (avatar instanceof HTMLElement) {
+        account = avatar.closest(
+          'button, [role="button"], [class*="cursor-pointer"]'
+        );
       }
+    }
+    if (account instanceof HTMLElement) {
+      account.setAttribute('data-tv-header-shortcut', 'account');
+    }
+  };
 
-      if (!element.hasAttribute('data-tv-header-gated-focus')) return;
-      const previous = element.getAttribute('data-tv-header-gated-tabindex');
-      element.removeAttribute('data-tv-header-gated-focus');
-      element.removeAttribute('data-tv-header-gated-tabindex');
+  const syncTvHeaderFocusGate = () => {
+    if (window.MOVIX_TV !== true) return;
+    markTvHeaderShortcutTargets();
 
-      if (
-        !element.hasAttribute('data-movix-brand-inert') &&
-        !element.hasAttribute('data-tv-header-telegram')
-      ) {
-        element.removeAttribute('data-tv-ignore-focus');
-      }
-
-      if (previous === '__none__' || previous === null) {
-        element.removeAttribute('tabindex');
-      } else {
-        element.setAttribute('tabindex', previous);
-      }
-    });
-
-    if (gated && document.activeElement instanceof HTMLElement && document.activeElement.closest('header')) {
-      document.activeElement.blur();
-      const api = window.__MOVIX_TV_FOCUS;
-      if (api && typeof api.ensureInitialFocus === 'function') {
-        requestAnimationFrame(() => api.ensureInitialFocus());
+    const active = document.activeElement;
+    const api = window.__MOVIX_TV_FOCUS;
+    if (
+      active instanceof HTMLElement &&
+      active.closest('header') &&
+      api?.headerNavigationEnabled !== true
+    ) {
+      try { active.blur(); } catch {}
+      if (api && typeof api.restoreContentFocus === 'function') {
+        requestAnimationFrame(() => api.restoreContentFocus());
       }
     }
   };
 
-  const removeFooter = () => {
+  const ensureTvHomeLayout = () => {
+    if (window.MOVIX_TV !== true || window.location.pathname !== '/') return;
+
+    const parents = Array.from(document.querySelectorAll('.home-section'))
+      .map((section) => section.parentElement)
+      .filter((parent) => parent instanceof HTMLElement);
+    const parent = parents.find((candidate) => (
+      Array.from(candidate.children)
+        .filter((child) => child instanceof HTMLElement && child.classList.contains('home-section'))
+        .length >= 5
+    ));
+    if (!(parent instanceof HTMLElement)) return;
+
+    const direct = Array.from(parent.children)
+      .filter((child) => child instanceof HTMLElement);
+    const homeSections = direct.filter((child) => child.classList.contains('home-section'));
+    if (homeSections.length < 5) return;
+
+    const byText = (patterns) => homeSections.find((section) => {
+      const text = normalise(section.textContent);
+      return patterns.some((pattern) => text.includes(pattern));
+    });
+
+    const trending =
+      byText(['tendances', 'trending']) ||
+      homeSections[1] ||
+      null;
+    if (!(trending instanceof HTMLElement)) return;
+
+    let recent =
+      byText([
+        'dernieres series',
+        'series recentes',
+        'recent shows',
+        'latest shows',
+        'recent tv',
+      ]) || null;
+
+    // Legacy remote Home keeps the featured LazySection as a direct non-home
+    // child. In that layout category[0] is recent-tv and is the fifth direct
+    // .home-section. This structural fallback works before LazySection renders
+    // its title, so the row can be visually promoted while still a skeleton.
+    if (!(recent instanceof HTMLElement)) {
+      const hasLegacyFeaturedSlot = direct.some((child, index) => (
+        !child.classList.contains('home-section') &&
+        index > direct.indexOf(trending) &&
+        index < direct.length - 1
+      ));
+      recent = hasLegacyFeaturedSlot ? homeSections[4] : homeSections[2];
+    }
+    if (!(recent instanceof HTMLElement) || recent === trending) return;
+
+    parent.setAttribute('data-tv-home-order', '');
+    parent.style.setProperty('display', 'flex');
+    parent.style.setProperty('flex-direction', 'column');
+    parent.style.setProperty('width', '100%');
+
+    direct.forEach((child, index) => {
+      child.style.setProperty('order', String(index * 10));
+    });
+    const trendingOrder = direct.indexOf(trending) * 10;
+    recent.style.setProperty('order', String(trendingOrder + 1));
+    recent.setAttribute('data-tv-home-recent-shows', '');
+
+    // Hide the legacy "Notre suggestion" as soon as its async content appears.
+    direct.forEach((child) => {
+      const text = normalise(child.textContent);
+      if (
+        text.includes('notre suggestion') ||
+        text.includes('team selection') ||
+        text.includes('selection de l equipe')
+      ) {
+        hideManagedNode(child);
+      }
+    });
+  };
+
+  const installTvUserClickGuards = () => {
+    if (window.MOVIX_TV !== true) return;
+    if (window.__MOVIX_TV_USER_CLICK_GUARD_READY) return;
+    window.__MOVIX_TV_USER_CLICK_GUARD_READY = true;
+
+    document.addEventListener('click', (event) => {
+      if (event.isTrusted !== true) return;
+      const target = event.target instanceof Element
+        ? event.target.closest('[data-movix-brand-inert], [data-tv-hero-user-inert]')
+        : null;
+      if (!(target instanceof HTMLElement)) return;
+
+      event.preventDefault();
+      event.stopPropagation();
+      if (typeof event.stopImmediatePropagation === 'function') {
+        event.stopImmediatePropagation();
+      }
+    }, true);
+  };
+
+  const removeFooter = () => {  const removeFooter = () => {
     if (window.MOVIX_TV !== true) return;
     document.querySelectorAll('footer').forEach((footer) => hideManagedNode(footer));
   };
@@ -535,22 +696,7 @@ export function buildAppSiteOverrides(): string {
       return;
     }
 
-    const markedRoot = document.querySelector('[data-tv-hero-slider]');
-    const progressRoot = document.querySelector('.hero-progress-fill')?.closest('.embla');
-    const fallbackRoot = Array.from(document.querySelectorAll('.embla')).find((candidate) => {
-      if (!(candidate instanceof HTMLElement)) return false;
-      if (candidate.querySelectorAll('.embla__slide').length < 2) return false;
-      return Boolean(candidate.querySelector('button[aria-current="true"]'));
-    });
-
-    const root =
-      markedRoot instanceof HTMLElement
-        ? markedRoot
-        : progressRoot instanceof HTMLElement
-          ? progressRoot
-          : fallbackRoot instanceof HTMLElement
-            ? fallbackRoot
-            : null;
+    const root = getTvHeroRoot();
 
     if (!root) return;
     if (previous?.root === root && previous.timer) return;
@@ -579,18 +725,7 @@ export function buildAppSiteOverrides(): string {
       toggle.click();
     };
 
-    const getDots = () => {
-      const explicit = Array.from(root.querySelectorAll('button[data-tv-hero-dot]'))
-        .filter((button) => button instanceof HTMLButtonElement);
-      if (explicit.length > 1) return explicit;
-
-      const active = root.querySelector('button[aria-current="true"]');
-      const group = active?.parentElement;
-      if (!(group instanceof HTMLElement)) return [];
-
-      return Array.from(group.children)
-        .filter((child) => child instanceof HTMLButtonElement);
-    };
+    const getDots = () => getTvHeroDots(root);
 
     const schedule = (delay = 10000) => {
       if (runtime.timer) clearTimeout(runtime.timer);
@@ -670,6 +805,8 @@ export function buildAppSiteOverrides(): string {
     makeMovixBrandInert();
     markTvHeroFocusPolicy();
     syncTvHeaderFocusGate();
+    ensureTvHomeLayout();
+    installTvUserClickGuards();
     removeFooter();
     removeCarouselArrows();
     removeFavoriteControls();
@@ -699,6 +836,8 @@ export function buildAppSiteOverrides(): string {
       observer.observe(document.documentElement, {
         childList: true,
         subtree: true,
+        attributes: true,
+        attributeFilter: ['aria-current', 'href'],
       });
       window.__MOVIX_APP_COMMON_OVERRIDES_OBSERVER = observer;
     }
