@@ -282,7 +282,7 @@ export default function BrowserScreen() {
         }}>
         <View style={styles.exitOverlay}>
           <View style={styles.exitDialog}>
-            <Text style={styles.exitTitle}>Quitter l'application ?</Text>
+            <Text style={styles.exitTitle}>Quitter BlueNight ?</Text>
             <Text style={styles.exitMessage}>
               Êtes-vous sûr de vouloir quitter l'application ?
             </Text>
@@ -304,7 +304,7 @@ export default function BrowserScreen() {
                 <Text style={[
                   styles.exitButtonText,
                   exitChoice === 'no' && styles.exitButtonTextFocused,
-                ]}>Non</Text>
+                ]}>NON</Text>
               </TouchableOpacity>
               <TouchableOpacity
                 accessibilityRole="button"
@@ -319,7 +319,7 @@ export default function BrowserScreen() {
                 <Text style={[
                   styles.exitButtonText,
                   exitChoice === 'yes' && styles.exitButtonTextFocused,
-                ]}>Oui</Text>
+                ]}>OUI</Text>
               </TouchableOpacity>
             </View>
           </View>
