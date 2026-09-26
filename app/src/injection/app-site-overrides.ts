@@ -448,7 +448,6 @@ export function buildAppSiteOverrides(): string {
 
   const markTvHeroFocusPolicy = () => {
     if (window.MOVIX_TV !== true) return;
-    if (window.location.pathname !== '/') return;
 
     const root = getTvHeroRoot();
     if (!(root instanceof HTMLElement)) return;
@@ -516,19 +515,23 @@ export function buildAppSiteOverrides(): string {
       '[data-tv-shortcut-badge]::after{',
       'content:attr(data-tv-shortcut-badge);',
       'position:absolute;',
-      'top:-7px;',
-      'right:-7px;',
-      'width:18px;',
-      'height:18px;',
+      'left:-23px;',
+      'top:50%;',
+      'transform:translateY(-50%);',
+      'width:17px;',
+      'height:17px;',
       'display:flex;',
       'align-items:center;',
       'justify-content:center;',
+      'box-sizing:border-box;',
       'border-radius:9999px;',
-      'background:rgba(220,38,38,.96);',
-      'border:1px solid rgba(255,255,255,.72);',
-      'box-shadow:0 0 0 2px rgba(0,0,0,.7),0 0 12px rgba(239,68,68,.45);',
-      'color:#fff;',
-      'font:700 11px/1 system-ui,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;',
+      'background:transparent;',
+      'border:1px solid rgba(248,113,113,.88);',
+      'box-shadow:0 0 5px rgba(239,68,68,.52),inset 0 0 3px rgba(239,68,68,.18);',
+      'color:rgba(248,113,113,.96);',
+      'font:600 10px/1 system-ui,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;',
+      'text-shadow:0 0 4px rgba(239,68,68,.55);',
+      'opacity:.82;',
       'z-index:2147483000;',
       'pointer-events:none;',
       '}',
@@ -802,17 +805,6 @@ export function buildAppSiteOverrides(): string {
     if (window.MOVIX_TV !== true) return;
 
     const previous = window.__MOVIX_TV_HERO_AUTOPLAY;
-    const onHome = window.location.pathname === '/';
-
-    if (!onHome) {
-      if (previous?.timer) clearTimeout(previous.timer);
-      if (previous) {
-        previous.timer = null;
-        previous.root = null;
-      }
-      return;
-    }
-
     const root = getTvHeroRoot();
 
     if (!root) return;
@@ -852,8 +844,7 @@ export function buildAppSiteOverrides(): string {
     const advance = () => {
       if (
         window.MOVIX_TV !== true ||
-        !root.isConnected ||
-        window.location.pathname !== '/'
+        !root.isConnected
       ) {
         if (runtime.timer) clearTimeout(runtime.timer);
         runtime.timer = null;
