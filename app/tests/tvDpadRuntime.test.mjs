@@ -44,9 +44,10 @@ test('explicit arrow consumers and sliders are protected', () => {
 test('runtime consumes eligible D-pad arrows even at a spatial graph edge', () => {
   const runtime = buildTvDpadRuntime('(function () { return null; })', '/* dom discovery */');
   const move = runtime.indexOf('api.moveFocus(direction);');
-  const prevent = runtime.indexOf('event.preventDefault();', move);
+  const consume = runtime.indexOf('consumeEvent(event);', move);
   assert.ok(move >= 0);
-  assert.ok(prevent > move);
+  assert.ok(consume > move);
+  assert.match(runtime, /const consumeEvent = \(event\) => \{[\s\S]{0,160}event\.preventDefault\(\)/);
   assert.doesNotMatch(runtime, /if \(!moved\) return false/);
 });
 
