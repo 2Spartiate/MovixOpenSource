@@ -41,16 +41,16 @@ test('TV injected player restores Play Pause focus when a remote player appears'
 });
 
 
-test('0 opens an injected TV quick menu with persistent VF VOSTFR profile', async () => {
+test('0 opens the two-action injected TV menu without the broken mode toggle', async () => {
   const runtime = await text('src/injection/tv-playback-runtime.ts');
+  const menu = runtime.slice(runtime.indexOf('const openQuickMenu ='), runtime.indexOf('const toggleQuickMenu ='));
 
   assert.match(runtime, /PROFILE_KEY = 'movix\.tv\.playback\.profile\.v1'/);
   assert.match(runtime, /key === '0'[\s\S]{0,120}Digit0[\s\S]{0,120}Numpad0/);
   assert.match(runtime, /consume\(event\)[\s\S]{0,120}void toggleQuickMenu\(video, root\)/);
-  assert.match(runtime, /Mode : VF/);
-  assert.match(runtime, /Mode : VOSTFR/);
-  assert.match(runtime, /VO \+ sous-titres FR/);
-  assert.match(runtime, /audio français/);
+  assert.match(menu, /addAction\('Épisodes'/);
+  assert.match(menu, /addAction\('Sources VOSTFR\/VF'/);
+  assert.doesNotMatch(menu, /Mode : VF|Mode : VOSTFR|addAction\('Fermer'/);
   assert.match(runtime, /localStorage\.setItem\(PROFILE_KEY, profile\)/);
   assert.match(runtime, /movix-tv-playback-profile-change/);
 });
@@ -60,7 +60,7 @@ test('injected TV quick menu reuses remote episodes and settings controls', asyn
 
   assert.match(runtime, /findActionButton\(root, \['episodes', 'episode'\]/);
   assert.match(runtime, /data-tv-player-menu-trigger="settings"/);
-  assert.match(runtime, /Sources avancées/);
+  assert.match(runtime, /Sources VOSTFR\/VF/);
   assert.match(runtime, /data-tv-playback-quick-menu/);
   assert.match(runtime, /data-tv-shortcut-scope/);
 });
@@ -143,10 +143,9 @@ test('default injected selection tries VOSTFR then title-local VF fallback', asy
   assert.match(runtime, /not a new persistent[\s\S]{0,180}Keep PROFILE_KEY on VOSTFR/i);
 });
 
-test('profile toggle now invokes source resolver instead of only changing current tracks', async () => {
+test('source resolver stays available to TV code without a quick-menu mode button', async () => {
   const runtime = await text('src/injection/tv-playback-runtime.ts');
 
-  assert.match(runtime, /selectBestProfileSource\(next, \{ allowVfFallback: false \}\)/);
   assert.match(runtime, /window\.__MOVIX_TV_PROFILE_RESOLVER\?\.version !== 2/);
   assert.match(runtime, /movix-tv-playback-profile-result/);
   assert.match(runtime, /api\.selectBestProfileSource = selectBestProfileSource/);

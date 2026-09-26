@@ -4,7 +4,7 @@ export function buildTvPlaybackRuntime(): string {
   if (window.MOVIX_TV !== true) return;
 
   const api = window.__MOVIX_TV_PLAYBACK || (window.__MOVIX_TV_PLAYBACK = {});
-  api.runtimeVersion = 'tv-playback-v18';
+  api.runtimeVersion = 'tv-playback-v19';
 
   if (typeof api.keydownHandler === 'function') {
     window.removeEventListener('keydown', api.keydownHandler, true);
@@ -916,7 +916,10 @@ export function buildTvPlaybackRuntime(): string {
   const openExistingSettings = async (root) => {
     const existing = getSettingsPanel();
     const button = getSettingsTrigger(root);
-    if (!(existing instanceof HTMLElement) && !(button instanceof HTMLElement)) return false;
+    if (!(existing instanceof HTMLElement) && !(button instanceof HTMLElement)) {
+      closeQuickMenu(false);
+      return false;
+    }
 
     api.advancedSettingsPending = true;
     // Manual access wins over a hidden automatic quality scan. The scanner's
@@ -924,8 +927,12 @@ export function buildTvPlaybackRuntime(): string {
     api.profileRequestId = (api.profileRequestId || 0) + 1;
     api.manualSettingsOpen = true;
     document.documentElement.classList.remove(AUTO_SETTINGS_CLASS);
+    // Remove the quick menu before mounting the real panel. Its window-level
+    // key handler and focus trap otherwise keep the D-pad inside the old menu
+    // throughout the React render/animation of settings.
+    closeQuickMenu(false);
     try {
-      if (!(existing instanceof HTMLElement)) button.click();
+      if (!(existing instanceof HTMLElement) || !visible(existing)) button?.click();
       const panel = await waitUntil(() => {
         const current = getSettingsPanel();
         return current instanceof HTMLElement && visible(current) ? current : null;
@@ -935,7 +942,6 @@ export function buildTvPlaybackRuntime(): string {
         return false;
       }
       ownPlayerPanel('settings', panel);
-      closeQuickMenu(false);
       const qualityTab = panel.querySelector('[data-tv-settings-tab="quality"]');
       const target = qualityTab instanceof HTMLElement && visible(qualityTab)
         ? qualityTab : getPanelFocusables(panel)[0];
@@ -1012,53 +1018,12 @@ export function buildTvPlaybackRuntime(): string {
       return button;
     };
 
-    let profileStatus = '';
-    const profileButton = addAction('', '', () => {
-      const next = getPlaybackProfile() === 'vo-fr' ? 'vf' : 'vo-fr';
-      try { localStorage.setItem(PROFILE_KEY, next); } catch {}
-      profileStatus = 'Recherche de la meilleure source…';
-      updateProfileLabel();
-
-      void selectBestProfileSource(next, { allowVfFallback: false }).then((result) => {
-        if (result?.status === 'selected') {
-          const quality = Number(result.quality) > 0 ? ' · ' + result.quality + 'p' : '';
-          profileStatus =
-            (result.provider === 'nexus' ? 'Nexus' : result.provider === 'bravo' ? 'Bravo' : '') +
-            quality + (result.qualityVerified === false ? ' · qualité non vérifiée' : '');
-        } else if (result?.status === 'delegated') {
-          profileStatus = 'Sélection automatique…';
-        } else if (result?.status === 'no-match') {
-          profileStatus = 'Aucune source compatible';
-        } else if (result?.status === 'selection-unconfirmed') {
-          profileStatus = 'Changement de source non confirmé';
-        } else {
-          profileStatus = '';
-        }
-        updateProfileLabel();
-        requestAnimationFrame(() => {
-          if (!getQuickMenu()?.contains(profileButton)) return;
-          try { profileButton.focus({ preventScroll: true }); } catch { profileButton.focus(); }
-        });
-      });
-    });
-
-    const updateProfileLabel = () => {
-      const profile = getPlaybackProfile();
-      const status = profileStatus ||
-        (profile === 'vf' ? 'audio français' : 'VO + sous-titres FR');
-      profileButton.innerHTML = profile === 'vf'
-        ? '<span>Mode : VF</span><span class="movix-tv-menu-sub">' + status + '</span>'
-        : '<span>Mode : VOSTFR</span><span class="movix-tv-menu-sub">' + status + '</span>';
-    };
-    updateProfileLabel();
-
     const episodeButton = findActionButton(activeRoot, ['episodes', 'episode'], null);
     if (episodeButton instanceof HTMLElement) {
       addAction('Épisodes', 'ouvrir', () => openExistingEpisodes(activeRoot));
     }
 
-    addAction('Sources avancées', 'ouvrir les réglages', () => openExistingSettings(activeRoot));
-    addAction('Fermer', '0 ou Back', closeQuickMenu);
+    addAction('Sources VOSTFR/VF', 'ouvrir les réglages', () => openExistingSettings(activeRoot));
 
     overlay.appendChild(card);
     document.body.appendChild(overlay);
@@ -1067,7 +1032,10 @@ export function buildTvPlaybackRuntime(): string {
     api.openingQuickMenu = false;
 
     requestAnimationFrame(() => {
-      try { profileButton.focus({ preventScroll: true }); } catch { profileButton.focus(); }
+      const first = getQuickMenuActions()[0];
+      if (first instanceof HTMLElement) {
+        try { first.focus({ preventScroll: true }); } catch { first.focus(); }
+      }
     });
     return true;
   };
@@ -1095,6 +1063,21 @@ export function buildTvPlaybackRuntime(): string {
   const getEpisodeDropdown = (panel) => Array.from(panel.querySelectorAll('.top-full'))
     .find((node) => node instanceof HTMLElement && visible(node) &&
       node.querySelector('button')) || null;
+
+  const getPanelHorizontalNeighbor = (items, active, direction) => {
+    if (!(active instanceof HTMLElement)) return null;
+    const rect = active.getBoundingClientRect();
+    const x = (rect.left + rect.right) / 2;
+    const y = (rect.top + rect.bottom) / 2;
+    return items.map((item) => {
+      if (item === active) return null;
+      const candidate = item.getBoundingClientRect();
+      const dx = (candidate.left + candidate.right) / 2 - x;
+      const dy = Math.abs((candidate.top + candidate.bottom) / 2 - y);
+      if (dx * direction < 4 || dy > Math.max(rect.height, candidate.height) * 0.65) return null;
+      return { item, score: Math.abs(dx) + dy * 2 };
+    }).filter(Boolean).sort((left, right) => left.score - right.score)[0]?.item || null;
+  };
 
   const handlePlayerPanelKeydown = (event, open) => {
     const { kind, panel } = open;
@@ -1143,6 +1126,8 @@ export function buildTvPlaybackRuntime(): string {
           tabs.includes(active)) {
         const delta = arrow === 'ArrowRight' ? 1 : -1;
         next = tabs[Math.min(tabs.length - 1, Math.max(0, tabs.indexOf(active) + delta))];
+      } else if (kind === 'settings' && (arrow === 'ArrowLeft' || arrow === 'ArrowRight')) {
+        next = getPanelHorizontalNeighbor(body, active, arrow === 'ArrowRight' ? 1 : -1);
       } else if (arrow === 'ArrowUp' || arrow === 'ArrowDown') {
         const delta = arrow === 'ArrowDown' ? 1 : -1;
         if (kind === 'settings' && tabs.includes(active)) {
@@ -1322,6 +1307,10 @@ export function buildTvPlaybackRuntime(): string {
     if (getQuickMenu() && handleQuickMenuKeydown(event)) return true;
 
     if (!onWatchRoute()) return false;
+    if (api.advancedSettingsPending) {
+      consume(event);
+      return true;
+    }
     const open = getOpenPlayerPanel();
     if (open && handlePlayerPanelKeydown(event, open)) return true;
 
@@ -1381,6 +1370,10 @@ export function buildTvPlaybackRuntime(): string {
     }
 
     if (!onWatchRoute()) return;
+    if (api.advancedSettingsPending) {
+      consumeTvBack();
+      return;
+    }
     const open = getOpenPlayerPanel();
     if (open && closePlayerPanel(open)) {
       consumeTvBack();

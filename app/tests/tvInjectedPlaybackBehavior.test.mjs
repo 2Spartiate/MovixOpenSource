@@ -38,7 +38,7 @@ async function harness(tvMode = true, sourceFixtures = [], options = {}) {
       add: name => { this.className += ` ${name}`; },
       remove: name => { this.className = this.className.split(' ').filter(part => part !== name).join(' '); },
     }; }
-    getBoundingClientRect() { return { width: 320, height: 180 }; }
+    getBoundingClientRect() { return this.rect || { left: 0, top: 0, right: 320, bottom: 180, width: 320, height: 180 }; }
     addEventListener(name, callback) { (this.listeners[name] ||= []).push(callback); }
     click() { this.clicks++; for (const callback of this.listeners.click || []) callback(); }
     contains(target) { return target === this || this.children.some(child => child.contains(target)); }
@@ -113,72 +113,90 @@ async function harness(tvMode = true, sourceFixtures = [], options = {}) {
     settings.setAttribute('aria-label', 'Paramètres');
   }
   root.appendChild(settings);
+  const secondaryClicks = [];
   settings.addEventListener('click', () => {
     const existing = body.querySelectorAll('*').find(element => element.className === 'settings-menu');
     if (existing) { existing.remove(); return; }
-    const panel = new Element('section');
-    panel.className = 'settings-menu';
-    const header = new Element('div');
-    const title = new Element('h3');
-    title.textContent = 'Paramètres';
-    header.appendChild(title);
-    const close = new Element('button');
-    close.textContent = 'Fermer';
-    close.addEventListener('click', () => panel.remove());
-    header.appendChild(close);
-    panel.appendChild(header);
-    const quality = new Element('button');
-    quality.setAttribute('data-tv-settings-tab', 'quality');
-    quality.setAttribute('aria-pressed', 'true');
-    panel.appendChild(quality);
-    const format = new Element('button');
-    format.setAttribute('data-tv-settings-tab', 'format');
-    format.addEventListener('click', () => {
-      quality.setAttribute('aria-pressed', 'false');
-      format.setAttribute('aria-pressed', 'true');
-    });
-    panel.appendChild(format);
-    const sourceMenu = new Element('div');
-    sourceMenu.setAttribute('data-source-menu', '');
-    const qualityAction = new Element('button');
-    qualityAction.textContent = 'Qualité auto';
-    sourceMenu.appendChild(qualityAction);
-    panel.appendChild(sourceMenu);
-    if (sourceFixtures.length) {
-      const scope = sourceMenu;
-      const scan = new Element('button');
-      scan.textContent = 'Vérification de la qualité';
-      scan.addEventListener('click', () => {
-        scan.remove();
-        setTimeout(() => {
-          const complete = new Element('button');
-          complete.textContent = 'Vérification de la qualité';
-          scope.appendChild(complete);
-        }, 20);
+    const mountPanel = () => {
+      const panel = new Element('section');
+      panel.className = 'settings-menu';
+      const header = new Element('div');
+      const title = new Element('h3');
+      title.textContent = 'Paramètres';
+      header.appendChild(title);
+      const close = new Element('button');
+      close.textContent = 'Fermer';
+      close.addEventListener('click', () => panel.remove());
+      header.appendChild(close);
+      panel.appendChild(header);
+      const quality = new Element('button');
+      quality.setAttribute('data-tv-settings-tab', 'quality');
+      quality.setAttribute('aria-pressed', 'true');
+      panel.appendChild(quality);
+      const format = new Element('button');
+      format.setAttribute('data-tv-settings-tab', 'format');
+      format.addEventListener('click', () => {
+        quality.setAttribute('aria-pressed', 'false');
+        format.setAttribute('aria-pressed', 'true');
       });
-      scope.appendChild(scan);
-      for (const provider of ['nexus', 'bravo']) {
-        const header = new Element('div');
-        const group = new Element('button');
-        group.textContent = provider;
-        header.appendChild(group);
-        scope.appendChild(header);
-        const list = new Element('div');
-        list.className = 'border-l-2';
-        for (const source of sourceFixtures.filter(item => item.provider === provider)) {
-          const choice = new Element('button');
-          choice.textContent = `${source.label} ${source.quality}p`;
-          if (source.audio) choice.setAttribute('data-tv-source-audio', source.audio);
-          if (source.subtitles) choice.setAttribute('data-tv-source-subtitles', source.subtitles);
-          choice.addEventListener('click', () => window.dispatchEvent(new context.CustomEvent('sourceChange', {
-            detail: { type: provider === 'bravo' ? 'bravo' : 'nexus_hls', url: source.label },
-          })));
-          list.appendChild(choice);
+      panel.appendChild(format);
+      const sourceMenu = new Element('div');
+      sourceMenu.setAttribute('data-source-menu', '');
+      const qualityAction = new Element('button');
+      qualityAction.textContent = 'Qualité auto';
+      sourceMenu.appendChild(qualityAction);
+      panel.appendChild(sourceMenu);
+      if (sourceFixtures.length) {
+        const scope = sourceMenu;
+        const scan = new Element('button');
+        scan.textContent = 'Vérification de la qualité';
+        scan.addEventListener('click', () => {
+          scan.remove();
+          setTimeout(() => {
+            const complete = new Element('button');
+            complete.textContent = 'Vérification de la qualité';
+            scope.appendChild(complete);
+          }, 20);
+        });
+        scope.appendChild(scan);
+        for (const provider of ['nexus', 'bravo']) {
+          const header = new Element('div');
+          const group = new Element('button');
+          group.textContent = provider;
+          header.appendChild(group);
+          scope.appendChild(header);
+          const list = new Element('div');
+          list.className = 'border-l-2';
+          for (const source of sourceFixtures.filter(item => item.provider === provider)) {
+            const choice = new Element('button');
+            choice.textContent = `${source.label} ${source.quality}p`;
+            if (options.secondarySourceActions) {
+              choice.rect = { left: 20, right: 250, top: 200, bottom: 240, width: 230, height: 40 };
+            }
+            if (source.audio) choice.setAttribute('data-tv-source-audio', source.audio);
+            if (source.subtitles) choice.setAttribute('data-tv-source-subtitles', source.subtitles);
+            choice.addEventListener('click', () => window.dispatchEvent(new context.CustomEvent('sourceChange', {
+              detail: { type: provider === 'bravo' ? 'bravo' : 'nexus_hls', url: source.label },
+            })));
+            list.appendChild(choice);
+            if (options.secondarySourceActions) {
+              for (const [label, left] of [['Épingler', 260], ['Copier', 300]]) {
+                const action = new Element('button');
+                action.textContent = label;
+                action.rect = { left, right: left + 30, top: 204, bottom: 236, width: 30, height: 32 };
+                action.addEventListener('click', () => secondaryClicks.push(label));
+                list.appendChild(action);
+              }
+            }
+          }
+          scope.appendChild(list);
         }
-        scope.appendChild(list);
       }
-    }
-    body.appendChild(panel);
+      body.appendChild(panel);
+      if (options.settingsFocusOnMount) quality.focus();
+    };
+    if (options.settingsDelayMs) setTimeout(mountPanel, options.settingsDelayMs);
+    else mountPanel();
   });
 
   const episodeClicks = [];
@@ -268,13 +286,22 @@ async function harness(tvMode = true, sourceFixtures = [], options = {}) {
   vm.runInContext(module.exports.buildTvPlaybackRuntime(), context);
 
   function press(key, code = key, keyCode = 0) {
-    const event = { key, code, keyCode, preventDefault() { this.prevented = true; }, stopPropagation() {}, stopImmediatePropagation() {} };
-    for (const fn of windowListeners.keydown || []) fn(event);
+    const event = {
+      key, code, keyCode,
+      preventDefault() { this.prevented = true; },
+      stopPropagation() { this.stopped = true; },
+      stopImmediatePropagation() { this.stopped = true; this.immediate = true; },
+    };
+    for (const fn of windowListeners.keydown || []) {
+      fn(event);
+      if (event.immediate) break;
+    }
+    if (!event.stopped) document.emit('keydown', event);
     return event;
   }
   const actions = () => document.getElementById('movix-tv-injected-playback-menu')?.querySelectorAll('.movix-tv-menu-action') || [];
   return { press, actions, document, playPause, poster, settings, episodesTrigger,
-    episodeClicks, video, window, storage };
+    episodeClicks, secondaryClicks, video, window, storage };
 }
 
 test('Home and detail posters and header shortcuts retain every key even with a stale player video', async () => {
@@ -298,7 +325,6 @@ test('leaving Watch releases manual settings focus and all playback keys', async
   const app = await harness();
   app.press('0', 'Digit0');
   await new Promise(resolve => setImmediate(resolve));
-  app.press('ArrowDown');
   app.press('Enter');
   await new Promise(resolve => setImmediate(resolve));
   app.window.location.pathname = '/tv/123';
@@ -322,7 +348,6 @@ test('legacy remote HLS video-container still opens its real advanced panel', as
   assert.equal(app.window.__MOVIX_TV_PLAYBACK.getActiveVideo(), app.video);
   app.press('0', 'Digit0');
   await new Promise(resolve => setImmediate(resolve));
-  app.press('ArrowDown');
   app.press('Enter');
   await new Promise(resolve => setImmediate(resolve));
   assert.equal(app.settings.clicks, 1);
@@ -349,12 +374,13 @@ test('packaged TV script owns D-pad focus and transport while the injected menu 
   assert.equal(app.press('0', 'Digit0').prevented, true);
   await new Promise(resolve => setImmediate(resolve));
   const rows = app.actions();
-  assert.equal(rows.length, 3);
+  assert.equal(rows.length, 1);
+  assert.match(rows[0].textContent, /Sources VOSTFR\/VF/);
   assert.equal(app.document.activeElement, rows[0]);
   assert.equal(app.press('ArrowDown').prevented, true);
-  assert.equal(app.document.activeElement, rows[1]);
+  assert.equal(app.document.activeElement, rows[0]);
   app.playPause.focus(); // Simulate a delayed remote React autofocus.
-  assert.equal(app.document.activeElement, rows[1]);
+  assert.equal(app.document.activeElement, rows[0]);
   app.press('ArrowUp');
   assert.equal(app.document.activeElement, rows[0]);
   const time = app.video.currentTime;
@@ -373,7 +399,6 @@ test('Sources avancées opens the real hidden-control settings panel and owns it
   app.settings.opacity = '0'; // The player control bar can be invisible on TV.
   app.press('0', 'Digit0');
   await new Promise(resolve => setImmediate(resolve));
-  app.press('ArrowDown');
   app.press('Enter');
   await new Promise(resolve => setImmediate(resolve));
 
@@ -402,13 +427,63 @@ test('Sources avancées opens the real hidden-control settings panel and owns it
   assert.equal(app.document.body.querySelectorAll('*').includes(panel), false);
 });
 
+test('Sources VOSTFR/VF closes the quick menu before a delayed real panel mounts', async () => {
+  const app = await harness(true, [], { settingsDelayMs: 80, settingsFocusOnMount: true });
+  const pageKeys = [];
+  app.document.addEventListener('keydown', event => pageKeys.push(event.key));
+  app.press('0', 'Digit0');
+  await new Promise(resolve => setImmediate(resolve));
+  assert.equal(app.actions().length, 1);
+  app.press('Enter');
+  assert.equal(app.settings.clicks, 1);
+  assert.equal(app.actions().length, 0, 'the old modal is gone before the panel appears');
+
+  const time = app.video.currentTime;
+  assert.equal(app.press('ArrowDown').prevented, true, 'transport waits for the panel');
+  assert.equal(app.press('ArrowRight').prevented, true);
+  assert.equal(app.video.currentTime, time);
+
+  const deadline = Date.now() + 500;
+  while (app.window.__MOVIX_TV_PLAYBACK.advancedSettingsPending && Date.now() < deadline) {
+    await new Promise(resolve => setTimeout(resolve, 10));
+  }
+  assert.equal(app.window.__MOVIX_TV_PLAYBACK.advancedSettingsPending, false);
+  assert.equal(app.document.activeElement.getAttribute('data-tv-settings-tab'), 'quality');
+  assert.equal(app.actions().length, 0);
+  app.press('ArrowDown');
+  assert.equal(app.document.activeElement.textContent, 'Qualité auto');
+  assert.equal(app.video.currentTime, time);
+  assert.deepEqual(pageKeys, [], 'no menu or source arrow reaches the page behind it');
+});
+
+test('series menu has only Épisodes and Sources VOSTFR/VF with direct D-pad selection', async () => {
+  const app = await harness(true, [], { episodes: true });
+  app.press('0', 'Digit0');
+  await new Promise(resolve => setImmediate(resolve));
+  const rows = app.actions();
+  assert.equal(rows.length, 2);
+  assert.equal(app.document.activeElement, rows[0]);
+  app.press('ArrowDown');
+  assert.equal(app.document.activeElement, rows[1]);
+  app.press('ArrowUp');
+  assert.equal(app.document.activeElement, rows[0]);
+  app.press('ArrowDown');
+  app.press('Enter');
+  assert.equal(app.actions().length, 0);
+  await new Promise(resolve => setImmediate(resolve));
+  assert.equal(app.settings.clicks, 1);
+  assert.equal(app.episodesTrigger.clicks, 0);
+  assert.equal(app.document.activeElement.getAttribute('data-tv-settings-tab'), 'quality');
+  assert.equal(app.press('ArrowDown').prevented, true);
+  assert.equal(app.document.activeElement.textContent, 'Qualité auto');
+});
+
 test('manual Sources avancées reveals an already-open automatic scan without toggling it closed', async () => {
   const app = await harness();
   app.settings.click();
   app.document.documentElement.classList.add('movix-tv-auto-source-selection');
   app.press('0', 'Digit0');
   await new Promise(resolve => setImmediate(resolve));
-  app.press('ArrowDown');
   app.press('Enter');
   await new Promise(resolve => setImmediate(resolve));
   assert.equal(app.settings.clicks, 1);
@@ -425,7 +500,6 @@ test('settings D-pad reaches quality scan, Nexus group and its real source butto
   app.window.addEventListener('sourceChange', event => selected.push(event.detail.url));
   app.press('0', 'Digit0');
   await new Promise(resolve => setImmediate(resolve));
-  app.press('ArrowDown');
   app.press('Enter');
   await new Promise(resolve => setImmediate(resolve));
 
@@ -439,12 +513,33 @@ test('settings D-pad reaches quality scan, Nexus group and its real source butto
   assert.deepEqual(selected, ['Nexus VOSTFR']);
 });
 
+test('settings D-pad reaches source-side Épingler and Copier with horizontal arrows', async () => {
+  const app = await harness(true, [{ provider: 'nexus', label: 'Nexus VOSTFR', quality: 1080 }],
+    { secondarySourceActions: true });
+  app.press('0', 'Digit0');
+  await new Promise(resolve => setImmediate(resolve));
+  app.press('Enter');
+  await new Promise(resolve => setImmediate(resolve));
+  for (let index = 0; index < 4; index++) app.press('ArrowDown');
+  assert.equal(app.document.activeElement.textContent, 'Nexus VOSTFR 1080p');
+  assert.equal(app.press('ArrowRight').prevented, true);
+  assert.equal(app.document.activeElement.textContent, 'Épingler');
+  app.press('Enter');
+  app.press('ArrowRight');
+  assert.equal(app.document.activeElement.textContent, 'Copier');
+  app.press('Enter');
+  assert.deepEqual(app.secondaryClicks, ['Épingler', 'Copier']);
+  app.press('ArrowLeft');
+  assert.equal(app.document.activeElement.textContent, 'Épingler');
+});
+
 test('Épisodes opens the real list and Up Down Enter stay inside it', async () => {
   const app = await harness(true, [], { episodes: true });
   app.press('0', 'Digit0');
   await new Promise(resolve => setImmediate(resolve));
-  assert.equal(app.actions().length, 4);
-  app.press('ArrowDown');
+  assert.equal(app.actions().length, 2);
+  assert.match(app.actions()[0].textContent, /Épisodes/);
+  assert.match(app.actions()[1].textContent, /Sources VOSTFR\/VF/);
   app.press('Enter');
   await new Promise(resolve => setImmediate(resolve));
   assert.equal(app.episodesTrigger.clicks, 1);
@@ -464,7 +559,6 @@ test('Back closes Épisodes before transport or SPA navigation', async () => {
   const app = await harness(true, [], { episodes: true });
   app.press('0', 'Digit0');
   await new Promise(resolve => setImmediate(resolve));
-  app.press('ArrowDown');
   app.press('Enter');
   await new Promise(resolve => setImmediate(resolve));
   const back = { type: 'movix-tv-back', cancelable: true, preventDefault() { this.prevented = true; } };
@@ -478,7 +572,6 @@ test('Épisodes takes focus on its season control while episode rows are still l
   const app = await harness(true, [], { episodes: true, episodesLoading: true });
   app.press('0', 'Digit0');
   await new Promise(resolve => setImmediate(resolve));
-  app.press('ArrowDown');
   app.press('Enter');
   await new Promise(resolve => setImmediate(resolve));
   assert.equal(app.document.activeElement.textContent, 'Saison 1');
