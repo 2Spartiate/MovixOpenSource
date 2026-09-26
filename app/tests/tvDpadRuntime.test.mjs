@@ -147,7 +147,9 @@ test('runtime keeps horizontal movement inside the row and excludes header chrom
   const runtime = buildTvDpadRuntime('(function () { return null; })', '/* dom discovery */');
   assert.match(runtime, /getAdjacentCardInRow/);
   assert.match(runtime, /horizontal && currentRow instanceof HTMLElement/);
-  assert.match(runtime, /api\.headerNavigationEnabled === true[\s\S]{0,100}!isHeaderElement\(candidate\.element\)/);
+  assert.match(runtime, /api\.headerNavigationEnabled === true && isHeaderElement\(current\)/);
+  assert.match(runtime, /return isHeaderElement\(candidate\.element\)/);
+  assert.match(runtime, /return !isHeaderElement\(candidate\.element\)/);
   assert.match(runtime, /Header chrome is not part of ordinary D-pad navigation/);
   assert.match(runtime, /pageIsAtRealTop/);
   assert.match(runtime, /window\.scrollTo\(\{ top: 0/);
