@@ -541,7 +541,6 @@ const Header: React.FC = () => {
                 <form onSubmit={handleSearchSubmit} className="relative">
                   <input
                     ref={searchInputRef}
-                    data-tv-primary-focus="search"
                     type="text"
                     value={headerQuery}
                     onChange={handleQueryChange}
