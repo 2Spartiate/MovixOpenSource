@@ -83,6 +83,7 @@ jobs:
             tests/tvPlaybackPolicy.test.mjs \
             tests/tvPlaybackQuickMenuContract.test.mjs \
             tests/tvPlaybackRemoteV12Contract.test.mjs \
+            tests/tvInjectedPlaybackRuntimeContract.test.mjs \
             tests/tvOriginalLanguageContract.test.mjs \
             tests/tvPlayerMenusContract.test.mjs \
             tests/tvLivePlayerDpadContract.test.mjs \
