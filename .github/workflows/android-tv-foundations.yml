@@ -19,6 +19,7 @@ on:
       - agent/google-tv-global-hero-neon-v9
       - agent/google-tv-search-focus-polish-v10
       - agent/google-tv-detail-exit-polish-v11
+      - agent/google-tv-playback-ux-v12
     paths:
       - 'app/**'
       - 'src/**'
@@ -79,6 +80,10 @@ jobs:
             tests/tvHlsControlsFocusContract.test.mjs \
             tests/tvHlsDpadShortcutContract.test.mjs \
             tests/tvHlsRemoteNavigationContract.test.mjs \
+            tests/tvPlaybackPolicy.test.mjs \
+            tests/tvPlaybackQuickMenuContract.test.mjs \
+            tests/tvPlaybackRemoteV12Contract.test.mjs \
+            tests/tvOriginalLanguageContract.test.mjs \
             tests/tvPlayerMenusContract.test.mjs \
             tests/tvLivePlayerDpadContract.test.mjs \
             tests/tvFrancePlayerDpadContract.test.mjs \

@@ -7,11 +7,14 @@ const text = path => readFile(new URL(path, root), 'utf8');
 
 test('HLS yields TV Arrow keys when an interactive control owns focus', async () => {
   const hls = await text('../src/components/HLSPlayer.tsx');
+  const start = hls.indexOf('const handleKeyPress = (e: KeyboardEvent) => {');
+  const end = hls.indexOf("document.addEventListener('keydown', handleKeyPress)", start);
+  const handler = hls.slice(start, end);
 
-  assert.match(
-    hls,
-    /isMovixTvRuntime\(\)[\s\S]{0,160}e\.code\.startsWith\('Arrow'\)[\s\S]{0,160}isPlayerControlInteractionTarget\(keyboardTarget\)[\s\S]{0,80}return;/,
-  );
+  assert.match(handler, /const tvRuntime = isMovixTvRuntime\(\)/);
+  assert.match(handler, /const tvArrowCode = e\.code\.startsWith\('Arrow'\)[\s\S]{0,120}key\.startsWith\('Arrow'\)/);
+  assert.match(handler, /if \(tvMenuOpen \|\| isSourceMenuTarget\(keyboardTarget\)\) return/);
+  assert.match(handler, /isPlayerControlInteractionTarget\(keyboardTarget\)[\s\S]{0,180}if \(focusedControl && !playIsFocused\) return/);
 });
 
 test('range inputs keep native arrows before the HLS shortcut switch', async () => {
