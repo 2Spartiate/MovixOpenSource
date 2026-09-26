@@ -46,6 +46,11 @@ async function harness(tvMode = true, sourceFixtures = [], options = {}) {
     scrollIntoView() { this.scrollRequests = (this.scrollRequests || 0) + 1; }
     closest(selector) {
       if (selector === '[data-hls-player-root]') return this.playerRoot || null;
+      if (selector === '.video-container') {
+        for (let node = this; node; node = node.parentElement) {
+          if (node.className.split(' ').includes('video-container')) return node;
+        }
+      }
       if (selector === '.overflow-y-auto') {
         for (let node = this; node; node = node.parentElement) {
           if (node.className.split(' ').includes('overflow-y-auto')) return node;
@@ -81,8 +86,16 @@ async function harness(tvMode = true, sourceFixtures = [], options = {}) {
   const head = new Element('head');
   const root = new Element('div');
   root.setAttribute('data-hls-player-root', '');
+  const poster = new Element('button');
+  poster.textContent = 'Affiche suivante';
+  body.appendChild(poster);
   const video = new Video();
   video.playerRoot = root;
+  if (options.legacyRoot) {
+    delete root.attributes['data-hls-player-root'];
+    root.className = 'video-container';
+    video.playerRoot = null;
+  }
   root.appendChild(video);
   body.appendChild(root);
   const playPause = new Element('button');
@@ -90,6 +103,10 @@ async function harness(tvMode = true, sourceFixtures = [], options = {}) {
   root.appendChild(playPause);
   const settings = new Element('button');
   settings.setAttribute('data-tv-player-menu-trigger', 'settings');
+  if (options.legacyRoot) {
+    delete settings.attributes['data-tv-player-menu-trigger'];
+    settings.setAttribute('aria-label', 'Paramètres');
+  }
   root.appendChild(settings);
   settings.addEventListener('click', () => {
     const existing = body.querySelectorAll('*').find(element => element.className === 'settings-menu');
@@ -211,7 +228,7 @@ async function harness(tvMode = true, sourceFixtures = [], options = {}) {
       return [];
     },
     querySelector(selector) {
-      if (selector === '[data-tv-player-menu-trigger="settings"]') return settings;
+      if (selector === '[data-tv-player-menu-trigger="settings"]') return settings.getAttribute('data-tv-player-menu-trigger') === 'settings' ? settings : null;
       if (selector === '[data-tv-original-language]') return document.documentElement;
       if (selector.startsWith('.settings-menu')) return body.querySelectorAll('*').find(element => element.className === 'settings-menu') || null;
       return null;
@@ -222,7 +239,7 @@ async function harness(tvMode = true, sourceFixtures = [], options = {}) {
   const windowListeners = {};
   const storage = new Map();
   const window = {
-    MOVIX_TV: tvMode, location: { pathname: '/watch', search: '' },
+    MOVIX_TV: tvMode, location: { pathname: options.route || '/watch/tv/123/s/1/e/1', search: '' },
     getComputedStyle(element) { return {
       display: 'block',
       visibility: element.className === 'settings-menu' &&
@@ -236,6 +253,7 @@ async function harness(tvMode = true, sourceFixtures = [], options = {}) {
   };
   const context = vm.createContext({
     window, document, HTMLElement: Element, HTMLVideoElement: Video,
+    MutationObserver: class { observe() {} disconnect() {} },
     localStorage: { getItem: key => storage.get(key) || null, setItem: (key, value) => storage.set(key, value) },
     CustomEvent: class { constructor(type, options) { this.type = type; this.detail = options?.detail; } },
     Event: class { constructor(type) { this.type = type; } },
@@ -250,9 +268,63 @@ async function harness(tvMode = true, sourceFixtures = [], options = {}) {
     return event;
   }
   const actions = () => document.getElementById('movix-tv-injected-playback-menu')?.querySelectorAll('.movix-tv-menu-action') || [];
-  return { press, actions, document, playPause, settings, episodesTrigger,
+  return { press, actions, document, playPause, poster, settings, episodesTrigger,
     episodeClicks, video, window, storage };
 }
+
+test('Home and detail posters and header shortcuts retain every key even with a stale player video', async () => {
+  for (const route of ['/', '/movie/123', '/tv/123']) {
+    const app = await harness(true, [], { route });
+    app.settings.click(); // Adversarial: a visible .settings-menu elsewhere in the document.
+    app.poster.focus();
+    assert.equal(app.document.activeElement, app.poster, `${route}: poster keeps actual focus`);
+    const time = app.video.currentTime;
+    for (const [key, code] of [['ArrowLeft', 'ArrowLeft'], ['ArrowRight', 'ArrowRight'],
+                               ['1', 'Digit1'], ['2', 'Digit2'], ['3', 'Digit3'], ['0', 'Digit0']]) {
+      assert.equal(app.press(key, code).prevented, undefined, `${route}: ${key} belongs to page`);
+    }
+    assert.equal(app.video.currentTime, time);
+    assert.equal(app.actions().length, 0);
+    assert.equal(app.document.activeElement, app.poster);
+  }
+});
+
+test('leaving Watch releases manual settings focus and all playback keys', async () => {
+  const app = await harness();
+  app.press('0', 'Digit0');
+  await new Promise(resolve => setImmediate(resolve));
+  app.press('ArrowDown');
+  app.press('Enter');
+  await new Promise(resolve => setImmediate(resolve));
+  app.window.location.pathname = '/tv/123';
+  app.poster.focus();
+  assert.equal(app.document.activeElement, app.poster);
+  assert.equal(app.press('ArrowRight').prevented, undefined);
+  assert.equal(app.press('1', 'Digit1').prevented, undefined);
+});
+
+test('Watch loads its video without an automatic hidden source scan', async () => {
+  const app = await harness();
+  app.document.emit('DOMContentLoaded', {});
+  await new Promise(resolve => setTimeout(resolve, 975));
+  assert.equal(app.settings.clicks, 0);
+  assert.equal(app.document.documentElement.classList.contains('movix-tv-auto-source-selection'), false);
+  assert.equal(app.window.__MOVIX_TV_PLAYBACK.getActiveVideo(), app.video);
+});
+
+test('legacy remote HLS video-container still opens its real advanced panel', async () => {
+  const app = await harness(true, [], { legacyRoot: true });
+  assert.equal(app.window.__MOVIX_TV_PLAYBACK.getActiveVideo(), app.video);
+  app.press('0', 'Digit0');
+  await new Promise(resolve => setImmediate(resolve));
+  app.press('ArrowDown');
+  app.press('Enter');
+  await new Promise(resolve => setImmediate(resolve));
+  assert.equal(app.settings.clicks, 1);
+  assert.equal(app.document.activeElement.getAttribute('data-tv-settings-tab'), 'quality');
+  assert.equal(app.press('ArrowDown').prevented, true);
+  assert.equal(app.document.activeElement.textContent, 'Qualité auto');
+});
 
 test('packaged TV script owns D-pad focus and transport while the injected menu is visible', async () => {
   const app = await harness();

@@ -4,7 +4,7 @@ export function buildTvPlaybackRuntime(): string {
   if (window.MOVIX_TV !== true) return;
 
   const api = window.__MOVIX_TV_PLAYBACK || (window.__MOVIX_TV_PLAYBACK = {});
-  api.runtimeVersion = 'tv-playback-v17';
+  api.runtimeVersion = 'tv-playback-v18';
 
   if (typeof api.keydownHandler === 'function') {
     window.removeEventListener('keydown', api.keydownHandler, true);
@@ -28,6 +28,10 @@ export function buildTvPlaybackRuntime(): string {
     api.autoProfileTimer = null;
   }
   api.profileSelectionBusy = false;
+  api.activePlayerPanel = null;
+  api.episodesPanel = null;
+  api.manualSettingsOpen = false;
+  api.openingQuickMenu = false;
   const runtimeGeneration = (api.runtimeGeneration || 0) + 1;
   api.runtimeGeneration = runtimeGeneration;
 
@@ -46,9 +50,13 @@ export function buildTvPlaybackRuntime(): string {
     return style.display !== 'none' && style.visibility !== 'hidden' && style.opacity !== '0';
   };
 
+  const onWatchRoute = () => window.location.pathname.startsWith('/watch/');
+
   const getActiveVideo = () => {
+    if (!onWatchRoute()) return null;
     const candidates = Array.from(document.querySelectorAll('video'))
-      .filter((video) => video instanceof HTMLVideoElement && visible(video))
+      .filter((video) => video instanceof HTMLVideoElement && visible(video) &&
+        (video.closest('[data-hls-player-root]') || video.closest('.video-container')))
       .map((video) => {
         const rect = video.getBoundingClientRect();
         return { video, area: rect.width * rect.height };
@@ -340,7 +348,15 @@ export function buildTvPlaybackRuntime(): string {
     (document.head || document.documentElement).appendChild(style);
   };
 
-  const getQuickMenu = () => document.getElementById(MENU_ID);
+  const getQuickMenu = () => {
+    const menu = document.getElementById(MENU_ID);
+    if (menu && (!onWatchRoute() ||
+        api.quickMenuRoute !== window.location.pathname + window.location.search)) {
+      menu.remove();
+      return null;
+    }
+    return menu;
+  };
 
   const closeQuickMenu = (restorePlayerFocus = true) => {
     const menu = getQuickMenu();
@@ -378,16 +394,13 @@ export function buildTvPlaybackRuntime(): string {
     const scope = root instanceof HTMLElement ? root : document;
     const exact = scope.querySelector('[data-tv-player-menu-trigger="settings"]');
     if (exact instanceof HTMLElement) return exact;
-    const documentTrigger = document.querySelector('[data-tv-player-menu-trigger="settings"]');
-    if (documentTrigger instanceof HTMLElement) return documentTrigger;
     const matchesSettings = (button) => {
       if (!(button instanceof HTMLElement)) return false;
       const signature = buttonSignature(button);
       return signature.includes('parametres') || signature.includes('settings') ||
         Boolean(button.querySelector('svg.lucide-settings, svg.lucide-settings-2, .lucide-settings'));
     };
-    return Array.from(scope.querySelectorAll('button, [role="button"]')).find(matchesSettings) ||
-      Array.from(document.querySelectorAll('.video-container .control-bar button')).find(matchesSettings) || null;
+    return Array.from(scope.querySelectorAll('button, [role="button"]')).find(matchesSettings) || null;
   };
 
   const getSettingsPanel = () => {
@@ -414,18 +427,27 @@ export function buildTvPlaybackRuntime(): string {
     return candidates[0] || null;
   };
 
+  // Only a panel opened from this runtime's quick menu may take over the
+  // capture listener. A site-wide .settings-menu or episode-like overlay can
+  // also exist on Home and detail pages, where the page owns all D-pad keys.
   const getOpenPlayerPanel = () => {
-    const settings = getSettingsPanel();
-    if (settings instanceof HTMLElement && visible(settings)) {
-      settings.setAttribute('data-tv-injected-panel', 'settings');
-      return { kind: 'settings', panel: settings };
+    const open = api.activePlayerPanel;
+    if (!open) return null;
+    if (!onWatchRoute() || open.route !== window.location.pathname + window.location.search ||
+        !(open.panel instanceof HTMLElement) || !open.panel.isConnected ||
+        !visible(open.panel)) {
+      api.activePlayerPanel = null;
+      api.manualSettingsOpen = false;
+      return null;
     }
-    const episodes = getEpisodesPanel();
-    if (episodes instanceof HTMLElement) {
-      episodes.setAttribute('data-tv-injected-panel', 'episodes');
-      return { kind: 'episodes', panel: episodes };
-    }
-    return null;
+    return open;
+  };
+
+  const ownPlayerPanel = (kind, panel) => {
+    api.activePlayerPanel = {
+      kind, panel, route: window.location.pathname + window.location.search,
+    };
+    panel.setAttribute('data-tv-injected-panel', kind);
   };
 
   const ensurePlayerPanelStyle = () => {
@@ -476,6 +498,7 @@ export function buildTvPlaybackRuntime(): string {
     if (!(button instanceof HTMLElement)) return false;
     if (open.kind === 'settings') api.manualSettingsOpen = false;
     if (open.kind === 'episodes') api.episodesPanel = null;
+    api.activePlayerPanel = null;
     api.panelFocusItem = null;
     api.panelFocusIndex = null;
     button.click();
@@ -878,6 +901,7 @@ export function buildTvPlaybackRuntime(): string {
       const panel = await waitUntil(() => getEpisodesPanel(), 3500, 50);
       if (!(panel instanceof HTMLElement)) return false;
       api.episodesPanel = panel;
+      ownPlayerPanel('episodes', panel);
       closeQuickMenu(false);
       const items = getPanelFocusables(panel);
       const first = items.find((item) => item.closest('.overflow-y-auto')) ||
@@ -910,6 +934,7 @@ export function buildTvPlaybackRuntime(): string {
         api.manualSettingsOpen = false;
         return false;
       }
+      ownPlayerPanel('settings', panel);
       closeQuickMenu(false);
       const qualityTab = panel.querySelector('[data-tv-settings-tab="quality"]');
       const target = qualityTab instanceof HTMLElement && visible(qualityTab)
@@ -1037,6 +1062,7 @@ export function buildTvPlaybackRuntime(): string {
 
     overlay.appendChild(card);
     document.body.appendChild(overlay);
+    api.quickMenuRoute = window.location.pathname + window.location.search;
     api.quickMenuFocusIndex = 0;
     api.openingQuickMenu = false;
 
@@ -1076,6 +1102,10 @@ export function buildTvPlaybackRuntime(): string {
     const code = String(event.code || '');
     const legacy = Number(event.keyCode || event.which || 0);
     let active = panel.contains(document.activeElement) ? document.activeElement : null;
+    if (!active && document.activeElement instanceof HTMLElement &&
+        document.activeElement.closest('[role="dialog"], [aria-modal="true"]')) {
+      return false;
+    }
 
     if (key === 'Escape' || key === 'Backspace' || key === 'BrowserBack' ||
         key === '0' || code === 'Digit0' || code === 'Numpad0') {
@@ -1280,6 +1310,7 @@ export function buildTvPlaybackRuntime(): string {
 
     if (getQuickMenu() && handleQuickMenuKeydown(event)) return true;
 
+    if (!onWatchRoute()) return false;
     const open = getOpenPlayerPanel();
     if (open && handlePlayerPanelKeydown(event, open)) return true;
 
@@ -1338,6 +1369,7 @@ export function buildTvPlaybackRuntime(): string {
       return;
     }
 
+    if (!onWatchRoute()) return;
     const open = getOpenPlayerPanel();
     if (open && closePlayerPanel(open)) {
       consumeTvBack();
@@ -1376,13 +1408,10 @@ export function buildTvPlaybackRuntime(): string {
       return;
     }
     api.focusObserver = new MutationObserver(() => {
-      if (api.manualSettingsOpen && !getSettingsPanel()) api.manualSettingsOpen = false;
       schedulePlayPauseFocus(120);
-      scheduleAutomaticProfileSelection();
     });
     api.focusObserver.observe(document.body, { childList: true, subtree: true });
     schedulePlayPauseFocus();
-    scheduleAutomaticProfileSelection();
   };
 
   if (document.readyState === 'loading') {
