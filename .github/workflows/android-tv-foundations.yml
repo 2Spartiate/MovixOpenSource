@@ -18,6 +18,7 @@ on:
       - agent/google-tv-menu-ime-polish-v8
       - agent/google-tv-global-hero-neon-v9
       - agent/google-tv-search-focus-polish-v10
+      - agent/google-tv-detail-exit-polish-v11
     paths:
       - 'app/**'
       - 'src/**'
