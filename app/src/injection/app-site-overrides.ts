@@ -661,7 +661,7 @@ export function buildAppSiteOverrides(): string {
     }, true);
   };
 
-  const removeFooter = () => {  const removeFooter = () => {
+  const removeFooter = () => {
     if (window.MOVIX_TV !== true) return;
     document.querySelectorAll('footer').forEach((footer) => hideManagedNode(footer));
   };
