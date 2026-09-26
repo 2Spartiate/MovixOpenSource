@@ -825,6 +825,13 @@ export function buildAppSiteOverrides(): string {
     });
   };
 
+  const hideTvPlayerExternalOpen = () => {
+    if (window.MOVIX_TV !== true) return;
+    document.querySelectorAll('[data-tv-player-external-open]').forEach((element) => {
+      if (element instanceof HTMLElement) hideManagedNode(element);
+    });
+  };
+
   const removeFooter = () => {
     if (window.MOVIX_TV !== true) return;
     document.querySelectorAll('footer').forEach((footer) => hideManagedNode(footer));
@@ -979,6 +986,7 @@ export function buildAppSiteOverrides(): string {
     ensureTvHomeLayout();
     installTvUserClickGuards();
     applyTvDetailExternalLinkPolicy();
+    hideTvPlayerExternalOpen();
     removeFooter();
     removeCarouselArrows();
     removeFavoriteControls();
