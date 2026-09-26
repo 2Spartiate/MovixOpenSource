@@ -8895,10 +8895,14 @@ const HLSPlayer = forwardRef<HLSPlayerRef, HLSPlayerProps>(({
 
         if (key === '0' || e.code === 'Digit0' || e.code === 'Numpad0') {
           e.preventDefault();
-          setShowSettings(false);
-          setShowInternalEpisodesMenu(false);
-          setShowSeasonDropdown(false);
-          setShowTvQuickMenu(previous => !previous);
+          if (showTvQuickMenu) {
+            closeTvQuickMenu();
+          } else {
+            setShowSettings(false);
+            setShowInternalEpisodesMenu(false);
+            setShowSeasonDropdown(false);
+            openTvQuickMenu();
+          }
           return;
         }
 
@@ -9188,6 +9192,7 @@ const HLSPlayer = forwardRef<HLSPlayerRef, HLSPlayerProps>(({
     showOsd, isSourceMenuTarget, isLocked, showTvQuickMenu, showSettings,
     showCastMenu, showInternalEpisodesMenu, showSeasonDropdown, studioOpen,
     showVolumeSlider, isFullscreen, focusTvPlayPause,
+    openTvQuickMenu, closeTvQuickMenu,
   ]);
 
   useEffect(() => {
