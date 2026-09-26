@@ -511,15 +511,15 @@ export function buildAppSiteOverrides(): string {
     const style = document.createElement('style');
     style.id = 'movix-tv-shortcut-badges';
     style.textContent = [
-      '[data-tv-shortcut-badge]{position:relative!important;}',
+      '[data-tv-shortcut-badge]{position:relative!important;margin-left:18px!important;}',
       '[data-tv-shortcut-badge]::after{',
       'content:attr(data-tv-shortcut-badge);',
       'position:absolute;',
-      'left:-23px;',
+      'left:-24px;',
       'top:50%;',
       'transform:translateY(-50%);',
-      'width:17px;',
-      'height:17px;',
+      'width:15px;',
+      'height:15px;',
       'display:flex;',
       'align-items:center;',
       'justify-content:center;',
@@ -529,7 +529,7 @@ export function buildAppSiteOverrides(): string {
       'border:1px solid rgba(248,113,113,.88);',
       'box-shadow:0 0 5px rgba(239,68,68,.52),inset 0 0 3px rgba(239,68,68,.18);',
       'color:rgba(248,113,113,.96);',
-      'font:600 10px/1 system-ui,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;',
+      'font:600 9px/1 system-ui,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;',
       'text-shadow:0 0 4px rgba(239,68,68,.55);',
       'opacity:.82;',
       'z-index:2147483000;',
@@ -544,8 +544,13 @@ export function buildAppSiteOverrides(): string {
     let host = target;
     if (target instanceof HTMLInputElement) {
       const form = target.closest('form');
-      if (form instanceof HTMLElement) host = form;
-      else if (target.parentElement instanceof HTMLElement) host = target.parentElement;
+      if (form instanceof HTMLElement && form.parentElement instanceof HTMLElement) {
+        host = form.parentElement;
+      } else if (form instanceof HTMLElement) {
+        host = form;
+      } else if (target.parentElement instanceof HTMLElement) {
+        host = target.parentElement;
+      }
     }
     host.setAttribute('data-tv-shortcut-badge', String(label));
   };
