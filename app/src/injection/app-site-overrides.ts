@@ -628,6 +628,14 @@ export function buildAppSiteOverrides(): string {
     }
   };
 
+  const exposeTvHeaderPointerPolicy = () => {
+    if (window.MOVIX_TV !== true) return;
+    const api = window.__MOVIX_TV_HEADER_POLICY || (window.__MOVIX_TV_HEADER_POLICY = {});
+    api.lock = lockTvHeaderPointerNavigation;
+    api.restoreInteractive = restoreTvHeaderInteractive;
+    api.targets = markTvHeaderShortcutTargets;
+  };
+
   const ensureTvHomeLayout = () => {
     if (window.MOVIX_TV !== true || window.location.pathname !== '/') return;
 
@@ -868,6 +876,7 @@ export function buildAppSiteOverrides(): string {
     // Product behavior below is TV-only.
     makeMovixBrandInert();
     markTvHeroFocusPolicy();
+    exposeTvHeaderPointerPolicy();
     lockTvHeaderPointerNavigation();
     ensureTvHomeLayout();
     installTvUserClickGuards();
