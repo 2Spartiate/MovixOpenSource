@@ -143,11 +143,12 @@ test('within the chosen row the horizontally closest poster wins', () => {
   assert.equal(picked?.value, 'closest');
 });
 
-test('runtime keeps horizontal movement inside the row and gates header until page top', () => {
+test('runtime keeps horizontal movement inside the row and excludes header chrome by default', () => {
   const runtime = buildTvDpadRuntime('(function () { return null; })', '/* dom discovery */');
   assert.match(runtime, /getAdjacentCardInRow/);
   assert.match(runtime, /horizontal && currentRow instanceof HTMLElement/);
-  assert.match(runtime, /candidate => !isHeaderElement\(candidate\.element\)/);
+  assert.match(runtime, /api\.headerNavigationEnabled === true[\s\S]{0,100}!isHeaderElement\(candidate\.element\)/);
+  assert.match(runtime, /Header chrome is not part of ordinary D-pad navigation/);
   assert.match(runtime, /pageIsAtRealTop/);
   assert.match(runtime, /window\.scrollTo\(\{ top: 0/);
   assert.match(runtime, /findNextCardRowTarget/);
@@ -170,12 +171,13 @@ test('Embla fallback clicks the live hidden arrow only when focused card reaches
 });
 
 
-test('ArrowDown from any Home header control bypasses input editing and focuses hero Play', () => {
+test('accidental Home header focus exits to hero while explicit Search Down restores content', () => {
   const runtime = buildTvDpadRuntime('(function () { return null; })', '/* dom discovery */');
-  assert.match(runtime, /direction === 'down'/);
+  assert.match(runtime, /api\.headerNavigationEnabled !== true/);
   assert.match(runtime, /eventTarget\.closest\('header'\)/);
   assert.match(runtime, /const heroPlay = getHeroPlay\(\)/);
-  assert.match(runtime, /focusWithoutJank\(heroPlay\)/);
+  assert.match(runtime, /data-tv-header-shortcut'\) === 'search'/);
+  assert.match(runtime, /api\.restoreContentFocus\(\)/);
 });
 
 test('header gating detects internal scrolling from hero geometry, not only window.scrollY', () => {
@@ -184,4 +186,32 @@ test('header gating detects internal scrolling from hero geometry, not only wind
   assert.match(runtime, /document\.body\?\.scrollTop/);
   assert.match(runtime, /hero\.getBoundingClientRect\(\)/);
   assert.match(runtime, /rect\.top < 40/);
+});
+
+test('TV remote shortcuts map search, explore and account without entering header through arrows', () => {
+  const runtime = buildTvDpadRuntime('(function () { return null; })', '/* dom discovery */');
+
+  assert.match(runtime, /SEARCH=84, ASSIST=219, VOICE_ASSIST=231/);
+  assert.match(runtime, /code === 84 \|\| code === 219 \|\| code === 231/);
+  assert.match(runtime, /return 'search'/);
+
+  assert.match(runtime, /MENU=82, SETTINGS=176/);
+  assert.match(runtime, /code === 82 \|\| code === 176/);
+  assert.match(runtime, /return 'explore'/);
+
+  assert.match(runtime, /PROFILE_SWITCH=288/);
+  assert.match(runtime, /code === 288/);
+  assert.match(runtime, /return 'account'/);
+
+  assert.match(runtime, /const activateHeaderShortcut = \(kind\) =>/);
+  assert.match(runtime, /data-tv-header-shortcut="/);
+  assert.match(runtime, /api\.headerNavigationEnabled = true/);
+  assert.match(runtime, /rememberCurrentContentFocus/);
+});
+
+test('header focus never overwrites the remembered content anchor', () => {
+  const runtime = buildTvDpadRuntime('(function () { return null; })', '/* dom discovery */');
+  assert.match(runtime, /if \(isHeaderElement\(target\)\) \{/);
+  assert.match(runtime, /api\.restoreContentFocus/);
+  assert.match(runtime, /const key = focusKeyFor\(target\);[\s\S]{0,80}api\.lastFocusKey = key/);
 });
