@@ -128,15 +128,18 @@ test('TV hero exposes only Play and makes async dots user-inert without breaking
   assert.match(overrides, /const getDots = \(\) => getTvHeroDots\(root\)/);
 });
 
-test('header chrome is shortcut-addressable but accidental TV focus is rejected', async () => {
+test('TV header is pointer-locked by default while explicit shortcut scopes can be restored', async () => {
   const overrides = await text('src/injection/app-site-overrides.ts');
   assert.match(overrides, /const markTvHeaderShortcutTargets = \(\) =>/);
   assert.match(overrides, /data-tv-header-shortcut', 'search'/);
   assert.match(overrides, /data-tv-header-shortcut', 'explore'/);
   assert.match(overrides, /data-tv-header-shortcut', 'account'/);
-  assert.match(overrides, /const syncTvHeaderFocusGate = \(\) =>/);
-  assert.match(overrides, /api\?\.headerNavigationEnabled !== true/);
-  assert.match(overrides, /api\.restoreContentFocus/);
+  assert.match(overrides, /const lockTvHeaderPointerNavigation = \(\) =>/);
+  assert.match(overrides, /header\.style\.setProperty\('pointer-events', 'none', 'important'\)/);
+  assert.match(overrides, /element\.style\.setProperty\('pointer-events', 'none', 'important'\)/);
+  assert.match(overrides, /data-tv-header-active-scope/);
+  assert.match(overrides, /const restoreTvHeaderInteractive = \(element\) =>/);
+  assert.doesNotMatch(overrides, /syncTvHeaderFocusGate|__MOVIX_TV_HEADER_GATE_READY/);
 });
 
 
