@@ -121,6 +121,7 @@ export function buildTvPlaybackRuntime(): string {
   );
 
   const focusPlayPause = () => {
+    if (getQuickMenu()) return false;
     const video = getActiveVideo();
     const root = getPlayerRoot(video);
     const button = getPlayPauseButton(root);
@@ -133,6 +134,7 @@ export function buildTvPlaybackRuntime(): string {
     if (api.focusTimer) clearTimeout(api.focusTimer);
     api.focusTimer = setTimeout(() => {
       api.focusTimer = null;
+      if (getQuickMenu()) return;
       const video = getActiveVideo();
       const root = getPlayerRoot(video);
       if (!video || !(root instanceof HTMLElement)) return;
@@ -219,6 +221,7 @@ export function buildTvPlaybackRuntime(): string {
   };
 
   const hasPriorityOverlay = (root) => {
+    if (getQuickMenu()) return true;
     const candidates = Array.from(document.querySelectorAll(
       '[role="dialog"], [role="menu"], [data-source-menu], [data-tv-playback-quick-menu], [data-tv-dpad-scope="native"]'
     ));
@@ -367,8 +370,33 @@ export function buildTvPlaybackRuntime(): string {
     return false;
   };
 
-  const openQuickMenu = (video, root) => {
+  const waitForFullscreenExit = async (video, root) => {
+    if (!(video instanceof HTMLVideoElement) || !isFullscreen(video)) return true;
+
+    await exitFullscreen(video, root);
+    if (!isFullscreen(video)) return true;
+
+    await new Promise((resolve) => {
+      const started = performance.now();
+      const tick = () => {
+        if (!isFullscreen(video) || performance.now() - started >= 700) {
+          resolve(undefined);
+          return;
+        }
+        requestAnimationFrame(tick);
+      };
+      requestAnimationFrame(tick);
+    });
+    return !isFullscreen(video);
+  };
+
+  const openQuickMenu = async (video, root) => {
     if (!(video instanceof HTMLVideoElement) || getQuickMenu()) return false;
+
+    await waitForFullscreenExit(video, root);
+    const activeVideo = getActiveVideo() || video;
+    const activeRoot = getPlayerRoot(activeVideo) || root;
+
     ensureQuickMenuStyle();
 
     const overlay = document.createElement('div');
@@ -376,6 +404,7 @@ export function buildTvPlaybackRuntime(): string {
     overlay.setAttribute('data-tv-playback-quick-menu', '');
     overlay.setAttribute('data-tv-shortcut-scope', '');
     overlay.setAttribute('role', 'dialog');
+    overlay.setAttribute('aria-modal', 'true');
     overlay.setAttribute('aria-label', 'Menu lecture TV');
 
     const card = document.createElement('div');
@@ -413,12 +442,12 @@ export function buildTvPlaybackRuntime(): string {
     };
     updateProfileLabel();
 
-    const episodeButton = findActionButton(root, ['episodes', 'episode'], null);
+    const episodeButton = findActionButton(activeRoot, ['episodes', 'episode'], null);
     if (episodeButton instanceof HTMLElement) {
-      addAction('Épisodes', 'ouvrir', () => openExistingEpisodes(root));
+      addAction('Épisodes', 'ouvrir', () => openExistingEpisodes(activeRoot));
     }
 
-    addAction('Sources avancées', 'ouvrir les réglages', () => openExistingSettings(root));
+    addAction('Sources avancées', 'ouvrir les réglages', () => openExistingSettings(activeRoot));
     addAction('Fermer', '0 ou Back', closeQuickMenu);
 
     overlay.appendChild(card);
@@ -430,7 +459,7 @@ export function buildTvPlaybackRuntime(): string {
     return true;
   };
 
-  const toggleQuickMenu = (video, root) => {
+  const toggleQuickMenu = async (video, root) => {
     if (getQuickMenu()) {
       closeQuickMenu();
       return false;
@@ -466,8 +495,8 @@ export function buildTvPlaybackRuntime(): string {
     const root = getPlayerRoot(video);
 
     if (isZeroKey(event)) {
-      toggleQuickMenu(video, root);
       consume(event);
+      void toggleQuickMenu(video, root);
       return true;
     }
 
@@ -481,6 +510,7 @@ export function buildTvPlaybackRuntime(): string {
     const arrow = code.startsWith('Arrow') ? code : (key.startsWith('Arrow') ? key : '');
     if (!arrow) return false;
 
+    if (getQuickMenu()) return false;
     if (hasPriorityOverlay(root) || playerControlOwnsArrows(root)) return false;
 
     if (arrow === 'ArrowLeft') {
