@@ -16,6 +16,7 @@ on:
       - agent/google-tv-nav-hardening-v6
       - agent/google-tv-header-numeric-shortcuts-v7
       - agent/google-tv-menu-ime-polish-v8
+      - agent/google-tv-global-hero-neon-v9
     paths:
       - 'app/**'
       - 'src/**'
