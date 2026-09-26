@@ -193,6 +193,7 @@ test('TV header exposes subtle left-aligned neon 1 2 3 shortcut rings without to
   assert.match(overrides, /markTvShortcutBadge\(search, '1'\)/);
   assert.match(overrides, /markTvShortcutBadge\(account, '2'\)/);
   assert.match(overrides, /markTvShortcutBadge\(explore, '3'\)/);
+  assert.match(overrides, /\[data-tv-shortcut-badge="3"\]::after\{left:-15px;\}/);
   assert.match(overrides, /form\.parentElement instanceof HTMLElement/);
   assert.match(overrides, /if \(window\.MOVIX_TV !== true\) return/);
 });
@@ -208,4 +209,19 @@ test('TV hero focus policy applies to category routes as well as Home', async ()
   assert.match(policy, /data-tv-hero-user-inert/);
   assert.match(policy, /pointer-events', 'none', 'important'/);
   assert.doesNotMatch(policy, /window\.location\.pathname/);
+});
+
+test('TV detail pages hide TVmaze source line and keep TMDB attribution visually inert', async () => {
+  const overrides = await text('src/injection/app-site-overrides.ts');
+
+  assert.match(overrides, /const applyTvDetailExternalLinkPolicy = \(\) =>/);
+  assert.match(overrides, /\^\\\/\(\?:movie\|tv\)\\\//);
+  assert.match(overrides, /href\.includes\('tvmaze\.com'\)/);
+  assert.match(overrides, /const sourceLine = link\.closest\('p'\)/);
+  assert.match(overrides, /hideManagedNode\(sourceLine\)/);
+  assert.match(overrides, /a\[href\*="themoviedb\.org"\]/);
+  assert.match(overrides, /link\.removeAttribute\('href'\)/);
+  assert.match(overrides, /data-tv-detail-external-inert/);
+  assert.match(overrides, /pointer-events', 'none', 'important'/);
+  assert.match(overrides, /applyTvDetailExternalLinkPolicy\(\)/);
 });
