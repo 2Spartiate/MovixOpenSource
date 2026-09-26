@@ -658,7 +658,42 @@ ${domDiscoveryRuntime}
   const findOpenedShortcutScope = (kind, trigger) => {
     if (kind === 'account') {
       const root = trigger?.parentElement;
-      if (root instanceof HTMLElement) return root;
+      if (root instanceof HTMLElement) {
+        const panels = Array.from(root.querySelectorAll('div')).filter((element) => {
+          if (!(element instanceof HTMLElement)) return false;
+          const rect = element.getBoundingClientRect();
+          if (rect.width <= 0 || rect.height <= 0) return false;
+          const classes = String(element.className || '');
+          const focusableCount = element.querySelectorAll(
+            'a[href], button, [role="button"], [tabindex]'
+          ).length;
+          return (
+            focusableCount >= 2 &&
+            (
+              (classes.includes('absolute') && classes.includes('top-full')) ||
+              classes.includes('overflow-hidden')
+            )
+          );
+        });
+
+        const panel = panels
+          .sort((a, b) => {
+            const ar = a.getBoundingClientRect();
+            const br = b.getBoundingClientRect();
+            return (ar.width * ar.height) - (br.width * br.height);
+          })[0];
+
+        if (panel instanceof HTMLElement) {
+          panel.setAttribute('data-tv-shortcut-scroll-container', '');
+          panel.style.setProperty('max-height', 'calc(100vh - 76px)', 'important');
+          panel.style.setProperty('overflow-y', 'auto', 'important');
+          panel.style.setProperty('overscroll-behavior', 'contain', 'important');
+          panel.style.setProperty('scroll-behavior', 'auto', 'important');
+          return panel;
+        }
+
+        return root;
+      }
     }
 
     if (kind === 'explore') {
@@ -849,20 +884,11 @@ ${domDiscoveryRuntime}
     const direction = directions[event.key];
     if (!direction) return false;
 
-    const eventTarget = event.target;
-
-    // Search is entered only through shortcut 1. ↓ leaves it and restores
-    // the exact content anchor; ordinary D-pad navigation never enters header.
-    if (
-      direction === 'down' &&
-      eventTarget instanceof HTMLElement &&
-      eventTarget.getAttribute('data-tv-header-shortcut') === 'search'
-    ) {
-      deactivateHeaderShortcut(false, true);
-      consumeEvent(event);
-      return true;
-    }
-
+    // A real text input must keep the whole D-pad while the Android TV IME is
+    // open. In particular ArrowDown is needed to leave the edit field and
+    // navigate the virtual keyboard (including its microphone/voice action).
+    // shouldSpatialNavigationHandle() returns false for text inputs, so no
+    // arrow is consumed by our page-level spatial engine in that state.
     if (!api.shouldSpatialNavigationHandle(event)) return false;
 
     // Once an arrow belongs to the TV spatial graph, consume it even when
