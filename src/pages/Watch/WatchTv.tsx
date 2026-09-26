@@ -43,6 +43,7 @@ import {
   type SwiftfluxPlayback,
 } from '../../services/swiftfluxService';
 import type { KisskhSource, KisskhSubtitleTrack } from '../../types/kisskh';
+import { isMovixTvRuntime } from '../../utils/tvRuntime';
 import { markEpisodeHandoff } from '../../utils/playerFullscreenPersistence';
 const MAIN_API = import.meta.env.VITE_MAIN_API;
 const TMDB_API_KEY = import.meta.env.VITE_TMDB_API_KEY || '';
@@ -757,7 +758,19 @@ const WatchTv: React.FC = () => {
   const [embedUrl, setEmbedUrl] = useState<string | null>(null);
   const [embedType, setEmbedType] = useState<string | null>(null);
 
-  const [showEmbedQuality, setShowEmbedQuality] = useState(false); // For the embed source menu
+  const [showEmbedQuality, setShowEmbedQuality] = useState(false);
+
+  useEffect(() => {
+    if (!isMovixTvRuntime() || !isLoading) return;
+    const handleTvLoadingSourceShortcut = (event: KeyboardEvent) => {
+      if (!(event.key === '0' || event.code === 'Digit0' || event.code === 'Numpad0')) return;
+      event.preventDefault();
+      setShowEmbedQuality(true);
+    };
+    document.addEventListener('keydown', handleTvLoadingSourceShortcut);
+    return () => document.removeEventListener('keydown', handleTvLoadingSourceShortcut);
+  }, [isLoading]);
+ // For the embed source menu
 
   useEffect(() => {
     if (!embedUrl) return;
