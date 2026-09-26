@@ -4,7 +4,7 @@ export function buildTvPlaybackRuntime(): string {
   if (window.MOVIX_TV !== true) return;
 
   const api = window.__MOVIX_TV_PLAYBACK || (window.__MOVIX_TV_PLAYBACK = {});
-  api.runtimeVersion = 'tv-playback-v15';
+  api.runtimeVersion = 'tv-playback-v17';
 
   if (typeof api.keydownHandler === 'function') {
     window.removeEventListener('keydown', api.keydownHandler, true);
@@ -61,6 +61,8 @@ export function buildTvPlaybackRuntime(): string {
     if (!(video instanceof HTMLVideoElement)) return null;
     const explicit = video.closest('[data-hls-player-root]');
     if (explicit instanceof HTMLElement) return explicit;
+    const player = video.closest('.video-container');
+    if (player instanceof HTMLElement) return player;
 
     let node = video.parentElement;
     let best = node;
@@ -133,7 +135,7 @@ export function buildTvPlaybackRuntime(): string {
   );
 
   const focusPlayPause = () => {
-    if (getQuickMenu() || api.advancedSettingsPending || visible(getSettingsPanel())) return false;
+    if (getQuickMenu() || api.advancedSettingsPending || getOpenPlayerPanel()) return false;
     const video = getActiveVideo();
     const root = getPlayerRoot(video);
     const button = getPlayPauseButton(root);
@@ -146,7 +148,7 @@ export function buildTvPlaybackRuntime(): string {
     if (api.focusTimer) clearTimeout(api.focusTimer);
     api.focusTimer = setTimeout(() => {
       api.focusTimer = null;
-      if (getQuickMenu() || api.advancedSettingsPending || visible(getSettingsPanel())) return;
+      if (getQuickMenu() || api.advancedSettingsPending || getOpenPlayerPanel()) return;
       const video = getActiveVideo();
       const root = getPlayerRoot(video);
       if (!video || !(root instanceof HTMLElement)) return;
@@ -233,7 +235,7 @@ export function buildTvPlaybackRuntime(): string {
   };
 
   const hasPriorityOverlay = (root) => {
-    if (getQuickMenu()) return true;
+    if (getQuickMenu() || getOpenPlayerPanel()) return true;
     const candidates = Array.from(document.querySelectorAll(
       '[role="dialog"], [role="menu"], [data-source-menu], [data-tv-playback-quick-menu], [data-tv-dpad-scope="native"]'
     ));
@@ -246,6 +248,7 @@ export function buildTvPlaybackRuntime(): string {
   const PROFILE_KEY = 'movix.tv.playback.profile.v1';
   const MENU_ID = 'movix-tv-injected-playback-menu';
   const MENU_STYLE_ID = 'movix-tv-injected-playback-menu-style';
+  const PANEL_STYLE_ID = 'movix-tv-injected-player-panel-style';
   const AUTO_SETTINGS_STYLE_ID = 'movix-tv-auto-source-selection-style';
   const AUTO_SETTINGS_CLASS = 'movix-tv-auto-source-selection';
 
@@ -343,7 +346,7 @@ export function buildTvPlaybackRuntime(): string {
     const menu = getQuickMenu();
     if (menu) menu.remove();
     api.quickMenuFocusIndex = 0;
-    if (restorePlayerFocus && !visible(getSettingsPanel())) setTimeout(focusPlayPause, 0);
+    if (restorePlayerFocus && !getOpenPlayerPanel()) setTimeout(focusPlayPause, 0);
   };
 
   const sleep = (milliseconds) => new Promise((resolve) => setTimeout(resolve, milliseconds));
@@ -371,14 +374,20 @@ export function buildTvPlaybackRuntime(): string {
     (document.head || document.documentElement).appendChild(style);
   };
 
-  const getSettingsTrigger = () => {
-    const exact = document.querySelector('[data-tv-player-menu-trigger="settings"]');
+  const getSettingsTrigger = (root = getPlayerRoot(getActiveVideo())) => {
+    const scope = root instanceof HTMLElement ? root : document;
+    const exact = scope.querySelector('[data-tv-player-menu-trigger="settings"]');
     if (exact instanceof HTMLElement) return exact;
-    return Array.from(document.querySelectorAll('button, [role="button"]')).find((button) => {
+    const documentTrigger = document.querySelector('[data-tv-player-menu-trigger="settings"]');
+    if (documentTrigger instanceof HTMLElement) return documentTrigger;
+    const matchesSettings = (button) => {
       if (!(button instanceof HTMLElement)) return false;
       const signature = buttonSignature(button);
-      return signature.includes('parametres') || signature.includes('settings');
-    }) || null;
+      return signature.includes('parametres') || signature.includes('settings') ||
+        Boolean(button.querySelector('svg.lucide-settings, svg.lucide-settings-2, .lucide-settings'));
+    };
+    return Array.from(scope.querySelectorAll('button, [role="button"]')).find(matchesSettings) ||
+      Array.from(document.querySelectorAll('.video-container .control-bar button')).find(matchesSettings) || null;
   };
 
   const getSettingsPanel = () => {
@@ -386,7 +395,96 @@ export function buildTvPlaybackRuntime(): string {
     return exact instanceof HTMLElement ? exact : null;
   };
 
+  const getEpisodesPanel = () => {
+    if (api.episodesPanel instanceof HTMLElement && api.episodesPanel.isConnected &&
+        visible(api.episodesPanel)) return api.episodesPanel;
+    const explicit = document.querySelector('[data-tv-episodes-menu]');
+    if (explicit instanceof HTMLElement && visible(explicit)) return explicit;
+
+    // WatchTv/WatchAnime and the HLS internal episode list render their real
+    // panel at z-[11000]/z-[12000]. Their scrollable button list distinguishes
+    // that panel from controls, source groups and the quick menu, even on the
+    // remote frontend before data-tv-episodes-menu has been deployed.
+    const candidates = Array.from(document.querySelectorAll('div')).filter((node) => {
+      if (!(node instanceof HTMLElement) || !visible(node)) return false;
+      const classes = String(node.className || '');
+      if (!classes.includes('z-[11000]') && !classes.includes('z-[12000]')) return false;
+      return Boolean(node.querySelector('h3') && node.querySelector('.overflow-y-auto button'));
+    });
+    return candidates[0] || null;
+  };
+
+  const getOpenPlayerPanel = () => {
+    const settings = getSettingsPanel();
+    if (settings instanceof HTMLElement && visible(settings)) {
+      settings.setAttribute('data-tv-injected-panel', 'settings');
+      return { kind: 'settings', panel: settings };
+    }
+    const episodes = getEpisodesPanel();
+    if (episodes instanceof HTMLElement) {
+      episodes.setAttribute('data-tv-injected-panel', 'episodes');
+      return { kind: 'episodes', panel: episodes };
+    }
+    return null;
+  };
+
+  const ensurePlayerPanelStyle = () => {
+    if (document.getElementById(PANEL_STYLE_ID)) return;
+    const style = document.createElement('style');
+    style.id = PANEL_STYLE_ID;
+    style.textContent = '[data-tv-injected-panel] :is(button,a,[tabindex]):focus{' +
+      'outline:3px solid #ef4444!important;outline-offset:2px!important;}';
+    (document.head || document.documentElement).appendChild(style);
+  };
+
+  const getPanelFocusables = (panel) => {
+    if (!(panel instanceof HTMLElement)) return [];
+    return Array.from(panel.querySelectorAll(
+      'button, a[href], input, select, textarea, [role="button"], [role="slider"], [tabindex]'
+    )).filter((element) => {
+      if (!(element instanceof HTMLElement) || element.disabled ||
+          element.getAttribute('tabindex') === '-1' || !visible(element)) return false;
+      for (let node = element; node && node !== panel; node = node.parentElement) {
+        if (node.getAttribute('aria-hidden') === 'true' || node.hasAttribute('inert')) return false;
+        const style = window.getComputedStyle(node);
+        if (style.display === 'none' || style.visibility === 'hidden' || style.opacity === '0') return false;
+      }
+      return true;
+    });
+  };
+
+  const focusPanelItem = (item) => {
+    if (!(item instanceof HTMLElement)) return false;
+    try { item.focus({ preventScroll: true }); } catch { item.focus(); }
+    try { item.scrollIntoView({ block: 'nearest', inline: 'nearest' }); } catch {}
+    return document.activeElement === item;
+  };
+
+  const getPanelCloseButton = (panel) => {
+    const title = panel?.querySelector('h3');
+    const headerButton = title?.parentElement?.querySelector('button');
+    if (headerButton instanceof HTMLElement) return headerButton;
+    return Array.from(panel?.querySelectorAll('button') || []).find((button) =>
+      button.querySelector('svg.lucide-x, .lucide-x') ||
+      ['fermer', 'close'].includes(buttonSignature(button))
+    ) || null;
+  };
+
+  const closePlayerPanel = (open) => {
+    if (!open) return false;
+    const button = getPanelCloseButton(open.panel);
+    if (!(button instanceof HTMLElement)) return false;
+    if (open.kind === 'settings') api.manualSettingsOpen = false;
+    if (open.kind === 'episodes') api.episodesPanel = null;
+    api.panelFocusItem = null;
+    api.panelFocusIndex = null;
+    button.click();
+    schedulePlayPauseFocus(350);
+    return true;
+  };
+
   const openHiddenQualitySettings = async () => {
+    if (api.manualSettingsOpen) return null;
     ensureAutoSettingsStyle();
     document.documentElement.classList.add(AUTO_SETTINGS_CLASS);
 
@@ -419,6 +517,10 @@ export function buildTvPlaybackRuntime(): string {
   };
 
   const closeHiddenSettings = async () => {
+    if (api.manualSettingsOpen) {
+      document.documentElement.classList.remove(AUTO_SETTINGS_CLASS);
+      return;
+    }
     const panel = getSettingsPanel();
     if (panel instanceof HTMLElement) {
       const closeButton = Array.from(panel.querySelectorAll('button')).find((button) => {
@@ -767,40 +869,55 @@ export function buildTvPlaybackRuntime(): string {
     }) || null;
   };
 
-  const openExistingEpisodes = (root) => {
+  const openExistingEpisodes = async (root) => {
     const button = findActionButton(root, ['episodes', 'episode'], null);
-    if (button instanceof HTMLElement) {
-      closeQuickMenu(false);
+    if (!(button instanceof HTMLElement)) return false;
+    api.advancedSettingsPending = true;
+    try {
       button.click();
+      const panel = await waitUntil(() => getEpisodesPanel(), 3500, 50);
+      if (!(panel instanceof HTMLElement)) return false;
+      api.episodesPanel = panel;
+      closeQuickMenu(false);
+      const first = getPanelFocusables(panel).find((item) =>
+        item.closest('.overflow-y-auto')) || getPanelFocusables(panel)[0];
+      focusPanelItem(first);
       return true;
+    } finally {
+      api.advancedSettingsPending = false;
     }
-    return false;
   };
 
   const openExistingSettings = async (root) => {
-    const button = findActionButton(
-      root,
-      ['parametres', 'settings', 'sources'],
-      '[data-tv-player-menu-trigger="settings"]'
-    );
-    if (button instanceof HTMLElement) {
-      api.advancedSettingsPending = true;
-      closeQuickMenu(false);
-      try {
-        button.click();
-        const panel = await waitUntil(() => getSettingsPanel(), 3500, 50);
-        const qualityTab = panel?.querySelector('[data-tv-settings-tab="quality"]');
-        const target = qualityTab instanceof HTMLElement ? qualityTab
-          : panel?.querySelector('button');
-        if (target instanceof HTMLElement) {
-          try { target.focus({ preventScroll: true }); } catch { target.focus(); }
-        }
-        return panel instanceof HTMLElement;
-      } finally {
-        api.advancedSettingsPending = false;
+    const existing = getSettingsPanel();
+    const button = getSettingsTrigger(root);
+    if (!(existing instanceof HTMLElement) && !(button instanceof HTMLElement)) return false;
+
+    api.advancedSettingsPending = true;
+    // Manual access wins over a hidden automatic quality scan. The scanner's
+    // superseded request must never click this real panel closed afterwards.
+    api.profileRequestId = (api.profileRequestId || 0) + 1;
+    api.manualSettingsOpen = true;
+    document.documentElement.classList.remove(AUTO_SETTINGS_CLASS);
+    try {
+      if (!(existing instanceof HTMLElement)) button.click();
+      const panel = await waitUntil(() => {
+        const current = getSettingsPanel();
+        return current instanceof HTMLElement && visible(current) ? current : null;
+      }, 3500, 50);
+      if (!(panel instanceof HTMLElement)) {
+        api.manualSettingsOpen = false;
+        return false;
       }
+      closeQuickMenu(false);
+      const qualityTab = panel.querySelector('[data-tv-settings-tab="quality"]');
+      const target = qualityTab instanceof HTMLElement && visible(qualityTab)
+        ? qualityTab : getPanelFocusables(panel)[0];
+      focusPanelItem(target);
+      return true;
+    } finally {
+      api.advancedSettingsPending = false;
     }
-    return false;
   };
 
   const waitForFullscreenExit = async (video, root) => {
@@ -944,6 +1061,90 @@ export function buildTvPlaybackRuntime(): string {
     }
   };
 
+  const panelOwnsArrows = (active) => active instanceof HTMLElement && Boolean(
+    active.closest('input, textarea, select, [role="slider"], [data-tv-consume-arrows]')
+  );
+
+  const getEpisodeDropdown = (panel) => Array.from(panel.querySelectorAll('.top-full'))
+    .find((node) => node instanceof HTMLElement && visible(node) &&
+      node.querySelector('button')) || null;
+
+  const handlePlayerPanelKeydown = (event, open) => {
+    const { kind, panel } = open;
+    const key = String(event.key || '');
+    const code = String(event.code || '');
+    const legacy = Number(event.keyCode || event.which || 0);
+    let active = panel.contains(document.activeElement) ? document.activeElement : null;
+
+    if (key === 'Escape' || key === 'Backspace' || key === 'BrowserBack' ||
+        key === '0' || code === 'Digit0' || code === 'Numpad0') {
+      consume(event);
+      if (kind === 'episodes') {
+        const dropdown = getEpisodeDropdown(panel);
+        const seasonButton = dropdown?.parentElement?.querySelector('button');
+        if (seasonButton instanceof HTMLElement) {
+          seasonButton.click();
+          focusPanelItem(seasonButton);
+          return true;
+        }
+      }
+      closePlayerPanel(open);
+      return true;
+    }
+
+    const arrow = code.startsWith('Arrow') ? code : (key.startsWith('Arrow') ? key :
+      ({ 19: 'ArrowUp', 20: 'ArrowDown', 21: 'ArrowLeft', 22: 'ArrowRight',
+         37: 'ArrowLeft', 38: 'ArrowUp', 39: 'ArrowRight', 40: 'ArrowDown' })[legacy] || '');
+    if (arrow) {
+      const items = getPanelFocusables(panel);
+      if (!active && Number.isInteger(api.panelFocusIndex)) {
+        active = items[Math.min(items.length - 1, Math.max(0, api.panelFocusIndex))] || null;
+      }
+      if (panelOwnsArrows(active)) return true;
+      const tabs = kind === 'settings'
+        ? items.filter((item) => item.hasAttribute('data-tv-settings-tab')) : [];
+      const close = getPanelCloseButton(panel);
+      const body = items.filter((item) => item !== close && !tabs.includes(item));
+      const currentTab = tabs.find((item) => item.getAttribute('aria-pressed') === 'true') || tabs[0];
+      let next = null;
+
+      if (kind === 'settings' && (arrow === 'ArrowLeft' || arrow === 'ArrowRight') &&
+          tabs.includes(active)) {
+        const delta = arrow === 'ArrowRight' ? 1 : -1;
+        next = tabs[Math.min(tabs.length - 1, Math.max(0, tabs.indexOf(active) + delta))];
+      } else if (arrow === 'ArrowUp' || arrow === 'ArrowDown') {
+        const delta = arrow === 'ArrowDown' ? 1 : -1;
+        if (kind === 'settings' && tabs.includes(active)) {
+          next = delta > 0 ? body[0] : close;
+        } else if (kind === 'settings' && active === close) {
+          next = delta > 0 ? currentTab : close;
+        } else if (kind === 'settings' && body.includes(active)) {
+          const index = body.indexOf(active) + delta;
+          next = index < 0 ? currentTab : body[Math.min(body.length - 1, index)];
+        } else {
+          const index = items.indexOf(active);
+          next = items[Math.min(items.length - 1, Math.max(0, index < 0 ? 0 : index + delta))];
+        }
+      }
+      consume(event);
+      if (next instanceof HTMLElement) focusPanelItem(next);
+      return true;
+    }
+
+    if (key === 'Enter' || code === 'Enter' || code === 'NumpadEnter' ||
+        legacy === 23 || legacy === 66) {
+      if (active instanceof HTMLElement && !panelOwnsArrows(active)) {
+        consume(event);
+        active.click();
+      } else if (!active) {
+        consume(event);
+        focusPanelItem(getPanelFocusables(panel)[0]);
+      }
+      return true;
+    }
+    return false;
+  };
+
   const getQuickMenuActions = () => {
     const menu = getQuickMenu();
     if (!(menu instanceof HTMLElement)) return [];
@@ -955,14 +1156,41 @@ export function buildTvPlaybackRuntime(): string {
   // focusin event, not a second visual-selection state or a polling timer.
   const handleFocusIn = (event) => {
     const menu = getQuickMenu();
-    if (!(menu instanceof HTMLElement) || api.restoringQuickFocus) return;
-    if (menu.contains(event.target)) return;
-    const actions = getQuickMenuActions();
-    const index = Math.min(actions.length - 1, Math.max(0, Number(api.quickMenuFocusIndex || 0)));
-    if (actions[index] instanceof HTMLElement) {
+    if (api.restoringQuickFocus) return;
+    if (menu instanceof HTMLElement) {
+      if (menu.contains(event.target)) return;
+      const actions = getQuickMenuActions();
+      const index = Math.min(actions.length - 1, Math.max(0, Number(api.quickMenuFocusIndex || 0)));
+      if (actions[index] instanceof HTMLElement) {
+        api.restoringQuickFocus = true;
+        focusPanelItem(actions[index]);
+        api.restoringQuickFocus = false;
+      }
+      return;
+    }
+
+    const open = getOpenPlayerPanel();
+    if (!open) return;
+    if (open.panel.contains(event.target)) {
+      if (event.target instanceof HTMLElement) {
+        api.panelFocusItem = event.target;
+        api.panelFocusIndex = getPanelFocusables(open.panel).indexOf(event.target);
+      }
+      return;
+    }
+    // A nested dialog can own focus outside the settings panel. Only reclaim
+    // focus stolen by the playback/page controls behind our active panel.
+    if (event.target instanceof HTMLElement &&
+        event.target.closest('[role="dialog"], [aria-modal="true"]')) return;
+    const items = getPanelFocusables(open.panel);
+    const remembered = api.panelFocusItem;
+    const target = items.includes(remembered) ? remembered :
+      (open.kind === 'settings'
+        ? items.find((item) => item.getAttribute('aria-pressed') === 'true') || items[0]
+        : items.find((item) => item.closest('.overflow-y-auto')) || items[0]);
+    if (target instanceof HTMLElement) {
       api.restoringQuickFocus = true;
-      try { actions[index].focus({ preventScroll: true }); }
-      catch { actions[index].focus(); }
+      focusPanelItem(target);
       api.restoringQuickFocus = false;
     }
   };
@@ -1051,6 +1279,9 @@ export function buildTvPlaybackRuntime(): string {
 
     if (getQuickMenu() && handleQuickMenuKeydown(event)) return true;
 
+    const open = getOpenPlayerPanel();
+    if (open && handlePlayerPanelKeydown(event, open)) return true;
+
     const video = getActiveVideo();
     if (!(video instanceof HTMLVideoElement)) return false;
     const root = getPlayerRoot(video);
@@ -1096,9 +1327,19 @@ export function buildTvPlaybackRuntime(): string {
   };
 
   const handleTvBack = (event) => {
+    const consumeTvBack = () => {
+      if (event?.cancelable) event.preventDefault();
+      if (typeof event?.stopImmediatePropagation === 'function') event.stopImmediatePropagation();
+    };
     if (getQuickMenu()) {
       closeQuickMenu();
-      if (event?.cancelable) event.preventDefault();
+      consumeTvBack();
+      return;
+    }
+
+    const open = getOpenPlayerPanel();
+    if (open && closePlayerPanel(open)) {
+      consumeTvBack();
       return;
     }
 
@@ -1106,7 +1347,7 @@ export function buildTvPlaybackRuntime(): string {
     if (!(video instanceof HTMLVideoElement) || !isFullscreen(video)) return;
     const root = getPlayerRoot(video);
     void exitFullscreen(video, root);
-    if (event?.cancelable) event.preventDefault();
+    consumeTvBack();
   };
 
   api.getActiveVideo = getActiveVideo;
@@ -1134,6 +1375,7 @@ export function buildTvPlaybackRuntime(): string {
       return;
     }
     api.focusObserver = new MutationObserver(() => {
+      if (api.manualSettingsOpen && !getSettingsPanel()) api.manualSettingsOpen = false;
       schedulePlayPauseFocus(120);
       scheduleAutomaticProfileSelection();
     });
@@ -1143,8 +1385,10 @@ export function buildTvPlaybackRuntime(): string {
   };
 
   if (document.readyState === 'loading') {
+    ensurePlayerPanelStyle();
     document.addEventListener('DOMContentLoaded', setupFocus, { once: true });
   } else {
+    ensurePlayerPanelStyle();
     setupFocus();
   }
 })();

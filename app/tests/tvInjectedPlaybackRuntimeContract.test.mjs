@@ -92,7 +92,7 @@ test('quick menu blocks player autofocus and transport arrows while open', async
 
   assert.match(runtime, /const focusPlayPause = \(\) => \{[\s\S]{0,180}if \(getQuickMenu\(\) \|\| api\.advancedSettingsPending/);
   assert.match(runtime, /api\.focusTimer = setTimeout\(\(\) => \{[\s\S]{0,200}if \(getQuickMenu\(\) \|\| api\.advancedSettingsPending/);
-  assert.match(runtime, /const hasPriorityOverlay = \(root\) => \{[\s\S]{0,100}if \(getQuickMenu\(\)\) return true/);
+  assert.match(runtime, /const hasPriorityOverlay = \(root\) => \{[\s\S]{0,120}getOpenPlayerPanel\(\)/);
   assert.match(runtime, /if \(getQuickMenu\(\)\) return false;[\s\S]{0,100}hasPriorityOverlay\(root\)/);
 });
 
@@ -112,6 +112,8 @@ test('advanced sources uses the exact player settings trigger outside the inferr
 
   assert.match(runtime, /document\.querySelector\(explicitSelector\)/);
   assert.match(runtime, /\[data-tv-player-menu-trigger="settings"\]/);
+  assert.match(runtime, /getSettingsTrigger\(root\)/);
+  assert.match(runtime, /api\.manualSettingsOpen = true/);
   assert.match(runtime, /closeQuickMenu\(false\)/);
   assert.match(runtime, /\[data-tv-settings-tab="quality"\]/);
 });

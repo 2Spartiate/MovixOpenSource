@@ -4,7 +4,7 @@ import test from 'node:test';
 import vm from 'node:vm';
 import ts from 'typescript';
 
-async function harness(tvMode = true, sourceFixtures = []) {
+async function harness(tvMode = true, sourceFixtures = [], options = {}) {
   const source = await readFile(new URL('../src/injection/tv-playback-runtime.ts', import.meta.url), 'utf8');
   const js = ts.transpileModule(source, { compilerOptions: { module: ts.ModuleKind.CommonJS } }).outputText;
   const module = { exports: {} };
@@ -26,6 +26,7 @@ async function harness(tvMode = true, sourceFixtures = []) {
     set innerHTML(value) { this.textContent = value.replace(/<[^>]*>/g, ' '); }
     setAttribute(key, value) { this.attributes[key] = value; }
     getAttribute(key) { return this.attributes[key] ?? null; }
+    hasAttribute(key) { return Object.hasOwn(this.attributes, key); }
     appendChild(child) { child.parentElement = this; child.isConnected = true; this.children.push(child); return child; }
     remove() { this.parentElement?.children.splice(this.parentElement.children.indexOf(this), 1); this.parentElement = null; this.isConnected = false; }
     get nextElementSibling() {
@@ -42,17 +43,34 @@ async function harness(tvMode = true, sourceFixtures = []) {
     click() { this.clicks++; for (const callback of this.listeners.click || []) callback(); }
     contains(target) { return target === this || this.children.some(child => child.contains(target)); }
     focus() { document.activeElement = this; document.emit('focusin', { target: this }); }
-    closest(selector) { return selector === '[data-hls-player-root]' ? this.playerRoot || null : null; }
+    scrollIntoView() { this.scrollRequests = (this.scrollRequests || 0) + 1; }
+    closest(selector) {
+      if (selector === '[data-hls-player-root]') return this.playerRoot || null;
+      if (selector === '.overflow-y-auto') {
+        for (let node = this; node; node = node.parentElement) {
+          if (node.className.split(' ').includes('overflow-y-auto')) return node;
+        }
+      }
+      return null;
+    }
     querySelectorAll(selector) {
       const all = this.children.flatMap(child => [child, ...child.querySelectorAll('*')]);
       if (selector === '*') return all;
       if (selector === '.movix-tv-menu-action') return all.filter(element => element.className.includes('movix-tv-menu-action'));
+      if (selector === 'div') return all.filter(element => element.tagName === 'DIV');
+      if (selector === 'h3') return all.filter(element => element.tagName === 'H3');
+      if (selector === '.top-full') return all.filter(element => element.className.split(' ').includes('top-full'));
+      if (selector.startsWith('button, a[href]')) return all.filter(element => element.tagName === 'BUTTON');
       if (selector === 'button, [role="button"]' || selector === 'button') return all.filter(element => element.tagName === 'BUTTON');
       return [];
     }
     querySelector(selector) {
       if (selector === '[data-tv-settings-tab="quality"]') return this.querySelectorAll('*').find(element => element.getAttribute('data-tv-settings-tab') === 'quality') || null;
+      if (selector === '[data-tv-player-menu-trigger="settings"]') return this.querySelectorAll('*').find(element => element.getAttribute('data-tv-player-menu-trigger') === 'settings') || null;
+      if (selector === '[data-tv-episodes-menu]') return this.querySelectorAll('*').find(element => element.hasAttribute('data-tv-episodes-menu')) || null;
       if (selector === '[data-source-menu]') return this.querySelectorAll('*').find(element => element.getAttribute('data-source-menu') !== null) || null;
+      if (selector === 'h3') return this.querySelectorAll('h3')[0] || null;
+      if (selector === '.overflow-y-auto button') return this.querySelectorAll('*').find(element => element.tagName === 'BUTTON' && element.closest('.overflow-y-auto')) || null;
       if (selector === 'button') return this.querySelectorAll('button')[0] || null;
       return null;
     }
@@ -73,18 +91,38 @@ async function harness(tvMode = true, sourceFixtures = []) {
   settings.setAttribute('data-tv-player-menu-trigger', 'settings');
   root.appendChild(settings);
   settings.addEventListener('click', () => {
+    const existing = body.querySelectorAll('*').find(element => element.className === 'settings-menu');
+    if (existing) { existing.remove(); return; }
     const panel = new Element('section');
     panel.className = 'settings-menu';
-    const quality = new Element('button');
-    quality.setAttribute('data-tv-settings-tab', 'quality');
-    panel.appendChild(quality);
+    const header = new Element('div');
+    const title = new Element('h3');
+    title.textContent = 'Paramètres';
+    header.appendChild(title);
     const close = new Element('button');
     close.textContent = 'Fermer';
     close.addEventListener('click', () => panel.remove());
-    panel.appendChild(close);
+    header.appendChild(close);
+    panel.appendChild(header);
+    const quality = new Element('button');
+    quality.setAttribute('data-tv-settings-tab', 'quality');
+    quality.setAttribute('aria-pressed', 'true');
+    panel.appendChild(quality);
+    const format = new Element('button');
+    format.setAttribute('data-tv-settings-tab', 'format');
+    format.addEventListener('click', () => {
+      quality.setAttribute('aria-pressed', 'false');
+      format.setAttribute('aria-pressed', 'true');
+    });
+    panel.appendChild(format);
+    const sourceMenu = new Element('div');
+    sourceMenu.setAttribute('data-source-menu', '');
+    const qualityAction = new Element('button');
+    qualityAction.textContent = 'Qualité auto';
+    sourceMenu.appendChild(qualityAction);
+    panel.appendChild(sourceMenu);
     if (sourceFixtures.length) {
-      const scope = new Element('div');
-      scope.setAttribute('data-source-menu', '');
+      const scope = sourceMenu;
       const scan = new Element('button');
       scan.textContent = 'Vérification de la qualité';
       scan.addEventListener('click', () => {
@@ -116,10 +154,42 @@ async function harness(tvMode = true, sourceFixtures = []) {
         }
         scope.appendChild(list);
       }
-      panel.appendChild(scope);
     }
     body.appendChild(panel);
   });
+
+  const episodeClicks = [];
+  const episodesTrigger = new Element('button');
+  if (options.episodes) {
+    episodesTrigger.textContent = 'Épisodes';
+    root.appendChild(episodesTrigger);
+    episodesTrigger.addEventListener('click', () => {
+      const panel = new Element('div');
+      panel.className = 'fixed z-[11000] max-h-[80vh] flex-col';
+      const header = new Element('div');
+      const title = new Element('h3');
+      title.textContent = 'Série';
+      header.appendChild(title);
+      const close = new Element('button');
+      close.textContent = 'Fermer';
+      close.addEventListener('click', () => panel.remove());
+      header.appendChild(close);
+      panel.appendChild(header);
+      const season = new Element('button');
+      season.textContent = 'Saison 1';
+      panel.appendChild(season);
+      const list = new Element('div');
+      list.className = 'overflow-y-auto';
+      for (let number = 1; number <= 3; number++) {
+        const choice = new Element('button');
+        choice.textContent = `Épisode ${number}`;
+        choice.addEventListener('click', () => { episodeClicks.push(number); panel.remove(); });
+        list.appendChild(choice);
+      }
+      panel.appendChild(list);
+      body.appendChild(panel);
+    });
+  }
 
   const listeners = {};
   document = {
@@ -130,7 +200,11 @@ async function harness(tvMode = true, sourceFixtures = []) {
     emit(name, event) { for (const fn of listeners[name] || []) fn(event); },
     createElement(tag) { return new Element(tag); },
     getElementById(id) { return [body, head].flatMap(node => [node, ...node.querySelectorAll('*')]).find(node => node.id === id) || null; },
-    querySelectorAll(selector) { return selector === 'video' ? [video] : []; },
+    querySelectorAll(selector) {
+      if (selector === 'video') return [video];
+      if (selector === 'div') return body.querySelectorAll('div');
+      return [];
+    },
     querySelector(selector) {
       if (selector === '[data-tv-player-menu-trigger="settings"]') return settings;
       if (selector === '[data-tv-original-language]') return document.documentElement;
@@ -144,7 +218,13 @@ async function harness(tvMode = true, sourceFixtures = []) {
   const storage = new Map();
   const window = {
     MOVIX_TV: tvMode, location: { pathname: '/watch', search: '' },
-    getComputedStyle() { return { display: 'block', visibility: 'visible', opacity: '1' }; },
+    getComputedStyle(element) { return {
+      display: 'block',
+      visibility: element.className === 'settings-menu' &&
+        document.documentElement.classList.contains('movix-tv-auto-source-selection')
+        ? 'hidden' : 'visible',
+      opacity: element.opacity || '1',
+    }; },
     addEventListener(name, fn) { (windowListeners[name] ||= []).push(fn); },
     removeEventListener(name, fn) { windowListeners[name] = (windowListeners[name] || []).filter(item => item !== fn); },
     dispatchEvent(event) { for (const fn of windowListeners[event.type] || []) fn(event); },
@@ -165,7 +245,8 @@ async function harness(tvMode = true, sourceFixtures = []) {
     return event;
   }
   const actions = () => document.getElementById('movix-tv-injected-playback-menu')?.querySelectorAll('.movix-tv-menu-action') || [];
-  return { press, actions, document, playPause, settings, video, window, storage };
+  return { press, actions, document, playPause, settings, episodesTrigger,
+    episodeClicks, video, window, storage };
 }
 
 test('packaged TV script owns D-pad focus and transport while the injected menu is visible', async () => {
@@ -190,6 +271,112 @@ test('packaged TV script owns D-pad focus and transport while the injected menu 
   assert.equal(app.settings.clicks, 1);
   assert.equal(app.actions().length, 0);
   assert.equal(app.document.activeElement.getAttribute('data-tv-settings-tab'), 'quality');
+});
+
+test('Sources avancées opens the real hidden-control settings panel and owns its D-pad', async () => {
+  const app = await harness();
+  app.settings.opacity = '0'; // The player control bar can be invisible on TV.
+  app.press('0', 'Digit0');
+  await new Promise(resolve => setImmediate(resolve));
+  app.press('ArrowDown');
+  app.press('Enter');
+  await new Promise(resolve => setImmediate(resolve));
+
+  const panel = app.document.body.querySelectorAll('*').find(item => item.className === 'settings-menu');
+  assert.ok(panel, 'the player-owned settings panel was mounted');
+  assert.equal(app.settings.clicks, 1);
+  assert.equal(app.actions().length, 0);
+  assert.equal(app.document.activeElement.getAttribute('data-tv-settings-tab'), 'quality');
+
+  const before = app.video.currentTime;
+  assert.equal(app.press('ArrowDown').prevented, true);
+  assert.equal(app.document.activeElement.textContent, 'Qualité auto');
+  assert.equal(app.press('ArrowUp').prevented, true);
+  assert.equal(app.document.activeElement.getAttribute('data-tv-settings-tab'), 'quality');
+  assert.equal(app.press('ArrowRight').prevented, true);
+  assert.equal(app.document.activeElement.getAttribute('data-tv-settings-tab'), 'format');
+  app.press('Enter');
+  assert.equal(app.document.activeElement.clicks, 1);
+  assert.equal(app.video.currentTime, before);
+  app.playPause.focus(); // Remote React effect may still try to reclaim focus.
+  assert.equal(app.document.activeElement.getAttribute('data-tv-settings-tab'), 'format');
+
+  const back = { type: 'movix-tv-back', cancelable: true, preventDefault() { this.prevented = true; } };
+  app.window.dispatchEvent(back);
+  assert.equal(back.prevented, true);
+  assert.equal(app.document.body.querySelectorAll('*').includes(panel), false);
+});
+
+test('manual Sources avancées reveals an already-open automatic scan without toggling it closed', async () => {
+  const app = await harness();
+  app.settings.click();
+  app.document.documentElement.classList.add('movix-tv-auto-source-selection');
+  app.press('0', 'Digit0');
+  await new Promise(resolve => setImmediate(resolve));
+  app.press('ArrowDown');
+  app.press('Enter');
+  await new Promise(resolve => setImmediate(resolve));
+  assert.equal(app.settings.clicks, 1);
+  assert.equal(app.document.documentElement.classList.contains('movix-tv-auto-source-selection'), false);
+  assert.equal(app.document.activeElement.getAttribute('data-tv-settings-tab'), 'quality');
+});
+
+test('settings D-pad reaches quality scan, Nexus group and its real source button', async () => {
+  const app = await harness(true, [
+    { provider: 'nexus', label: 'Nexus VOSTFR', quality: 1080 },
+    { provider: 'bravo', label: 'Bravo MULTI', quality: 720 },
+  ]);
+  const selected = [];
+  app.window.addEventListener('sourceChange', event => selected.push(event.detail.url));
+  app.press('0', 'Digit0');
+  await new Promise(resolve => setImmediate(resolve));
+  app.press('ArrowDown');
+  app.press('Enter');
+  await new Promise(resolve => setImmediate(resolve));
+
+  assert.equal(app.document.activeElement.getAttribute('data-tv-settings-tab'), 'quality');
+  for (const label of ['Qualité auto', 'Vérification de la qualité', 'nexus', 'Nexus VOSTFR 1080p']) {
+    assert.equal(app.press('ArrowDown').prevented, true);
+    assert.equal(app.document.activeElement.textContent, label);
+  }
+  assert.ok(app.document.activeElement.scrollRequests > 0);
+  app.press('Enter');
+  assert.deepEqual(selected, ['Nexus VOSTFR']);
+});
+
+test('Épisodes opens the real list and Up Down Enter stay inside it', async () => {
+  const app = await harness(true, [], { episodes: true });
+  app.press('0', 'Digit0');
+  await new Promise(resolve => setImmediate(resolve));
+  assert.equal(app.actions().length, 4);
+  app.press('ArrowDown');
+  app.press('Enter');
+  await new Promise(resolve => setImmediate(resolve));
+  assert.equal(app.episodesTrigger.clicks, 1);
+  assert.equal(app.actions().length, 0);
+  assert.equal(app.document.activeElement.textContent, 'Épisode 1');
+  const before = app.video.currentTime;
+  app.press('ArrowDown');
+  assert.equal(app.document.activeElement.textContent, 'Épisode 2');
+  app.press('ArrowUp');
+  assert.equal(app.document.activeElement.textContent, 'Épisode 1');
+  assert.equal(app.video.currentTime, before);
+  app.press('Enter');
+  assert.deepEqual(app.episodeClicks, [1]);
+});
+
+test('Back closes Épisodes before transport or SPA navigation', async () => {
+  const app = await harness(true, [], { episodes: true });
+  app.press('0', 'Digit0');
+  await new Promise(resolve => setImmediate(resolve));
+  app.press('ArrowDown');
+  app.press('Enter');
+  await new Promise(resolve => setImmediate(resolve));
+  const back = { type: 'movix-tv-back', cancelable: true, preventDefault() { this.prevented = true; } };
+  app.window.dispatchEvent(back);
+  assert.equal(back.prevented, true);
+  assert.deepEqual(app.episodeClicks, []);
+  assert.equal(app.document.body.querySelectorAll('div').some(item => item.className.includes('z-[11000]')), false);
 });
 
 test('0 and Back close the TV menu and non-TV never installs this listener', async () => {
