@@ -14,6 +14,7 @@ on:
       - agent/google-tv-launcher-carousel-focus-v4
       - agent/google-tv-home-focus-platform-v5
       - agent/google-tv-nav-hardening-v6
+      - agent/google-tv-header-numeric-shortcuts-v7
     paths:
       - 'app/**'
       - 'src/**'
