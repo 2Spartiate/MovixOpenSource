@@ -18,7 +18,8 @@ test('TV WebView injection owns player transport and fullscreen independently of
   assert.match(runtime, /arrow === 'ArrowRight'[\s\S]{0,160}seek\(video, 10\)/);
   assert.match(runtime, /arrow === 'ArrowUp'[\s\S]{0,180}enterFullscreen\(video, root\)/);
   assert.match(runtime, /arrow === 'ArrowDown'[\s\S]{0,180}exitFullscreen\(video, root\)/);
-  assert.match(runtime, /\^\[1-9\]\$[\s\S]{0,180}consume\(event\)/);
+  assert.match(runtime, /return \/\^\[1-9\]\$\/\.test\(key\)/);
+  assert.match(runtime, /if \(isNumericOneToNine\(event\)\) \{[\s\S]{0,120}consume\(event\)[\s\S]{0,80}return true/);
   assert.match(runtime, /window\.addEventListener\('movix-tv-back', handleTvBack\)/);
 });
 
