@@ -94,7 +94,8 @@ test('live WebView TV override owns a ten-second hero cycle on every TV category
   assert.match(autoplay, /window\.__MOVIX_TV_HERO_AUTOPLAY/);
   assert.match(autoplay, /const root = getTvHeroRoot\(\)/);
   assert.match(autoplay, /lucide-pause/);
-  assert.match(autoplay, /button\[aria-current="true"\]/);
+  assert.match(autoplay, /const getDots = \(\) => getTvHeroDots\(root\)/);
+  assert.match(source, /button\[aria-current="true"\]/);
   assert.match(autoplay, /schedule\(10000\)/);
   assert.doesNotMatch(autoplay, /pathname === '\/'|pathname !== '\/'/);
 });
