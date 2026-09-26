@@ -243,3 +243,10 @@ test('Account shortcut turns the visible profile panel into its own scroll conta
   assert.match(runtime, /overscroll-behavior', 'contain'/);
   assert.match(runtime, /return panel/);
 });
+
+test('shortcut menu vertical focus never falls through to window scrolling', () => {
+  const runtime = buildTvDpadRuntime('(function () { return null; })', '/* dom discovery */');
+  assert.match(runtime, /const shortcutScope = element\.closest\('\[data-tv-shortcut-scope\]'\)/);
+  assert.match(runtime, /if \(shortcutScope instanceof HTMLElement && scroller === shortcutScope\) \{\s*return true/);
+  assert.match(runtime, /if \(shortcutScope instanceof HTMLElement\) return true;[\s\S]{0,220}window\.scrollTo/);
+});
