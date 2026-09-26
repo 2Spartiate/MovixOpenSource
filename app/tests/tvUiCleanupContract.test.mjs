@@ -174,15 +174,34 @@ test('TV Home promotes the recent-series row before its lazy title exists withou
   assert.doesNotMatch(withoutSafeHeadStyleInstall, /insertBefore|appendChild/);
 });
 
-test('TV header exposes red 1 2 3 shortcut badges without touching handheld markup', async () => {
+test('TV header exposes subtle left-aligned neon 1 2 3 shortcut rings without touching handheld markup', async () => {
   const overrides = await text('src/injection/app-site-overrides.ts');
 
   assert.match(overrides, /const installTvShortcutBadgeStyle = \(\) =>/);
   assert.match(overrides, /movix-tv-shortcut-badges/);
   assert.match(overrides, /data-tv-shortcut-badge/);
-  assert.match(overrides, /background:rgba\(220,38,38,\.96\)/);
+  assert.match(overrides, /left:-23px/);
+  assert.match(overrides, /top:50%/);
+  assert.match(overrides, /background:transparent/);
+  assert.match(overrides, /border:1px solid rgba\(248,113,113,\.88\)/);
+  assert.match(overrides, /box-shadow:0 0 5px rgba\(239,68,68,\.52\)/);
+  assert.match(overrides, /color:rgba\(248,113,113,\.96\)/);
+  assert.match(overrides, /opacity:\.82/);
   assert.match(overrides, /markTvShortcutBadge\(search, '1'\)/);
   assert.match(overrides, /markTvShortcutBadge\(account, '2'\)/);
   assert.match(overrides, /markTvShortcutBadge\(explore, '3'\)/);
   assert.match(overrides, /if \(window\.MOVIX_TV !== true\) return/);
+});
+
+test('TV hero focus policy applies to category routes as well as Home', async () => {
+  const overrides = await text('src/injection/app-site-overrides.ts');
+  const start = overrides.indexOf('const markTvHeroFocusPolicy = () =>');
+  const end = overrides.indexOf('const installTvShortcutBadgeStyle = () =>', start);
+  const policy = overrides.slice(start, end);
+
+  assert.ok(start >= 0 && end > start);
+  assert.match(policy, /const root = getTvHeroRoot\(\)/);
+  assert.match(policy, /data-tv-hero-user-inert/);
+  assert.match(policy, /pointer-events', 'none', 'important'/);
+  assert.doesNotMatch(policy, /window\.location\.pathname/);
 });
