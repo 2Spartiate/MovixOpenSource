@@ -21,6 +21,7 @@ on:
       - agent/google-tv-detail-exit-polish-v11
       - agent/google-tv-playback-ux-v12
       - agent/google-tv-playback-ux-v13
+      - agent/google-tv-playback-ux-v14
     paths:
       - 'app/**'
       - 'src/**'
@@ -94,6 +95,7 @@ jobs:
             tests/tvCarouselContract.test.mjs \
             tests/tvFocusRestoration.test.mjs \
             tests/tvUiCleanupContract.test.mjs \
+            tests/vipClientStatusContract.test.mjs \
             tests/androidArtifactCleanupContract.test.mjs
           npx tsc --noEmit
 

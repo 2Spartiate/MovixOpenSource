@@ -1,182 +1,53 @@
 /**
- * vipService.ts - Service centralisé de vérification VIP côté frontend
- * 
- * Au lieu de simplement lire localStorage('is_vip'), ce service :
- * 1. Vérifie périodiquement avec le serveur que la clé est toujours valide dans MySQL
- * 2. Révoque automatiquement le VIP si la clé a expiré ou a été désactivée
- * 3. Fournit un header `x-access-key` pour toutes les requêtes API
+ * Client-side VIP state helpers.
+ *
+ * The client owns its local UI state and does not periodically revalidate or
+ * revoke it from /api/check-vip. Server-protected endpoints remain authoritative
+ * because requests only carry x-access-key when a real access_code exists.
  */
 
-const MAIN_API = import.meta.env.VITE_MAIN_API;
-
-// Développement local uniquement : permet de tester les écrans/chemins VIP
-// sans transformer ce statut en droit serveur. Les headers x-access-key restent
-// inchangés et les endpoints protégés continuent de valider leur propre clé.
-const DEV_FORCE_VIP_UI =
-  import.meta.env.DEV && import.meta.env.VITE_FORCE_VIP_UI === 'true';
-
-// Intervalle de vérification : toutes les 10 minutes
-const VIP_CHECK_INTERVAL = 10 * 60 * 1000;
-
-// Cache local pour éviter de spammer le serveur
-let lastCheckTime = 0;
-let lastCheckResult: boolean | null = null;
-let checkInProgress: Promise<boolean> | null = null;
-
 /**
- * Récupère la clé d'accès stockée dans localStorage
+ * Récupère la clé d'accès stockée dans localStorage.
  */
 export function getAccessKey(): string | null {
   return localStorage.getItem('access_code') || null;
 }
 
 /**
- * Vérifie côté serveur si la clé est toujours valide.
- * Cache le résultat pendant 10 minutes.
- * 
- * @param force - Forcer la vérification même si le cache est encore valide
- * @returns true si VIP valide, false sinon
+ * Retourne l'état VIP local sans requête réseau ni révocation automatique.
+ *
+ * Conservé sous forme async pour compatibilité avec les anciens appelants qui
+ * attendaient checkVipStatus().
  */
-export async function checkVipStatus(force = false): Promise<boolean> {
-  if (DEV_FORCE_VIP_UI) {
-    return true;
-  }
-
-  const accessKey = getAccessKey();
-
-  // Pas de clé stockée → pas VIP
-  if (!accessKey) {
-    revokeVipStatus();
-    return false;
-  }
-
-  // Vérifier le cache (sauf si force)
-  const now = Date.now();
-  if (!force && lastCheckResult !== null && (now - lastCheckTime < VIP_CHECK_INTERVAL)) {
-    return lastCheckResult;
-  }
-
-  // Éviter les vérifications simultanées
-  if (checkInProgress) {
-    return checkInProgress;
-  }
-
-  checkInProgress = _performCheck(accessKey);
-  try {
-    const result = await checkInProgress;
-    return result;
-  } finally {
-    checkInProgress = null;
-  }
+export async function checkVipStatus(_force = false): Promise<boolean> {
+  return localStorage.getItem('is_vip') === 'true';
 }
 
 /**
- * Effectue la vérification HTTP vers /api/check-vip
- */
-async function _performCheck(accessKey: string): Promise<boolean> {
-  try {
-    const response = await fetch(`${MAIN_API}/api/check-vip`, {
-      method: 'GET',
-      headers: {
-        'x-access-key': accessKey,
-      },
-    });
-
-    if (!response.ok) {
-      // Erreur serveur — ne pas révoquer immédiatement (tolérance aux pannes)
-      console.warn('[VIP] Server error during check, keeping current status');
-      return localStorage.getItem('is_vip') === 'true';
-    }
-
-    const data = await response.json();
-
-    const previousCheckResult = lastCheckResult;
-    lastCheckTime = Date.now();
-    lastCheckResult = data.vip === true;
-
-    if (data.vip) {
-      let changed = localStorage.getItem('is_vip') !== 'true';
-
-      // Mettre à jour les données d'expiration si le serveur les renvoie
-      if (data.expiresAt) {
-        // Store as ISO string for consistent Date parsing from localStorage
-        const d = new Date(typeof data.expiresAt === 'number' ? data.expiresAt : data.expiresAt);
-        const nextExpires = isNaN(d.getTime()) ? String(data.expiresAt) : d.toISOString();
-        if (localStorage.getItem('access_code_expires') !== nextExpires) {
-          localStorage.setItem('access_code_expires', nextExpires);
-          changed = true;
-        }
-      }
-      if (localStorage.getItem('is_vip') !== 'true') {
-        localStorage.setItem('is_vip', 'true');
-      }
-
-      // Une connexion avec un code VIP pose dÃ©jÃ  `is_vip` avant cette
-      // vÃ©rification. Il faut aussi notifier lorsque la vÃ©rification devient
-      // positive pour la premiÃ¨re fois, mÃªme si la valeur locale n'a pas changÃ©.
-      if (changed || previousCheckResult !== true) {
-        window.dispatchEvent(new Event('storage'));
-        window.dispatchEvent(new CustomEvent('vipStatusChanged', { detail: { vip: true } }));
-      }
-
-      return true;
-    } else {
-      // Clé invalide/expirée/désactivée → révoquer le VIP
-      console.warn('[VIP] Server rejected key:', data.reason || 'unknown');
-      revokeVipStatus();
-      return false;
-    }
-  } catch (error) {
-    // Erreur réseau — ne pas révoquer (tolérance aux pannes)
-    console.warn('[VIP] Network error during check:', error);
-    return localStorage.getItem('is_vip') === 'true';
-  }
-}
-
-/**
- * Révoque le statut VIP local
+ * Révocation explicite uniquement.
+ * Cette fonction reste disponible pour les flows de logout / suppression locale,
+ * mais n'est plus appelée par une vérification serveur périodique.
  */
 export function revokeVipStatus(): void {
   localStorage.removeItem('is_vip');
   localStorage.removeItem('access_code');
   localStorage.removeItem('access_code_expires');
-  lastCheckResult = false;
-  lastCheckTime = Date.now();
 
-  // Notifier les autres onglets et composants
   window.dispatchEvent(new Event('storage'));
   window.dispatchEvent(new CustomEvent('vipStatusChanged', { detail: { vip: false } }));
 }
 
 /**
- * Vérifie si l'utilisateur est VIP (lecture locale + vérification serveur en arrière-plan).
- * 
- * Pour les vérifications synchrones rapides (UI rendering), vérifie localStorage.
- * Lance une vérification serveur en arrière-plan si le cache est expiré.
- * 
- * @returns true si le localStorage indique VIP (sera corrigé en arrière-plan si invalide)
+ * État VIP utilisé par le rendu client.
+ * Aucun appel réseau n'est déclenché ici.
  */
 export function isUserVip(): boolean {
-  if (DEV_FORCE_VIP_UI) {
-    return true;
-  }
-
-  const localVip = localStorage.getItem('is_vip') === 'true';
-
-  if (localVip) {
-    // Lancer une vérification serveur en arrière-plan (non bloquante)
-    const now = Date.now();
-    if (now - lastCheckTime > VIP_CHECK_INTERVAL) {
-      checkVipStatus().catch(() => { /* ignore */ });
-    }
-  }
-
-  return localVip;
+  return localStorage.getItem('is_vip') === 'true';
 }
 
 /**
- * Retourne les headers à inclure dans les requêtes API pour la vérification VIP côté serveur.
- * À utiliser dans tous les appels fetch/axios vers le backend.
+ * Retourne les headers pour les endpoints qui valident eux-mêmes une clé.
+ * Aucune clé n'est créée ni modifiée côté client.
  */
 export function getVipHeaders(): Record<string, string> {
   const accessKey = getAccessKey();
@@ -187,44 +58,13 @@ export function getVipHeaders(): Record<string, string> {
 }
 
 /**
- * Démarre la vérification automatique périodique du VIP.
- * À appeler au démarrage de l'application (dans App.tsx ou main.tsx).
+ * Compatibilité API : il n'y a désormais plus de vérification périodique côté
+ * client, donc le démarrage/arrêt sont volontairement des no-op.
  */
-let intervalId: ReturnType<typeof setInterval> | null = null;
-
 export function startVipVerification(): void {
-  if (DEV_FORCE_VIP_UI) {
-    if (intervalId) {
-      clearInterval(intervalId);
-      intervalId = null;
-    }
-    return;
-  }
-
-  // Vérification initiale
-  if (getAccessKey()) {
-    checkVipStatus(true).catch(() => { /* ignore */ });
-  }
-
-  // Arrêter l'intervalle précédent si existant
-  if (intervalId) {
-    clearInterval(intervalId);
-  }
-
-  // Vérification périodique
-  intervalId = setInterval(() => {
-    if (getAccessKey()) {
-      checkVipStatus().catch(() => { /* ignore */ });
-    }
-  }, VIP_CHECK_INTERVAL);
+  // Intentionally disabled: local client state is not server-revalidated.
 }
 
-/**
- * Arrête la vérification automatique périodique.
- */
 export function stopVipVerification(): void {
-  if (intervalId) {
-    clearInterval(intervalId);
-    intervalId = null;
-  }
+  // Intentionally disabled: no interval is created.
 }
