@@ -52,6 +52,8 @@ export default function BrowserScreen() {
   const [currentUrl, setCurrentUrl] = useState('');
   const [dnsEnabled, setDnsEnabled] = useState(false);
   const [settingsVisible, setSettingsVisible] = useState(false);
+  const [exitConfirmVisible, setExitConfirmVisible] = useState(false);
+  const [exitChoice, setExitChoice] = useState<'no' | 'yes'>('no');
   const [isPictureInPictureActive, setIsPictureInPictureActive] = useState(false);
   const [webViewGeneration, setWebViewGeneration] = useState(0);
   const autoRecoveryAttemptedRef = useRef(false);
@@ -65,12 +67,34 @@ export default function BrowserScreen() {
     });
   }, []);
 
+  const isTvHome = useMemo(() => {
+    if (!isTV) return false;
+    const candidate = currentUrl || activeUrl;
+    if (!candidate) return false;
+    try {
+      const pathname = new URL(candidate).pathname.replace(/\/+$/, '');
+      return pathname === '';
+    } catch {
+      return false;
+    }
+  }, [activeUrl, currentUrl, isTV]);
+
   useEffect(() => {
     if (Platform.OS !== 'android') return;
 
     const handler = BackHandler.addEventListener('hardwareBackPress', () => {
       if (settingsVisible) {
         setSettingsVisible(false);
+        return true;
+      }
+      if (exitConfirmVisible) {
+        setExitConfirmVisible(false);
+        setExitChoice('no');
+        return true;
+      }
+      if (isTV && isTvHome) {
+        setExitChoice('no');
+        setExitConfirmVisible(true);
         return true;
       }
       if (canGoBack) {
@@ -92,7 +116,7 @@ export default function BrowserScreen() {
     });
 
     return () => handler.remove();
-  }, [canGoBack, isTV, settingsVisible]);
+  }, [canGoBack, exitConfirmVisible, isTV, isTvHome, settingsVisible]);
 
   useEffect(() => {
     const subscription = AppState.addEventListener('change', nextState => {
@@ -237,6 +261,60 @@ export default function BrowserScreen() {
       )}
 
       <Modal
+        visible={!isPictureInPictureActive && isTV && exitConfirmVisible}
+        transparent
+        animationType="fade"
+        onRequestClose={() => {
+          setExitConfirmVisible(false);
+          setExitChoice('no');
+        }}>
+        <View style={styles.exitOverlay}>
+          <View style={styles.exitDialog}>
+            <Text style={styles.exitTitle}>Quitter l'application ?</Text>
+            <Text style={styles.exitMessage}>
+              Êtes-vous sûr de vouloir quitter l'application ?
+            </Text>
+            <View style={styles.exitActions}>
+              <TouchableOpacity
+                accessibilityRole="button"
+                accessibilityLabel="Ne pas quitter"
+                focusable
+                hasTVPreferredFocus={isTV}
+                onFocus={() => setExitChoice('no')}
+                onPress={() => {
+                  setExitConfirmVisible(false);
+                  setExitChoice('no');
+                }}
+                style={[
+                  styles.exitButton,
+                  exitChoice === 'no' && styles.exitButtonFocused,
+                ]}>
+                <Text style={[
+                  styles.exitButtonText,
+                  exitChoice === 'no' && styles.exitButtonTextFocused,
+                ]}>Non</Text>
+              </TouchableOpacity>
+              <TouchableOpacity
+                accessibilityRole="button"
+                accessibilityLabel="Quitter l'application"
+                focusable
+                onFocus={() => setExitChoice('yes')}
+                onPress={() => BackHandler.exitApp()}
+                style={[
+                  styles.exitButton,
+                  exitChoice === 'yes' && styles.exitButtonFocused,
+                ]}>
+                <Text style={[
+                  styles.exitButtonText,
+                  exitChoice === 'yes' && styles.exitButtonTextFocused,
+                ]}>Oui</Text>
+              </TouchableOpacity>
+            </View>
+          </View>
+        </View>
+      </Modal>
+
+      <Modal
         visible={!isPictureInPictureActive && settingsVisible}
         animationType="slide"
         onRequestClose={closeSettings}>
@@ -284,6 +362,66 @@ const styles = StyleSheet.create({
   },
   webViewContainer: {
     flex: 1,
+  },
+  exitOverlay: {
+    flex: 1,
+    alignItems: 'center',
+    justifyContent: 'center',
+    backgroundColor: 'rgba(0, 0, 0, 0.72)',
+    paddingHorizontal: 32,
+  },
+  exitDialog: {
+    width: '100%',
+    maxWidth: 460,
+    paddingHorizontal: 28,
+    paddingVertical: 26,
+    borderRadius: 18,
+    borderWidth: 1,
+    borderColor: 'rgba(239, 68, 68, 0.58)',
+    backgroundColor: '#111111',
+  },
+  exitTitle: {
+    color: '#ffffff',
+    fontSize: 24,
+    fontWeight: '700',
+    textAlign: 'center',
+  },
+  exitMessage: {
+    marginTop: 10,
+    color: '#d1d5db',
+    fontSize: 17,
+    lineHeight: 24,
+    textAlign: 'center',
+  },
+  exitActions: {
+    marginTop: 24,
+    flexDirection: 'row',
+    justifyContent: 'center',
+    gap: 16,
+  },
+  exitButton: {
+    minWidth: 120,
+    paddingHorizontal: 22,
+    paddingVertical: 13,
+    borderRadius: 12,
+    borderWidth: 1,
+    borderColor: '#4b5563',
+    backgroundColor: '#1f2937',
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  exitButtonFocused: {
+    borderColor: '#ef4444',
+    backgroundColor: 'rgba(127, 29, 29, 0.42)',
+    transform: [{ scale: 1.05 }],
+  },
+  exitButtonText: {
+    color: '#e5e7eb',
+    fontSize: 17,
+    fontWeight: '600',
+  },
+  exitButtonTextFocused: {
+    color: '#ffffff',
   },
   modalContainer: {
     flex: 1,
