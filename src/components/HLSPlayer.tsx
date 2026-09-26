@@ -41,6 +41,15 @@ import type {
 import axios from 'axios';
 import type pakoType from 'pako';
 
+type TvProbeMetadata = {
+  maxHeight: number | null;
+  audioLanguages: string[];
+  subtitleLanguages: string[];
+};
+
+const tvPlaybackProbeCache = new Map<string, TvProbeMetadata>();
+const tvPlaybackAutoWinnerByContent = new Map<string, string>();
+
 let HlsLib: typeof HlsType | null = null;
 const loadHls = async (): Promise<typeof HlsType> => {
   if (HlsLib) return HlsLib;
@@ -67,6 +76,17 @@ import {
 } from '../utils/playerControlInteraction';
 import { isLowLatencyEnabled } from '../utils/lowLatencyPref';
 import { isMovixTvRuntime } from '../utils/tvRuntime';
+import {
+  chooseTvPlaybackCandidate,
+  isFrenchLanguage,
+  languageMatchesOriginal,
+  looksLikeBravoMulti,
+  looksLikeNexusVostfr,
+  readTvPlaybackProfile,
+  writeTvPlaybackProfile,
+  type TvPlaybackCandidate,
+  type TvPlaybackProfile,
+} from '../utils/tvPlaybackPolicy';
 import {
   createHlsAutoFallbackGuard,
   type HlsAutoFallbackGuard,
@@ -970,6 +990,8 @@ interface HLSPlayerProps {
   selectedCoflixPlayerIndex?: number; // Optional index for Coflix player
   selectedOmegaPlayerIndex?: number; // Optional index for Omega player
   isAnime?: boolean; // Nouvelle prop pour distinguer les animes des séries normales
+  /** Langue originale TMDB (en, ja, ko...) pour le profil TV VO + FR. */
+  originalLanguage?: string;
 
   // New props for WatchPartyRoom integration
   videoRef?: React.RefObject<HTMLVideoElement>; // To pass video element ref to parent
@@ -1233,6 +1255,7 @@ const HLSPlayer = forwardRef<HLSPlayerRef, HLSPlayerProps>(({
   title,
   initialTime,
   isAnime = false,
+  originalLanguage = '',
   isWatchPartyGuest,
   episodes = [],
   seasons = [],
