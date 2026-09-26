@@ -535,6 +535,7 @@ export function buildAppSiteOverrides(): string {
       'z-index:2147483000;',
       'pointer-events:none;',
       '}',
+      '[data-tv-shortcut-badge="3"]::after{left:-15px;}',
     ].join('');
     document.head.appendChild(style);
   };
@@ -786,6 +787,43 @@ export function buildAppSiteOverrides(): string {
     }, true);
   };
 
+  const applyTvDetailExternalLinkPolicy = () => {
+    if (window.MOVIX_TV !== true) return;
+    if (!/^\/(?:movie|tv)\//.test(window.location.pathname)) return;
+
+    // TVmaze is useful provenance on the web, but on TV the whole source line
+    // only creates a dead-end external navigation target. Keep React ownership
+    // intact and hide the rendered line instead of detaching it.
+    document.querySelectorAll('a').forEach((link) => {
+      if (!(link instanceof HTMLAnchorElement)) return;
+      const href = String(link.getAttribute('href') || '');
+      const label = normalise(link.textContent);
+      if (!href.includes('tvmaze.com') && label !== 'tvmaze') return;
+
+      const sourceLine = link.closest('p');
+      if (sourceLine instanceof HTMLElement) {
+        hideManagedNode(sourceLine);
+      } else {
+        hideManagedNode(link);
+      }
+    });
+
+    // Preserve the visual TMDB attribution (red + underline) while removing
+    // the external web action and every focus path on TV.
+    document.querySelectorAll('a[href*="themoviedb.org"]').forEach((link) => {
+      if (!(link instanceof HTMLElement)) return;
+      link.removeAttribute('href');
+      link.removeAttribute('target');
+      link.removeAttribute('rel');
+      link.setAttribute('tabindex', '-1');
+      link.setAttribute('aria-disabled', 'true');
+      link.setAttribute('data-tv-ignore-focus', '');
+      link.setAttribute('data-tv-detail-external-inert', '');
+      link.style.setProperty('pointer-events', 'none', 'important');
+      link.style.setProperty('cursor', 'default', 'important');
+    });
+  };
+
   const removeFooter = () => {
     if (window.MOVIX_TV !== true) return;
     document.querySelectorAll('footer').forEach((footer) => hideManagedNode(footer));
@@ -922,6 +960,7 @@ export function buildAppSiteOverrides(): string {
     lockTvHeaderPointerNavigation();
     ensureTvHomeLayout();
     installTvUserClickGuards();
+    applyTvDetailExternalLinkPolicy();
     removeFooter();
     removeCarouselArrows();
     removeFavoriteControls();
