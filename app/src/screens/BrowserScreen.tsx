@@ -8,6 +8,7 @@ import {
   Platform,
   Modal,
   TouchableOpacity,
+  Pressable,
   ActivityIndicator,
   AppState,
   PlatformColor,
@@ -55,10 +56,10 @@ export default function BrowserScreen() {
   const [dnsEnabled, setDnsEnabled] = useState(false);
   const [settingsVisible, setSettingsVisible] = useState(false);
   const [exitConfirmVisible, setExitConfirmVisible] = useState(false);
-  const [exitChoice, setExitChoice] = useState<'no' | 'yes'>('no');
+  const [exitChoice, setExitChoice] = useState<'no' | 'yes' | null>('no');
   const [exitPreferredFocus, setExitPreferredFocus] = useState(false);
-  const exitNoButtonRef = useRef<React.ElementRef<typeof TouchableOpacity>>(null);
-  const exitYesButtonRef = useRef<React.ElementRef<typeof TouchableOpacity>>(null);
+  const exitNoButtonRef = useRef<React.ElementRef<typeof Pressable>>(null);
+  const exitYesButtonRef = useRef<React.ElementRef<typeof Pressable>>(null);
   const [isPictureInPictureActive, setIsPictureInPictureActive] = useState(false);
   const [webViewGeneration, setWebViewGeneration] = useState(0);
   const autoRecoveryAttemptedRef = useRef(false);
@@ -294,7 +295,7 @@ export default function BrowserScreen() {
               Êtes-vous sûr de vouloir quitter l'application ?
             </Text>
             <View style={styles.exitActions}>
-              <TouchableOpacity
+              <Pressable
                 ref={exitNoButtonRef}
                 accessibilityRole="button"
                 accessibilityLabel="Ne pas quitter"
@@ -305,6 +306,9 @@ export default function BrowserScreen() {
                 onFocus={() => {
                   setExitChoice('no');
                   setExitPreferredFocus(false);
+                }}
+                onBlur={() => {
+                  setExitChoice(current => current === 'no' ? null : current);
                 }}
                 onPress={() => {
                   setExitConfirmVisible(false);
@@ -319,8 +323,8 @@ export default function BrowserScreen() {
                   styles.exitButtonText,
                   exitChoice === 'no' && styles.exitButtonTextFocused,
                 ]}>NON</Text>
-              </TouchableOpacity>
-              <TouchableOpacity
+              </Pressable>
+              <Pressable
                 ref={exitYesButtonRef}
                 accessibilityRole="button"
                 accessibilityLabel="Quitter l'application"
@@ -331,6 +335,9 @@ export default function BrowserScreen() {
                   setExitChoice('yes');
                   setExitPreferredFocus(false);
                 }}
+                onBlur={() => {
+                  setExitChoice(current => current === 'yes' ? null : current);
+                }}
                 onPress={() => BackHandler.exitApp()}
                 style={[
                   styles.exitButton,
@@ -340,7 +347,7 @@ export default function BrowserScreen() {
                   styles.exitButtonText,
                   exitChoice === 'yes' && styles.exitButtonTextFocused,
                 ]}>OUI</Text>
-              </TouchableOpacity>
+              </Pressable>
             </View>
           </View>
         </View>
