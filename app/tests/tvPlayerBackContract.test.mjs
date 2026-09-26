@@ -88,11 +88,15 @@ test('Android TV Home Back opens BlueNight exit confirmation with NON preferred'
   assert.match(browser, /visible=\{!isPictureInPictureActive && isTV && exitConfirmVisible\}/);
   assert.match(browser, /Quitter Movix \?/);
   assert.match(browser, /setExitPreferredFocus\(true\)[\s\S]{0,120}setExitConfirmVisible\(true\)/);
+  assert.match(browser, /<Pressable[\s\S]{0,500}accessibilityLabel="Ne pas quitter"/);
+  assert.match(browser, /<Pressable[\s\S]{0,500}accessibilityLabel="Quitter l'application"/);
   assert.match(browser, /hasTVPreferredFocus=\{isTV && exitPreferredFocus\}/);
   assert.match(browser, /nextFocusRight=\{findNodeHandle\(exitYesButtonRef\.current\) \?\? undefined\}/);
   assert.match(browser, /nextFocusLeft=\{findNodeHandle\(exitNoButtonRef\.current\) \?\? undefined\}/);
   assert.match(browser, /onFocus=\{\(\) => \{[\s\S]{0,120}setExitChoice\('no'\)[\s\S]{0,120}setExitPreferredFocus\(false\)/);
   assert.match(browser, /onFocus=\{\(\) => \{[\s\S]{0,120}setExitChoice\('yes'\)[\s\S]{0,120}setExitPreferredFocus\(false\)/);
+  assert.match(browser, /onBlur=\{\(\) => \{[\s\S]{0,120}current === 'no' \? null : current/);
+  assert.match(browser, /onBlur=\{\(\) => \{[\s\S]{0,120}current === 'yes' \? null : current/);
   assert.match(browser, />NON<\/Text>/);
   assert.match(browser, />OUI<\/Text>/);
   assert.match(browser, /onPress=\{\(\) => BackHandler\.exitApp\(\)\}/);
