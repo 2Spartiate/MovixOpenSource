@@ -1586,6 +1586,13 @@ const HLSPlayer = forwardRef<HLSPlayerRef, HLSPlayerProps>(({
   const failedLevelsRef = useRef(new Set<number>());
   const fallbackLevelRef = useRef<number | null>(null);
   const [sourceStreamQualities, setSourceStreamQualities] = useState<Record<string, string>>(() => getInitialSourceQualityState());
+  const [tvPlaybackProfile, setTvPlaybackProfile] = useState<TvPlaybackProfile>(() => readTvPlaybackProfile());
+  const [tvPlaybackScanStatus, setTvPlaybackScanStatus] = useState<'idle' | 'running' | 'ready' | 'unavailable'>('idle');
+  const [tvPlaybackCandidate, setTvPlaybackCandidate] = useState<TvPlaybackCandidate | null>(null);
+  const [showTvQuickMenu, setShowTvQuickMenu] = useState(false);
+  const tvQuickMenuRef = useRef<HTMLDivElement>(null);
+  const tvQuickMenuFirstActionRef = useRef<HTMLButtonElement>(null);
+  const tvProfileAppliedKeyRef = useRef<string | null>(null);
   const [copiedSourceUrl, setCopiedSourceUrl] = useState<string | null>(null);
   const copiedSourceTimeoutRef = useRef<NodeJS.Timeout | null>(null);
   const [subtitles, setSubtitles] = useState<TextTrack[]>([]);
@@ -1745,6 +1752,7 @@ const HLSPlayer = forwardRef<HLSPlayerRef, HLSPlayerProps>(({
   const settingsWasOpenRef = useRef(false);
   const tabsContainerRef = useRef<HTMLDivElement>(null);
   const sourceMenuRef = useRef<HTMLDivElement>(null);
+  const playPauseButtonRef = useRef<HTMLButtonElement>(null);
 
   const isSourceMenuTarget = useCallback((target: EventTarget | null) => {
     return target instanceof HTMLElement && !!target.closest('[data-source-menu]');
