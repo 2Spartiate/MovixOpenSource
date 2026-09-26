@@ -116,23 +116,27 @@ test('TV posters keep the real React Router links focusable and never use proxy 
 });
 
 
-test('TV hero exposes only Play as the primary D-pad entry and ignores info/dots', async () => {
+test('TV hero exposes only Play and makes async dots user-inert without breaking autoplay', async () => {
   const overrides = await text('src/injection/app-site-overrides.ts');
-  assert.match(overrides, /const markTvHeroFocusPolicy = \(\) =>/);
+  assert.match(overrides, /const getTvHeroRoot = \(\) =>/);
+  assert.match(overrides, /button\[aria-current="true"\]/);
+  assert.match(overrides, /const getTvHeroDots = \(root\) =>/);
   assert.match(overrides, /data-tv-primary-focus', 'hero-play'/);
-  assert.match(overrides, /data-tv-autofocus/);
-  assert.match(overrides, /lucide-info/);
-  assert.match(overrides, /data-tv-hero-dot/);
-  assert.match(overrides, /element\.setAttribute\('data-tv-ignore-focus', ''\)/);
+  assert.match(overrides, /data-tv-hero-user-inert/);
+  assert.match(overrides, /pointer-events', 'none', 'important'/);
+  assert.match(overrides, /event\.isTrusted !== true/);
+  assert.match(overrides, /const getDots = \(\) => getTvHeroDots\(root\)/);
 });
 
-test('header controls are removed from the TV focus graph whenever page is below top', async () => {
+test('header chrome is shortcut-addressable but accidental TV focus is rejected', async () => {
   const overrides = await text('src/injection/app-site-overrides.ts');
+  assert.match(overrides, /const markTvHeaderShortcutTargets = \(\) =>/);
+  assert.match(overrides, /data-tv-header-shortcut', 'search'/);
+  assert.match(overrides, /data-tv-header-shortcut', 'explore'/);
+  assert.match(overrides, /data-tv-header-shortcut', 'account'/);
   assert.match(overrides, /const syncTvHeaderFocusGate = \(\) =>/);
-  assert.match(overrides, /const gated = documentScrollTop > 8 \|\| heroMovedUnderHeader/);
-  assert.match(overrides, /data-tv-header-gated-focus/);
-  assert.match(overrides, /window\.addEventListener\('scroll', syncTvHeaderFocusGate/);
-  assert.match(overrides, /document\.activeElement\.closest\('header'\)/);
+  assert.match(overrides, /api\?\.headerNavigationEnabled !== true/);
+  assert.match(overrides, /api\.restoreContentFocus/);
 });
 
 
@@ -142,4 +146,23 @@ test('TV cleanup preserves hidden carousel arrows as callable left/right Embla c
   assert.match(overrides, /data-tv-carousel-arrow-direction', 'right'/);
   assert.match(overrides, /button\.setAttribute\('data-tv-carousel-arrow', ''\)/);
   assert.match(overrides, /hideManagedNode\(button\)/);
+});
+
+test('async TV DOM observer re-applies policy on hero state and React href restoration', async () => {
+  const overrides = await text('src/injection/app-site-overrides.ts');
+  assert.match(overrides, /attributes: true/);
+  assert.match(overrides, /attributeFilter: \['aria-current', 'href'\]/);
+  assert.match(overrides, /new MutationObserver\(scheduleApply\)/);
+});
+
+test('TV Home promotes the recent-series row before its lazy title exists without detaching React nodes', async () => {
+  const overrides = await text('src/injection/app-site-overrides.ts');
+  assert.match(overrides, /const ensureTvHomeLayout = \(\) =>/);
+  assert.match(overrides, /hasLegacyFeaturedSlot/);
+  assert.match(overrides, /homeSections\[4\] : homeSections\[2\]/);
+  assert.match(overrides, /data-tv-home-recent-shows/);
+  assert.match(overrides, /flex-direction', 'column'/);
+  assert.match(overrides, /recent\.style\.setProperty\('order'/);
+  assert.match(overrides, /notre suggestion/);
+  assert.doesNotMatch(overrides, /insertBefore|appendChild/);
 });
