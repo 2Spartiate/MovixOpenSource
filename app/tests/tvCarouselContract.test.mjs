@@ -83,14 +83,20 @@ test('TV hero keeps handheld timing intact but advances animated slides every te
   assert.match(source, /data-tv-hero-dot=\{isTvRuntime \? '' : undefined\}/);
 });
 
-test('live WebView TV override owns the ten-second hero cycle only under MOVIX_TV', async () => {
+test('live WebView TV override owns a ten-second hero cycle on every TV category route', async () => {
   const source = await text('src/injection/app-site-overrides.ts');
-  assert.match(source, /const installTvHeroAutoplay = \(\) =>/);
-  assert.match(source, /window\.MOVIX_TV !== true/);
-  assert.match(source, /window\.__MOVIX_TV_HERO_AUTOPLAY/);
-  assert.match(source, /lucide-pause/);
-  assert.match(source, /button\[aria-current="true"\]/);
-  assert.match(source, /schedule\(10000\)/);
+  const start = source.indexOf('const installTvHeroAutoplay = () =>');
+  const end = source.indexOf('const markTvRouteTransition = () =>', start);
+  const autoplay = source.slice(start, end);
+
+  assert.ok(start >= 0 && end > start);
+  assert.match(autoplay, /window\.MOVIX_TV !== true/);
+  assert.match(autoplay, /window\.__MOVIX_TV_HERO_AUTOPLAY/);
+  assert.match(autoplay, /const root = getTvHeroRoot\(\)/);
+  assert.match(autoplay, /lucide-pause/);
+  assert.match(autoplay, /button\[aria-current="true"\]/);
+  assert.match(autoplay, /schedule\(10000\)/);
+  assert.doesNotMatch(autoplay, /pathname === '\/'|pathname !== '\/'/);
 });
 
 
