@@ -20,6 +20,7 @@ on:
       - agent/google-tv-search-focus-polish-v10
       - agent/google-tv-detail-exit-polish-v11
       - agent/google-tv-playback-ux-v12
+      - agent/google-tv-playback-ux-v13
     paths:
       - 'app/**'
       - 'src/**'
