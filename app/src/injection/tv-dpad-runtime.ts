@@ -124,6 +124,9 @@ ${domDiscoveryRuntime}
     ArrowDown: 'down',
   };
 
+  api.headerNavigationEnabled = false;
+  api.headerShortcutKind = null;
+
   // Re-injection can happen during WebView/document lifecycle transitions.
   // Always detach the exact previous capture listener before installing one.
   if (typeof api.keydownHandler === 'function') {
@@ -390,11 +393,19 @@ ${domDiscoveryRuntime}
     return true;
   };
 
-  api.restoreLastFocus = () => {
-    if (!pageFocusIsEmpty() || !api.lastFocusKey) return false;
+  api.restoreContentFocus = () => {
+    if (!api.lastFocusKey) return false;
     const match = api.getTVFocusableElements()
-      .find(element => focusKeyFor(element) === api.lastFocusKey);
+      .find(element =>
+        !isHeaderElement(element) &&
+        focusKeyFor(element) === api.lastFocusKey
+      );
     return match ? focusWithoutJank(match) : false;
+  };
+
+  api.restoreLastFocus = () => {
+    if (!pageFocusIsEmpty()) return false;
+    return api.restoreContentFocus();
   };
 
   api.ensureInitialFocus = () => {
@@ -409,7 +420,8 @@ ${domDiscoveryRuntime}
 
     if (api.restoreLastFocus()) return true;
 
-    const elements = api.getTVFocusableElements();
+    const elements = api.getTVFocusableElements()
+      .filter(element => api.headerNavigationEnabled === true || !isHeaderElement(element));
     const primary = elements.find(element => element.hasAttribute('data-tv-primary-focus'));
     const contentCard = elements.find(element => element.hasAttribute('data-tv-card'));
 
@@ -445,7 +457,11 @@ ${domDiscoveryRuntime}
     if (!(current instanceof HTMLElement)) return false;
 
     const candidates = api.getTVFocusCandidates()
-      .filter(candidate => candidate.element !== current);
+      .filter(candidate => candidate.element !== current)
+      .filter(candidate =>
+        api.headerNavigationEnabled === true ||
+        !isHeaderElement(candidate.element)
+      );
     const currentRect = toRect(current);
     const horizontal = direction === 'left' || direction === 'right';
     const vertical = direction === 'up' || direction === 'down';
@@ -501,15 +517,11 @@ ${domDiscoveryRuntime}
       );
     }
 
-    // While the page is still scrolled away from its real top, header controls
-    // cannot steal vertical focus from content. If there is no content target
-    // above, one ↑ brings the page fully home; only the following ↑ may enter
-    // Search / Account.
+    // Header chrome is not part of ordinary D-pad navigation. From content,
+    // vertical movement remains within content; at the upper edge ↑ returns
+    // to the hero/top and then stops instead of falling into Search/Profile.
     if (!next && vertical && !isHeaderElement(current)) {
-      const contentCandidates = candidates.filter(
-        candidate => !isHeaderElement(candidate.element)
-      );
-      next = findNextFocusTarget(currentRect, contentCandidates, direction);
+      next = findNextFocusTarget(currentRect, candidates, direction);
 
       if (!next && direction === 'up' && !pageIsAtRealTop()) {
         const heroPlay = getHeroPlay();
@@ -540,12 +552,179 @@ ${domDiscoveryRuntime}
     return document.activeElement === next.element;
   };
 
+  const rememberCurrentContentFocus = () => {
+    const current = document.activeElement;
+    if (!(current instanceof HTMLElement) || isHeaderElement(current)) return;
+    const key = focusKeyFor(current);
+    if (key) api.lastFocusKey = key;
+  };
+
+  const findHeaderShortcutTarget = (kind) => {
+    const header = document.querySelector('header');
+    if (!(header instanceof HTMLElement)) return null;
+
+    const marked = header.querySelector('[data-tv-header-shortcut="' + kind + '"]');
+    if (marked instanceof HTMLElement) return marked;
+
+    if (kind === 'search') {
+      const search = Array.from(
+        header.querySelectorAll('input[type="search"], input[type="text"]')
+      ).find((element) => element instanceof HTMLInputElement && element.offsetParent !== null);
+      return search instanceof HTMLElement ? search : null;
+    }
+
+    if (kind === 'explore') {
+      const explore = Array.from(header.querySelectorAll('[data-explore-trigger]'))
+        .find((element) => element instanceof HTMLElement && element.offsetParent !== null);
+      return explore instanceof HTMLElement ? explore : null;
+    }
+
+    if (kind === 'account') {
+      const explicit = header.querySelector('[data-tv-primary-focus="account"]');
+      if (explicit instanceof HTMLElement) return explicit;
+
+      const avatar = Array.from(header.querySelectorAll('img')).find((image) => {
+        if (!(image instanceof HTMLImageElement)) return false;
+        const label = String(image.alt || '').toLowerCase();
+        return label.includes('profil') || label.includes('profile') || label.includes('account');
+      });
+      if (avatar instanceof HTMLElement) {
+        const owner = avatar.closest(
+          'button, [role="button"], [class*="cursor-pointer"]'
+        );
+        if (owner instanceof HTMLElement) return owner;
+      }
+    }
+
+    return null;
+  };
+
+  const focusFirstOpenedHeaderItem = (trigger) => {
+    requestAnimationFrame(() => requestAnimationFrame(() => {
+      if (api.headerNavigationEnabled !== true) return;
+
+      const candidates = api.getTVFocusableElements()
+        .filter((element) =>
+          isHeaderElement(element) &&
+          element !== trigger &&
+          !element.hasAttribute('data-tv-header-shortcut') &&
+          !element.hasAttribute('data-movix-brand-inert')
+        )
+        .filter((element) => {
+          const rect = element.getBoundingClientRect();
+          return rect.width > 0 && rect.height > 0 && rect.top >= 52;
+        })
+        .sort((a, b) => {
+          const ar = a.getBoundingClientRect();
+          const br = b.getBoundingClientRect();
+          return ar.top - br.top || ar.left - br.left;
+        });
+
+      if (candidates[0] instanceof HTMLElement) {
+        focusWithoutJank(candidates[0], false);
+      }
+    }));
+  };
+
+  const activateHeaderShortcut = (kind) => {
+    const target = findHeaderShortcutTarget(kind);
+    if (!(target instanceof HTMLElement)) return false;
+
+    rememberCurrentContentFocus();
+    api.headerNavigationEnabled = true;
+    api.headerShortcutKind = kind;
+
+    if (kind === 'search') {
+      try {
+        target.focus({ preventScroll: true });
+      } catch {
+        target.focus();
+      }
+      if (target instanceof HTMLInputElement) {
+        try { target.select(); } catch {}
+      }
+      return document.activeElement === target;
+    }
+
+    try { target.click(); } catch { return false; }
+    focusFirstOpenedHeaderItem(target);
+    return true;
+  };
+  api.activateHeaderShortcut = activateHeaderShortcut;
+
+  const shortcutForEvent = (event) => {
+    const key = String(event.key || '').toLowerCase();
+    const code = Number(event.keyCode || event.which || 0);
+
+    // Android: SEARCH=84, ASSIST=219, VOICE_ASSIST=231.
+    if (
+      code === 84 || code === 219 || code === 231 ||
+      key === 'search' || key === 'browsersearch' ||
+      key === 'assist' || key === 'assistant' || key === 'voiceassist'
+    ) {
+      return 'search';
+    }
+
+    // Android: MENU=82, SETTINGS=176. On the Metz remote this is the gear key
+    // when the OEM forwards it to the WebView instead of consuming it globally.
+    if (
+      code === 82 || code === 176 ||
+      key === 'contextmenu' || key === 'settings'
+    ) {
+      return 'explore';
+    }
+
+    // Android 14+: PROFILE_SWITCH=288. OEM user/profile keys may expose a
+    // semantic key string instead.
+    if (
+      code === 288 ||
+      key === 'profile' || key === 'profileswitch' ||
+      key === 'user' || key === 'account'
+    ) {
+      return 'account';
+    }
+
+    return null;
+  };
+
+  const consumeEvent = (event) => {
+    event.preventDefault();
+    event.stopPropagation();
+    if (typeof event.stopImmediatePropagation === 'function') {
+      event.stopImmediatePropagation();
+    }
+  };
+
   const handleDpadKeydown = (event) => {
+    const shortcut = shortcutForEvent(event);
+    if (shortcut && activateHeaderShortcut(shortcut)) {
+      consumeEvent(event);
+      return true;
+    }
+
     const direction = directions[event.key];
     if (!direction) return false;
 
     const eventTarget = event.target;
+
+    // Down from an explicitly opened Search field returns to the previous
+    // content focus (or Hero Play) instead of letting Chromium wander in header.
     if (
+      direction === 'down' &&
+      eventTarget instanceof HTMLElement &&
+      eventTarget.getAttribute('data-tv-header-shortcut') === 'search'
+    ) {
+      api.headerNavigationEnabled = false;
+      api.headerShortcutKind = null;
+      const restored = api.restoreContentFocus();
+      const heroPlay = getHeroPlay();
+      if (!restored && heroPlay) focusWithoutJank(heroPlay);
+      consumeEvent(event);
+      return true;
+    }
+
+    if (
+      api.headerNavigationEnabled !== true &&
       direction === 'down' &&
       window.location.pathname === '/' &&
       eventTarget instanceof HTMLElement &&
@@ -554,11 +733,7 @@ ${domDiscoveryRuntime}
       const heroPlay = getHeroPlay();
       if (heroPlay) {
         focusWithoutJank(heroPlay);
-        event.preventDefault();
-        event.stopPropagation();
-        if (typeof event.stopImmediatePropagation === 'function') {
-          event.stopImmediatePropagation();
-        }
+        consumeEvent(event);
         return true;
       }
     }
@@ -571,11 +746,7 @@ ${domDiscoveryRuntime}
     // Player/native scopes are filtered by shouldSpatialNavigationHandle above.
     api.moveFocus(direction);
 
-    event.preventDefault();
-    event.stopPropagation();
-    if (typeof event.stopImmediatePropagation === 'function') {
-      event.stopImmediatePropagation();
-    }
+    consumeEvent(event);
     return true;
   };
 
@@ -600,6 +771,18 @@ ${domDiscoveryRuntime}
   const handleFocusIn = (event) => {
     const target = event.target;
     if (!(target instanceof HTMLElement)) return;
+
+    if (isHeaderElement(target)) {
+      if (api.headerNavigationEnabled !== true) {
+        requestAnimationFrame(() => {
+          if (api.headerNavigationEnabled !== true) api.restoreContentFocus();
+        });
+      }
+      return;
+    }
+
+    api.headerNavigationEnabled = false;
+    api.headerShortcutKind = null;
     const key = focusKeyFor(target);
     if (key) api.lastFocusKey = key;
   };
