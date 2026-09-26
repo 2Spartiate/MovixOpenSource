@@ -90,8 +90,8 @@ test('quick menu exits fullscreen before mounting and owns modal focus', async (
 test('quick menu blocks player autofocus and transport arrows while open', async () => {
   const runtime = await text('src/injection/tv-playback-runtime.ts');
 
-  assert.match(runtime, /const focusPlayPause = \(\) => \{[\s\S]{0,120}if \(getQuickMenu\(\)\) return false/);
-  assert.match(runtime, /api\.focusTimer = setTimeout\(\(\) => \{[\s\S]{0,160}if \(getQuickMenu\(\)\) return/);
+  assert.match(runtime, /const focusPlayPause = \(\) => \{[\s\S]{0,180}if \(getQuickMenu\(\) \|\| api\.advancedSettingsPending/);
+  assert.match(runtime, /api\.focusTimer = setTimeout\(\(\) => \{[\s\S]{0,200}if \(getQuickMenu\(\) \|\| api\.advancedSettingsPending/);
   assert.match(runtime, /const hasPriorityOverlay = \(root\) => \{[\s\S]{0,100}if \(getQuickMenu\(\)\) return true/);
   assert.match(runtime, /if \(getQuickMenu\(\)\) return false;[\s\S]{0,100}hasPriorityOverlay\(root\)/);
 });

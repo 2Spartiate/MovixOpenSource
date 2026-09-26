@@ -6,7 +6,11 @@ export function buildTvPlaybackRuntime(): string {
   const api = window.__MOVIX_TV_PLAYBACK || (window.__MOVIX_TV_PLAYBACK = {});
 
   if (typeof api.keydownHandler === 'function') {
+    window.removeEventListener('keydown', api.keydownHandler, true);
     document.removeEventListener('keydown', api.keydownHandler, true);
+  }
+  if (typeof api.focusinHandler === 'function') {
+    document.removeEventListener('focusin', api.focusinHandler, true);
   }
   if (typeof api.backHandler === 'function') {
     window.removeEventListener('movix-tv-back', api.backHandler);
@@ -126,7 +130,7 @@ export function buildTvPlaybackRuntime(): string {
   );
 
   const focusPlayPause = () => {
-    if (getQuickMenu()) return false;
+    if (getQuickMenu() || api.advancedSettingsPending || visible(getSettingsPanel())) return false;
     const video = getActiveVideo();
     const root = getPlayerRoot(video);
     const button = getPlayPauseButton(root);
@@ -139,7 +143,7 @@ export function buildTvPlaybackRuntime(): string {
     if (api.focusTimer) clearTimeout(api.focusTimer);
     api.focusTimer = setTimeout(() => {
       api.focusTimer = null;
-      if (getQuickMenu()) return;
+      if (getQuickMenu() || api.advancedSettingsPending || visible(getSettingsPanel())) return;
       const video = getActiveVideo();
       const root = getPlayerRoot(video);
       if (!video || !(root instanceof HTMLElement)) return;
@@ -336,7 +340,7 @@ export function buildTvPlaybackRuntime(): string {
     const menu = getQuickMenu();
     if (menu) menu.remove();
     api.quickMenuFocusIndex = 0;
-    if (restorePlayerFocus) setTimeout(focusPlayPause, 0);
+    if (restorePlayerFocus && !visible(getSettingsPanel())) setTimeout(focusPlayPause, 0);
   };
 
   const sleep = (milliseconds) => new Promise((resolve) => setTimeout(resolve, milliseconds));
@@ -675,33 +679,34 @@ export function buildTvPlaybackRuntime(): string {
 
   const openExistingEpisodes = (root) => {
     const button = findActionButton(root, ['episodes', 'episode'], null);
-    closeQuickMenu(false);
     if (button instanceof HTMLElement) {
+      closeQuickMenu(false);
       button.click();
       return true;
     }
-    try { window.dispatchEvent(new Event('movix-tv-open-episodes')); } catch {}
     return false;
   };
 
-  const openExistingSettings = (root) => {
+  const openExistingSettings = async (root) => {
     const button = findActionButton(
       root,
       ['parametres', 'settings', 'sources'],
       '[data-tv-player-menu-trigger="settings"]'
     );
-    closeQuickMenu(false);
     if (button instanceof HTMLElement) {
+      api.advancedSettingsPending = true;
+      closeQuickMenu(false);
       button.click();
-      requestAnimationFrame(() => {
-        const qualityTab = document.querySelector('[data-tv-settings-tab="quality"]');
-        if (qualityTab instanceof HTMLElement) {
-          try { qualityTab.focus({ preventScroll: true }); } catch { qualityTab.focus(); }
-        }
-      });
-      return true;
+      const panel = await waitUntil(() => getSettingsPanel(), 3500, 50);
+      const qualityTab = panel?.querySelector('[data-tv-settings-tab="quality"]');
+      const target = qualityTab instanceof HTMLElement ? qualityTab
+        : panel?.querySelector('button');
+      if (target instanceof HTMLElement) {
+        try { target.focus({ preventScroll: true }); } catch { target.focus(); }
+      }
+      api.advancedSettingsPending = false;
+      return panel instanceof HTMLElement;
     }
-    try { window.dispatchEvent(new Event('movix-tv-open-sources')); } catch {}
     return false;
   };
 
@@ -726,9 +731,13 @@ export function buildTvPlaybackRuntime(): string {
   };
 
   const openQuickMenu = async (video, root) => {
-    if (!(video instanceof HTMLVideoElement) || getQuickMenu()) return false;
+    if (!(video instanceof HTMLVideoElement) || getQuickMenu() || api.openingQuickMenu) return false;
+    api.openingQuickMenu = true;
 
-    await waitForFullscreenExit(video, root);
+    if (!(await waitForFullscreenExit(video, root))) {
+      api.openingQuickMenu = false;
+      return false;
+    }
     const activeVideo = getActiveVideo() || video;
     const activeRoot = getPlayerRoot(activeVideo) || root;
 
@@ -816,6 +825,7 @@ export function buildTvPlaybackRuntime(): string {
     overlay.appendChild(card);
     document.body.appendChild(overlay);
     api.quickMenuFocusIndex = 0;
+    api.openingQuickMenu = false;
 
     requestAnimationFrame(() => {
       try { profileButton.focus({ preventScroll: true }); } catch { profileButton.focus(); }
@@ -842,8 +852,24 @@ export function buildTvPlaybackRuntime(): string {
   const getQuickMenuActions = () => {
     const menu = getQuickMenu();
     if (!(menu instanceof HTMLElement)) return [];
-    return Array.from(menu.querySelectorAll('.movix-tv-menu-action'))
-      .filter((element) => element instanceof HTMLElement && visible(element));
+    return Array.from(menu.querySelectorAll('.movix-tv-menu-action'));
+  };
+
+  // The remote HLS component can call focus() from a React effect after the
+  // injected menu mounts. Keep focus in the menu using the browser's *actual*
+  // focusin event, not a second visual-selection state or a polling timer.
+  const handleFocusIn = (event) => {
+    const menu = getQuickMenu();
+    if (!(menu instanceof HTMLElement) || api.restoringQuickFocus) return;
+    if (menu.contains(event.target)) return;
+    const actions = getQuickMenuActions();
+    const index = Math.min(actions.length - 1, Math.max(0, Number(api.quickMenuFocusIndex || 0)));
+    if (actions[index] instanceof HTMLElement) {
+      api.restoringQuickFocus = true;
+      try { actions[index].focus({ preventScroll: true }); }
+      catch { actions[index].focus(); }
+      api.restoringQuickFocus = false;
+    }
   };
 
   const handleQuickMenuKeydown = (event) => {
@@ -853,13 +879,17 @@ export function buildTvPlaybackRuntime(): string {
     const key = String(event.key || '');
     const code = String(event.code || '');
 
-    if (key === '0' || code === 'Digit0' || code === 'Numpad0') {
+    if (key === '0' || code === 'Digit0' || code === 'Numpad0' ||
+        key === 'Escape' || key === 'Backspace' || key === 'BrowserBack') {
       consume(event);
       closeQuickMenu(true);
       return true;
     }
 
-    const arrow = code.startsWith('Arrow') ? code : (key.startsWith('Arrow') ? key : '');
+    const legacy = Number(event.keyCode || event.which || 0);
+    const arrow = code.startsWith('Arrow') ? code : (key.startsWith('Arrow') ? key :
+      ({ 19: 'ArrowUp', 20: 'ArrowDown', 21: 'ArrowLeft', 22: 'ArrowRight',
+         37: 'ArrowLeft', 38: 'ArrowUp', 39: 'ArrowRight', 40: 'ArrowDown' })[legacy] || '');
     if (arrow === 'ArrowUp' || arrow === 'ArrowDown') {
       const actions = getQuickMenuActions();
       if (actions.length === 0) {
@@ -887,7 +917,8 @@ export function buildTvPlaybackRuntime(): string {
       return true;
     }
 
-    if ((key === 'Enter' || code === 'Enter' || code === 'NumpadEnter')) {
+    if ((key === 'Enter' || code === 'Enter' || code === 'NumpadEnter' ||
+         legacy === 23 || legacy === 66)) {
       const actions = getQuickMenuActions();
       const active = document.activeElement;
       const activeIndex = active instanceof HTMLElement ? actions.indexOf(active) : -1;
@@ -902,7 +933,10 @@ export function buildTvPlaybackRuntime(): string {
       }
     }
 
-    return false;
+    // Any other key while the modal exists belongs to the modal, never to
+    // playback transport, the page, or a carousel behind it.
+    consume(event);
+    return true;
   };
 
   const isZeroKey = (event) => {
@@ -992,9 +1026,11 @@ export function buildTvPlaybackRuntime(): string {
   api.selectBestProfileSource = selectBestProfileSource;
   api.scheduleAutomaticProfileSelection = scheduleAutomaticProfileSelection;
   api.keydownHandler = handleKeydown;
+  api.focusinHandler = handleFocusIn;
   api.backHandler = handleTvBack;
 
-  document.addEventListener('keydown', handleKeydown, true);
+  window.addEventListener('keydown', handleKeydown, true);
+  document.addEventListener('focusin', handleFocusIn, true);
   window.addEventListener('movix-tv-back', handleTvBack);
 
   const setupFocus = () => {
