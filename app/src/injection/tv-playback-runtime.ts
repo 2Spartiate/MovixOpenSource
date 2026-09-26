@@ -18,6 +18,11 @@ export function buildTvPlaybackRuntime(): string {
     clearTimeout(api.focusTimer);
     api.focusTimer = null;
   }
+  if (api.autoProfileTimer) {
+    clearTimeout(api.autoProfileTimer);
+    api.autoProfileTimer = null;
+  }
+  api.profileSelectionBusy = false;
 
   const normalise = (value) => String(value || '')
     .normalize('NFD')
@@ -234,6 +239,8 @@ export function buildTvPlaybackRuntime(): string {
   const PROFILE_KEY = 'movix.tv.playback.profile.v1';
   const MENU_ID = 'movix-tv-injected-playback-menu';
   const MENU_STYLE_ID = 'movix-tv-injected-playback-menu-style';
+  const AUTO_SETTINGS_STYLE_ID = 'movix-tv-auto-source-selection-style';
+  const AUTO_SETTINGS_CLASS = 'movix-tv-auto-source-selection';
 
   const getPlaybackProfile = () => {
     try { return localStorage.getItem(PROFILE_KEY) === 'vf' ? 'vf' : 'vo-fr'; }
@@ -331,6 +338,319 @@ export function buildTvPlaybackRuntime(): string {
     api.quickMenuFocusIndex = 0;
     if (restorePlayerFocus) setTimeout(focusPlayPause, 0);
   };
+
+  const sleep = (milliseconds) => new Promise((resolve) => setTimeout(resolve, milliseconds));
+
+  const waitUntil = async (predicate, timeout = 6000, interval = 80) => {
+    const started = performance.now();
+    while (performance.now() - started < timeout) {
+      try {
+        const value = predicate();
+        if (value) return value;
+      } catch {}
+      await sleep(interval);
+    }
+    return null;
+  };
+
+  const ensureAutoSettingsStyle = () => {
+    if (document.getElementById(AUTO_SETTINGS_STYLE_ID)) return;
+    const style = document.createElement('style');
+    style.id = AUTO_SETTINGS_STYLE_ID;
+    style.textContent =
+      'html.'+AUTO_SETTINGS_CLASS+' .settings-menu{' +
+      'opacity:0!important;visibility:hidden!important;pointer-events:none!important;' +
+      'transform:none!important;transition:none!important;}';
+    (document.head || document.documentElement).appendChild(style);
+  };
+
+  const getSettingsTrigger = () => {
+    const exact = document.querySelector('[data-tv-player-menu-trigger="settings"]');
+    if (exact instanceof HTMLElement) return exact;
+    return Array.from(document.querySelectorAll('button, [role="button"]')).find((button) => {
+      if (!(button instanceof HTMLElement)) return false;
+      const signature = buttonSignature(button);
+      return signature.includes('parametres') || signature.includes('settings');
+    }) || null;
+  };
+
+  const getSettingsPanel = () => {
+    const exact = document.querySelector('.settings-menu[data-player-menu="settings"], .settings-menu');
+    return exact instanceof HTMLElement ? exact : null;
+  };
+
+  const openHiddenQualitySettings = async () => {
+    ensureAutoSettingsStyle();
+    document.documentElement.classList.add(AUTO_SETTINGS_CLASS);
+
+    let panel = getSettingsPanel();
+    if (!(panel instanceof HTMLElement)) {
+      const trigger = getSettingsTrigger();
+      if (!(trigger instanceof HTMLElement)) {
+        document.documentElement.classList.remove(AUTO_SETTINGS_CLASS);
+        return null;
+      }
+      trigger.click();
+      panel = await waitUntil(() => getSettingsPanel(), 3500, 60);
+    }
+    if (!(panel instanceof HTMLElement)) {
+      document.documentElement.classList.remove(AUTO_SETTINGS_CLASS);
+      return null;
+    }
+
+    const qualityTab = panel.querySelector('[data-tv-settings-tab="quality"]');
+    if (qualityTab instanceof HTMLElement && qualityTab.getAttribute('aria-pressed') !== 'true') {
+      qualityTab.click();
+    }
+
+    const sourceMenu = await waitUntil(
+      () => panel.querySelector('[data-source-menu]'),
+      2500,
+      50
+    );
+    return sourceMenu instanceof HTMLElement ? { panel, sourceMenu } : { panel, sourceMenu: panel };
+  };
+
+  const closeHiddenSettings = async () => {
+    const panel = getSettingsPanel();
+    if (panel instanceof HTMLElement) {
+      const closeButton = Array.from(panel.querySelectorAll('button')).find((button) => {
+        if (!(button instanceof HTMLElement)) return false;
+        const signature = buttonSignature(button);
+        return signature === 'fermer' || signature === 'close' ||
+          Boolean(button.querySelector('svg.lucide-x, .lucide-x'));
+      });
+      if (closeButton instanceof HTMLElement) closeButton.click();
+      else {
+        const trigger = getSettingsTrigger();
+        if (trigger instanceof HTMLElement) trigger.click();
+      }
+    }
+    await sleep(50);
+    document.documentElement.classList.remove(AUTO_SETTINGS_CLASS);
+  };
+
+  const getQualityScanButton = (scope) => {
+    if (!(scope instanceof HTMLElement)) return null;
+    return Array.from(scope.querySelectorAll('button')).find((button) => {
+      if (!(button instanceof HTMLElement)) return false;
+      const signature = buttonSignature(button);
+      return Boolean(button.querySelector('svg.lucide-gauge, .lucide-gauge')) ||
+        ((signature.includes('qualit') || signature.includes('quality')) &&
+          (signature.includes('verif') || signature.includes('check')));
+    }) || null;
+  };
+
+  const runQualityScan = async (scope) => {
+    const button = getQualityScanButton(scope);
+    if (!(button instanceof HTMLElement)) return false;
+
+    button.click();
+    const started = await waitUntil(
+      () => !button.isConnected || getQualityScanButton(scope) !== button,
+      1800,
+      60
+    );
+    if (started) {
+      await waitUntil(() => getQualityScanButton(scope), 50000, 180);
+    } else {
+      await sleep(500);
+    }
+    return true;
+  };
+
+  const findGroupButton = (scope, token) => {
+    if (!(scope instanceof HTMLElement)) return null;
+    return Array.from(scope.querySelectorAll('button')).find((button) => {
+      if (!(button instanceof HTMLElement)) return false;
+      const signature = buttonSignature(button);
+      return signature.includes(token);
+    }) || null;
+  };
+
+  const findExpandedGroupPanel = (groupButton) => {
+    if (!(groupButton instanceof HTMLElement)) return null;
+    let node = groupButton.parentElement;
+    for (let depth = 0; node && depth < 5; depth += 1, node = node.parentElement) {
+      let sibling = node.nextElementSibling;
+      while (sibling) {
+        if (sibling instanceof HTMLElement && sibling.querySelector('button')) {
+          return sibling;
+        }
+        sibling = sibling.nextElementSibling;
+      }
+    }
+    return null;
+  };
+
+  const getGroupSourceButtons = async (scope, token) => {
+    const groupButton = findGroupButton(scope, token);
+    if (!(groupButton instanceof HTMLElement)) return [];
+
+    let panel = findExpandedGroupPanel(groupButton);
+    if (!(panel instanceof HTMLElement)) {
+      groupButton.click();
+      panel = await waitUntil(() => findExpandedGroupPanel(groupButton), 1800, 50);
+    }
+    if (!(panel instanceof HTMLElement)) return [];
+
+    return Array.from(panel.querySelectorAll('button')).filter((button) => {
+      if (!(button instanceof HTMLElement)) return false;
+      const signature = buttonSignature(button);
+      if (!signature) return false;
+      if (signature === 'copier' || signature === 'copy') return false;
+      if (signature.includes('epingler') || signature.includes('pin')) return false;
+      return true;
+    });
+  };
+
+  const qualityScoreForButton = (button) => {
+    if (!(button instanceof HTMLElement)) return 0;
+    const text = String(button.textContent || '');
+    if (/\b4\s*k\b/i.test(text) || /\buhd\b/i.test(text)) return 2160;
+    const heights = Array.from(text.matchAll(/(\d{3,4})\s*p\b/gi))
+      .map((match) => Number(match[1]))
+      .filter((value) => Number.isFinite(value));
+    if (heights.length > 0) return Math.max(...heights);
+    if (/\bfhd\b/i.test(text)) return 1080;
+    if (/\bhd\b/i.test(text)) return 720;
+    return 0;
+  };
+
+  const buildProfileCandidates = async (scope, profile) => {
+    const nexusButtons = await getGroupSourceButtons(scope, 'nexus');
+    const bravoButtons = await getGroupSourceButtons(scope, 'bravo');
+
+    const candidates = [];
+    nexusButtons.forEach((button, index) => {
+      const signature = buttonSignature(button);
+      const vostfr = signature.includes('vostfr');
+      if ((profile === 'vo-fr' && vostfr) || (profile === 'vf' && !vostfr)) {
+        candidates.push({
+          provider: 'nexus',
+          button,
+          index,
+          signature,
+          quality: qualityScoreForButton(button),
+        });
+      }
+    });
+
+    bravoButtons.forEach((button, index) => {
+      const signature = buttonSignature(button);
+      const multi = signature.includes('multi');
+      if ((profile === 'vo-fr' && multi) || (profile === 'vf' && !multi)) {
+        candidates.push({
+          provider: 'bravo',
+          button,
+          index,
+          signature,
+          quality: qualityScoreForButton(button),
+        });
+      }
+    });
+
+    return candidates.sort((left, right) =>
+      right.quality - left.quality ||
+      (left.provider === 'nexus' ? -1 : 1) ||
+      left.index - right.index
+    );
+  };
+
+  const scheduleTrackProfileApplication = (profile) => {
+    [250, 900, 1800, 3500, 5500].forEach((delay) => {
+      setTimeout(() => applyProfileToCurrentTracks(getActiveVideo(), profile), delay);
+    });
+  };
+
+  const selectBestProfileSource = async (profile, options = {}) => {
+    if (api.profileSelectionBusy) {
+      return { status: 'busy', profile };
+    }
+
+    api.profileSelectionBusy = true;
+    try {
+      setPlaybackProfile(profile);
+
+      // A newer deployed HLSPlayer can own the resolver directly. The APK
+      // fallback below exists for the currently deployed remote frontend.
+      if (window.__MOVIX_TV_PROFILE_RESOLVER === true) {
+        scheduleTrackProfileApplication(profile);
+        return { status: 'delegated', profile };
+      }
+
+      const opened = await openHiddenQualitySettings();
+      if (!opened) {
+        scheduleTrackProfileApplication(profile);
+        return { status: 'settings-unavailable', profile };
+      }
+
+      const scope = opened.sourceMenu;
+      await runQualityScan(scope);
+
+      let candidates = await buildProfileCandidates(scope, profile);
+      let effectiveProfile = profile;
+
+      if (candidates.length === 0 && profile === 'vo-fr' && options.allowVfFallback === true) {
+        candidates = await buildProfileCandidates(scope, 'vf');
+        effectiveProfile = 'vf';
+      }
+
+      const winner = candidates[0] || null;
+      if (!(winner?.button instanceof HTMLElement)) {
+        await closeHiddenSettings();
+        scheduleTrackProfileApplication(profile);
+        return { status: 'no-match', profile };
+      }
+
+      if (effectiveProfile !== profile) {
+        // This is an automatic fallback for this title, not a new persistent
+        // user preference. Keep PROFILE_KEY on VOSTFR so the next title tries
+        // VOSTFR again.
+        try {
+          window.dispatchEvent(new CustomEvent('movix-tv-playback-effective-profile', {
+            detail: { profile: effectiveProfile, requestedProfile: profile },
+          }));
+        } catch {}
+      }
+
+      winner.button.click();
+      await sleep(120);
+      await closeHiddenSettings();
+      scheduleTrackProfileApplication(effectiveProfile);
+      api.lastEffectiveProfile = effectiveProfile;
+
+      return {
+        status: 'selected',
+        profile: effectiveProfile,
+        requestedProfile: profile,
+        provider: winner.provider,
+        quality: winner.quality,
+      };
+    } finally {
+      api.profileSelectionBusy = false;
+    }
+  };
+
+  const scheduleAutomaticProfileSelection = () => {
+    if (api.autoProfileTimer || api.profileSelectionBusy) return;
+    api.autoProfileTimer = setTimeout(() => {
+      api.autoProfileTimer = null;
+      const video = getActiveVideo();
+      if (!(video instanceof HTMLVideoElement)) return;
+      if (!(getSettingsTrigger() instanceof HTMLElement)) return;
+
+      const contentKey = window.location.pathname + window.location.search;
+      if (api.autoProfileContentKey === contentKey) return;
+      api.autoProfileContentKey = contentKey;
+
+      const profile = getPlaybackProfile();
+      void selectBestProfileSource(profile, {
+        allowVfFallback: profile === 'vo-fr',
+      });
+    }, 900);
+  };
+
 
   const findActionButton = (root, labels, explicitSelector) => {
     if (explicitSelector) {
@@ -441,17 +761,41 @@ export function buildTvPlaybackRuntime(): string {
       return button;
     };
 
+    let profileStatus = '';
     const profileButton = addAction('', '', () => {
+      if (api.profileSelectionBusy) return;
       const next = getPlaybackProfile() === 'vo-fr' ? 'vf' : 'vo-fr';
       setPlaybackProfile(next);
+      profileStatus = 'Recherche de la meilleure source…';
       updateProfileLabel();
+
+      void selectBestProfileSource(next, { allowVfFallback: false }).then((result) => {
+        if (result?.status === 'selected') {
+          const quality = Number(result.quality) > 0 ? ' · ' + result.quality + 'p' : '';
+          profileStatus =
+            (result.provider === 'nexus' ? 'Nexus' : result.provider === 'bravo' ? 'Bravo' : '') +
+            quality;
+        } else if (result?.status === 'delegated') {
+          profileStatus = 'Sélection automatique…';
+        } else if (result?.status === 'no-match') {
+          profileStatus = 'Aucune source compatible';
+        } else {
+          profileStatus = '';
+        }
+        updateProfileLabel();
+        requestAnimationFrame(() => {
+          try { profileButton.focus({ preventScroll: true }); } catch { profileButton.focus(); }
+        });
+      });
     });
 
     const updateProfileLabel = () => {
       const profile = getPlaybackProfile();
+      const status = profileStatus ||
+        (profile === 'vf' ? 'audio français' : 'VO + sous-titres FR');
       profileButton.innerHTML = profile === 'vf'
-        ? '<span>Mode : VF</span><span class="movix-tv-menu-sub">audio français</span>'
-        : '<span>Mode : VOSTFR</span><span class="movix-tv-menu-sub">VO + sous-titres FR</span>';
+        ? '<span>Mode : VF</span><span class="movix-tv-menu-sub">' + status + '</span>'
+        : '<span>Mode : VOSTFR</span><span class="movix-tv-menu-sub">' + status + '</span>';
     };
     updateProfileLabel();
 
@@ -639,6 +983,8 @@ export function buildTvPlaybackRuntime(): string {
     return openQuickMenu(video, root);
   };
   api.closeQuickMenu = closeQuickMenu;
+  api.selectBestProfileSource = selectBestProfileSource;
+  api.scheduleAutomaticProfileSelection = scheduleAutomaticProfileSelection;
   api.keydownHandler = handleKeydown;
   api.backHandler = handleTvBack;
 
@@ -650,9 +996,13 @@ export function buildTvPlaybackRuntime(): string {
       schedulePlayPauseFocus();
       return;
     }
-    api.focusObserver = new MutationObserver(() => schedulePlayPauseFocus(120));
+    api.focusObserver = new MutationObserver(() => {
+      schedulePlayPauseFocus(120);
+      scheduleAutomaticProfileSelection();
+    });
     api.focusObserver.observe(document.body, { childList: true, subtree: true });
     schedulePlayPauseFocus();
+    scheduleAutomaticProfileSelection();
   };
 
   if (document.readyState === 'loading') {

@@ -115,3 +115,36 @@ test('advanced sources uses the exact player settings trigger outside the inferr
   assert.match(runtime, /closeQuickMenu\(false\)/);
   assert.match(runtime, /\[data-tv-settings-tab="quality"\]/);
 });
+
+
+test('injected profile selection automates hidden advanced source selection', async () => {
+  const runtime = await text('src/injection/tv-playback-runtime.ts');
+
+  assert.match(runtime, /AUTO_SETTINGS_CLASS = 'movix-tv-auto-source-selection'/);
+  assert.match(runtime, /\[data-tv-player-menu-trigger="settings"\]/);
+  assert.match(runtime, /\[data-tv-settings-tab="quality"\]/);
+  assert.match(runtime, /svg\.lucide-gauge/);
+  assert.match(runtime, /getGroupSourceButtons\(scope, 'nexus'\)/);
+  assert.match(runtime, /getGroupSourceButtons\(scope, 'bravo'\)/);
+  assert.match(runtime, /signature\.includes\('vostfr'\)/);
+  assert.match(runtime, /signature\.includes\('multi'\)/);
+  assert.match(runtime, /qualityScoreForButton/);
+  assert.match(runtime, /winner\.button\.click\(\)/);
+});
+
+test('default injected selection tries VOSTFR then title-local VF fallback', async () => {
+  const runtime = await text('src/injection/tv-playback-runtime.ts');
+
+  assert.match(runtime, /allowVfFallback: profile === 'vo-fr'/);
+  assert.match(runtime, /candidates\.length === 0 && profile === 'vo-fr'/);
+  assert.match(runtime, /buildProfileCandidates\(scope, 'vf'\)/);
+  assert.match(runtime, /not a new persistent[\s\S]{0,180}Keep PROFILE_KEY on VOSTFR/i);
+});
+
+test('profile toggle now invokes source resolver instead of only changing current tracks', async () => {
+  const runtime = await text('src/injection/tv-playback-runtime.ts');
+
+  assert.match(runtime, /selectBestProfileSource\(next, \{ allowVfFallback: false \}\)/);
+  assert.match(runtime, /window\.__MOVIX_TV_PROFILE_RESOLVER === true/);
+  assert.match(runtime, /api\.selectBestProfileSource = selectBestProfileSource/);
+});
