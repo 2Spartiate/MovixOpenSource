@@ -144,12 +144,12 @@ test('within the chosen row the horizontally closest poster wins', () => {
   assert.equal(picked?.value, 'closest');
 });
 
-test('runtime keeps horizontal movement inside the row and excludes header chrome by default', () => {
+test('runtime keeps horizontal movement local and header chrome outside normal D-pad candidates', () => {
   const runtime = buildTvDpadRuntime('(function () { return null; })', '/* dom discovery */');
   assert.match(runtime, /getAdjacentCardInRow/);
   assert.match(runtime, /horizontal && currentRow instanceof HTMLElement/);
-  assert.match(runtime, /api\.headerNavigationEnabled === true && isHeaderElement\(current\)/);
-  assert.match(runtime, /return isHeaderElement\(candidate\.element\)/);
+  assert.match(runtime, /const activeScope = current\.closest\('\[data-tv-shortcut-scope\]'\)/);
+  assert.match(runtime, /return activeScope\.contains\(candidate\.element\)/);
   assert.match(runtime, /return !isHeaderElement\(candidate\.element\)/);
   assert.match(runtime, /Header chrome is not part of ordinary D-pad navigation/);
   assert.match(runtime, /pageIsAtRealTop/);
@@ -174,12 +174,12 @@ test('Embla fallback clicks the live hidden arrow only when focused card reaches
 });
 
 
-test('accidental Home header focus exits to hero while explicit Search Down restores content', () => {
+test('shortcut Search Down restores content while stale accidental header focus is ejected synchronously', () => {
   const runtime = buildTvDpadRuntime('(function () { return null; })', '/* dom discovery */');
-  assert.match(runtime, /api\.headerNavigationEnabled !== true/);
-  assert.match(runtime, /eventTarget\.closest\('header'\)/);
-  assert.match(runtime, /const heroPlay = getHeroPlay\(\)/);
   assert.match(runtime, /data-tv-header-shortcut'\) === 'search'/);
+  assert.match(runtime, /deactivateHeaderShortcut\(false, true\)/);
+  assert.match(runtime, /if \(isHeaderElement\(target\)\)/);
+  assert.match(runtime, /try \{ target\.blur\(\); \} catch \{\}/);
   assert.match(runtime, /api\.restoreContentFocus\(\)/);
 });
 
@@ -191,30 +191,44 @@ test('header gating detects internal scrolling from hero geometry, not only wind
   assert.match(runtime, /rect\.top < 40/);
 });
 
-test('TV remote shortcuts map search, explore and account without entering header through arrows', () => {
+test('TV numeric shortcuts use 1 Search, 2 Account, 3 Explore and stay out of text/player scopes', () => {
   const runtime = buildTvDpadRuntime('(function () { return null; })', '/* dom discovery */');
 
-  assert.match(runtime, /SEARCH=84, ASSIST=219, VOICE_ASSIST=231/);
-  assert.match(runtime, /code === 84 \|\| code === 219 \|\| code === 231/);
-  assert.match(runtime, /return 'search'/);
+  assert.match(runtime, /key === '1'[\s\S]{0,140}return 'search'/);
+  assert.match(runtime, /code === 'Digit1'/);
+  assert.match(runtime, /legacy === 49/);
 
-  assert.match(runtime, /MENU=82, SETTINGS=176/);
-  assert.match(runtime, /code === 82 \|\| code === 176/);
-  assert.match(runtime, /return 'explore'/);
+  assert.match(runtime, /key === '2'[\s\S]{0,140}return 'account'/);
+  assert.match(runtime, /code === 'Digit2'/);
+  assert.match(runtime, /legacy === 50/);
 
-  assert.match(runtime, /PROFILE_SWITCH=288/);
-  assert.match(runtime, /code === 288/);
-  assert.match(runtime, /return 'account'/);
+  assert.match(runtime, /key === '3'[\s\S]{0,140}return 'explore'/);
+  assert.match(runtime, /code === 'Digit3'/);
+  assert.match(runtime, /legacy === 51/);
 
+  assert.match(runtime, /target\.isContentEditable/);
+  assert.match(runtime, /tag === 'input'/);
+  assert.match(runtime, /data-tv-player-control/);
   assert.match(runtime, /const activateHeaderShortcut = \(kind\) =>/);
-  assert.match(runtime, /data-tv-header-shortcut="/);
-  assert.match(runtime, /api\.headerNavigationEnabled = true/);
   assert.match(runtime, /rememberCurrentContentFocus/);
+
+  assert.doesNotMatch(runtime, /SEARCH=84|ASSIST=219|VOICE_ASSIST=231|SETTINGS=176|PROFILE_SWITCH=288/);
 });
 
-test('header focus never overwrites the remembered content anchor', () => {
+test('header/shortcut focus never overwrites the remembered content anchor', () => {
   const runtime = buildTvDpadRuntime('(function () { return null; })', '/* dom discovery */');
   assert.match(runtime, /if \(isHeaderElement\(target\)\) \{/);
-  assert.match(runtime, /api\.restoreContentFocus/);
+  assert.match(runtime, /data-tv-header-shortcut-active/);
+  assert.match(runtime, /data-tv-header-active-scope/);
+  assert.match(runtime, /if \(target\.closest\('\[data-tv-shortcut-scope\]'\)\) return/);
   assert.match(runtime, /const key = focusKeyFor\(target\);[\s\S]{0,80}api\.lastFocusKey = key/);
+});
+
+test('numeric shortcut scopes are temporary and Back relocks header before restoring content', () => {
+  const runtime = buildTvDpadRuntime('(function () { return null; })', '/* dom discovery */');
+  assert.match(runtime, /const deactivateHeaderShortcut = \(toggleUi = false, restoreFocus = true\) =>/);
+  assert.match(runtime, /clearShortcutMarkers\(\)/);
+  assert.match(runtime, /policy\.lock\(\)/);
+  assert.match(runtime, /window\.addEventListener\('movix-tv-back', handleTvBack\)/);
+  assert.match(runtime, /deactivateHeaderShortcut\(true, true\)/);
 });
