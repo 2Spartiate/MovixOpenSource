@@ -3149,6 +3149,8 @@ const WatchMovie: React.FC = () => {
             backdrop={backdropPath ? `https://image.tmdb.org/t/p/w1280${backdropPath}` : undefined}
             movieId={id || undefined}
             controls={true}
+
+            fullscreenTarget={isMovixTvRuntime() ? 'page' : 'player'}
             nexusHlsSources={nexusHlsSources}
             nexusFileSources={nexusFileSources}
             purstreamSources={purstreamSources}
@@ -3269,6 +3271,8 @@ const WatchMovie: React.FC = () => {
             backdrop={backdropPath ? `https://image.tmdb.org/t/p/w1280${backdropPath}` : undefined}
             movieId={id || undefined}
             controls={true}
+
+            fullscreenTarget={isMovixTvRuntime() ? 'page' : 'player'}
             nexusHlsSources={nexusHlsSources}
             nexusFileSources={nexusFileSources}
             purstreamSources={purstreamSources}
@@ -3383,6 +3387,8 @@ const WatchMovie: React.FC = () => {
             backdrop={backdropPath ? `https://image.tmdb.org/t/p/w1280${backdropPath}` : undefined}
             movieId={id || undefined}
             controls={true}
+
+            fullscreenTarget={isMovixTvRuntime() ? 'page' : 'player'}
             nexusHlsSources={nexusHlsSources}
             nexusFileSources={nexusFileSources}
             purstreamSources={purstreamSources}
@@ -3499,6 +3505,8 @@ const WatchMovie: React.FC = () => {
             backdrop={backdropPath ? `https://image.tmdb.org/t/p/w1280${backdropPath}` : undefined}
             movieId={id || undefined}
             controls={true}
+
+            fullscreenTarget={isMovixTvRuntime() ? 'page' : 'player'}
             nexusHlsSources={nexusHlsSources}
             nexusFileSources={nexusFileSources}
             purstreamSources={purstreamSources}
@@ -3618,6 +3626,8 @@ const WatchMovie: React.FC = () => {
             backdrop={backdropPath ? `https://image.tmdb.org/t/p/w1280${backdropPath}` : undefined}
             movieId={id || undefined}
             controls={true}
+
+            fullscreenTarget={isMovixTvRuntime() ? 'page' : 'player'}
             nexusHlsSources={nexusHlsSources}
             nexusFileSources={nexusFileSources}
             purstreamSources={purstreamSources}
@@ -3741,6 +3751,8 @@ const WatchMovie: React.FC = () => {
             backdrop={backdropPath ? `https://image.tmdb.org/t/p/w1280${backdropPath}` : undefined}
             movieId={id || undefined}
             controls={true}
+
+            fullscreenTarget={isMovixTvRuntime() ? 'page' : 'player'}
             nexusHlsSources={nexusHlsSources}
             nexusFileSources={nexusFileSources}
             purstreamSources={purstreamSources}
