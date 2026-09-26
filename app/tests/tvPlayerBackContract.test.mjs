@@ -91,8 +91,8 @@ test('Android TV Home Back opens BlueNight exit confirmation with NON preferred'
   assert.match(browser, /<Pressable[\s\S]{0,500}accessibilityLabel="Ne pas quitter"/);
   assert.match(browser, /<Pressable[\s\S]{0,500}accessibilityLabel="Quitter l'application"/);
   assert.match(browser, /hasTVPreferredFocus=\{isTV && exitPreferredFocus\}/);
-  assert.match(browser, /nextFocusRight=\{findNodeHandle\(exitYesButtonRef\.current\) \?\? undefined\}/);
-  assert.match(browser, /nextFocusLeft=\{findNodeHandle\(exitNoButtonRef\.current\) \?\? undefined\}/);
+  assert.match(browser, /nextFocusRight:\s*findNodeHandle\(exitYesButtonRef\.current\) \?\? undefined/);
+  assert.match(browser, /nextFocusLeft:\s*findNodeHandle\(exitNoButtonRef\.current\) \?\? undefined/);
   assert.match(browser, /onFocus=\{\(\) => \{[\s\S]{0,120}setExitChoice\('no'\)[\s\S]{0,120}setExitPreferredFocus\(false\)/);
   assert.match(browser, /onFocus=\{\(\) => \{[\s\S]{0,120}setExitChoice\('yes'\)[\s\S]{0,120}setExitPreferredFocus\(false\)/);
   assert.match(browser, /onBlur=\{\(\) => \{[\s\S]{0,120}current === 'no' \? null : current/);

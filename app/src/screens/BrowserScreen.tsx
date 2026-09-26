@@ -301,8 +301,10 @@ export default function BrowserScreen() {
                 accessibilityLabel="Ne pas quitter"
                 focusable
                 hasTVPreferredFocus={isTV && exitPreferredFocus}
-                nextFocusLeft={findNodeHandle(exitNoButtonRef.current) ?? undefined}
-                nextFocusRight={findNodeHandle(exitYesButtonRef.current) ?? undefined}
+                {...({
+                  nextFocusLeft: findNodeHandle(exitNoButtonRef.current) ?? undefined,
+                  nextFocusRight: findNodeHandle(exitYesButtonRef.current) ?? undefined,
+                } as any)}
                 onFocus={() => {
                   setExitChoice('no');
                   setExitPreferredFocus(false);
@@ -329,8 +331,10 @@ export default function BrowserScreen() {
                 accessibilityRole="button"
                 accessibilityLabel="Quitter l'application"
                 focusable
-                nextFocusLeft={findNodeHandle(exitNoButtonRef.current) ?? undefined}
-                nextFocusRight={findNodeHandle(exitYesButtonRef.current) ?? undefined}
+                {...({
+                  nextFocusLeft: findNodeHandle(exitNoButtonRef.current) ?? undefined,
+                  nextFocusRight: findNodeHandle(exitYesButtonRef.current) ?? undefined,
+                } as any)}
                 onFocus={() => {
                   setExitChoice('yes');
                   setExitPreferredFocus(false);
