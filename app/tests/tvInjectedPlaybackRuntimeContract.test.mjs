@@ -95,3 +95,23 @@ test('quick menu blocks player autofocus and transport arrows while open', async
   assert.match(runtime, /const hasPriorityOverlay = \(root\) => \{[\s\S]{0,100}if \(getQuickMenu\(\)\) return true/);
   assert.match(runtime, /if \(getQuickMenu\(\)\) return false;[\s\S]{0,100}hasPriorityOverlay\(root\)/);
 });
+
+
+test('injected quick menu owns up down navigation directly', async () => {
+  const runtime = await text('src/injection/tv-playback-runtime.ts');
+
+  assert.match(runtime, /const handleQuickMenuKeydown = \(event\) =>/);
+  assert.match(runtime, /arrow === 'ArrowUp' \|\| arrow === 'ArrowDown'/);
+  assert.match(runtime, /const delta = arrow === 'ArrowDown' \? 1 : -1/);
+  assert.match(runtime, /target\.focus\(\{ preventScroll: true \}\)/);
+  assert.match(runtime, /if \(getQuickMenu\(\) && handleQuickMenuKeydown\(event\)\) return true/);
+});
+
+test('advanced sources uses the exact player settings trigger outside the inferred player root', async () => {
+  const runtime = await text('src/injection/tv-playback-runtime.ts');
+
+  assert.match(runtime, /document\.querySelector\(explicitSelector\)/);
+  assert.match(runtime, /\[data-tv-player-menu-trigger="settings"\]/);
+  assert.match(runtime, /closeQuickMenu\(false\)/);
+  assert.match(runtime, /\[data-tv-settings-tab="quality"\]/);
+});
