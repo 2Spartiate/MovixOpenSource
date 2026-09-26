@@ -4536,6 +4536,7 @@ const WatchTv: React.FC = () => {
         <div className="absolute top-16 right-4 z-[9000] flex items-center gap-2">
           {/* Bouton Ouvrir dans une nouvelle page */}
           <button
+            data-tv-player-external-open=""
             onClick={() => {
               const targetUrl = embedType === 'vostfr'
                 ? `https://vidlink.pro/tv/${id}/${seasonNumber}/${episodeNumber}`
