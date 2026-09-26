@@ -4,6 +4,7 @@ import {
   Text,
   StyleSheet,
   BackHandler,
+  findNodeHandle,
   Platform,
   Modal,
   TouchableOpacity,
@@ -55,6 +56,9 @@ export default function BrowserScreen() {
   const [settingsVisible, setSettingsVisible] = useState(false);
   const [exitConfirmVisible, setExitConfirmVisible] = useState(false);
   const [exitChoice, setExitChoice] = useState<'no' | 'yes'>('no');
+  const [exitPreferredFocus, setExitPreferredFocus] = useState(false);
+  const exitNoButtonRef = useRef<React.ElementRef<typeof TouchableOpacity>>(null);
+  const exitYesButtonRef = useRef<React.ElementRef<typeof TouchableOpacity>>(null);
   const [isPictureInPictureActive, setIsPictureInPictureActive] = useState(false);
   const [webViewGeneration, setWebViewGeneration] = useState(0);
   const autoRecoveryAttemptedRef = useRef(false);
@@ -92,11 +96,13 @@ export default function BrowserScreen() {
       if (exitConfirmVisible) {
         setExitConfirmVisible(false);
         setExitChoice('no');
+        setExitPreferredFocus(false);
         return true;
       }
       if (isTV) {
         if (isTvHome) {
           setExitChoice('no');
+          setExitPreferredFocus(true);
           setExitConfirmVisible(true);
           return true;
         }
@@ -279,6 +285,7 @@ export default function BrowserScreen() {
         onRequestClose={() => {
           setExitConfirmVisible(false);
           setExitChoice('no');
+          setExitPreferredFocus(false);
         }}>
         <View style={styles.exitOverlay}>
           <View style={styles.exitDialog}>
@@ -288,14 +295,21 @@ export default function BrowserScreen() {
             </Text>
             <View style={styles.exitActions}>
               <TouchableOpacity
+                ref={exitNoButtonRef}
                 accessibilityRole="button"
                 accessibilityLabel="Ne pas quitter"
                 focusable
-                hasTVPreferredFocus={isTV}
-                onFocus={() => setExitChoice('no')}
+                hasTVPreferredFocus={isTV && exitPreferredFocus}
+                nextFocusLeft={findNodeHandle(exitNoButtonRef.current) ?? undefined}
+                nextFocusRight={findNodeHandle(exitYesButtonRef.current) ?? undefined}
+                onFocus={() => {
+                  setExitChoice('no');
+                  setExitPreferredFocus(false);
+                }}
                 onPress={() => {
                   setExitConfirmVisible(false);
                   setExitChoice('no');
+                  setExitPreferredFocus(false);
                 }}
                 style={[
                   styles.exitButton,
@@ -307,10 +321,16 @@ export default function BrowserScreen() {
                 ]}>NON</Text>
               </TouchableOpacity>
               <TouchableOpacity
+                ref={exitYesButtonRef}
                 accessibilityRole="button"
                 accessibilityLabel="Quitter l'application"
                 focusable
-                onFocus={() => setExitChoice('yes')}
+                nextFocusLeft={findNodeHandle(exitNoButtonRef.current) ?? undefined}
+                nextFocusRight={findNodeHandle(exitYesButtonRef.current) ?? undefined}
+                onFocus={() => {
+                  setExitChoice('yes');
+                  setExitPreferredFocus(false);
+                }}
                 onPress={() => BackHandler.exitApp()}
                 style={[
                   styles.exitButton,
