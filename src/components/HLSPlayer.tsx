@@ -8785,6 +8785,81 @@ const HLSPlayer = forwardRef<HLSPlayerRef, HLSPlayerProps>(({
     confirmActivePromptRef.current = confirmActivePrompt;
   });
 
+  const focusTvPlayPause = useCallback(() => {
+    window.requestAnimationFrame(() => {
+      try { playPauseButtonRef.current?.focus({ preventScroll: true }); }
+      catch { playPauseButtonRef.current?.focus(); }
+    });
+  }, []);
+
+  const openTvQuickMenu = useCallback(() => {
+    setShowControls(true);
+    setShowTvQuickMenu(true);
+  }, []);
+
+  const closeTvQuickMenu = useCallback(() => {
+    setShowTvQuickMenu(false);
+    focusTvPlayPause();
+  }, [focusTvPlayPause]);
+
+  const openTvAdvancedSettings = useCallback((tab: 'quality' | 'audio' | 'subtitles' = 'quality') => {
+    setShowTvQuickMenu(false);
+    setSettingsTab(tab);
+    setShowSettings(true);
+  }, []);
+
+  const openTvEpisodes = useCallback(() => {
+    setShowTvQuickMenu(false);
+    if (tvShowId && onShowEpisodesMenu) {
+      onShowEpisodesMenu();
+      return;
+    }
+    if (episodes.length > 0) {
+      setSelectedSeasonNumber(seasonNumber ?? 1);
+      setShowInternalEpisodesMenu(true);
+      return;
+    }
+    onShowEpisodesMenu?.();
+  }, [episodes.length, onShowEpisodesMenu, seasonNumber, tvShowId]);
+
+  const toggleTvPlaybackProfile = useCallback(() => {
+    const next: TvPlaybackProfile = tvPlaybackProfile === 'vo-fr' ? 'vf' : 'vo-fr';
+    writeTvPlaybackProfile(next);
+    tvProfileAppliedKeyRef.current = null;
+    setTvPlaybackCandidate(null);
+    setTvPlaybackScanStatus('idle');
+    setTvPlaybackProfile(next);
+  }, [tvPlaybackProfile]);
+
+  useEffect(() => {
+    if (!isMovixTvRuntime() || !controls || onlyQualityMenu || isWatchPartyGuest) return;
+    const timer = window.setTimeout(() => {
+      const active = document.activeElement;
+      if (
+        active === document.body ||
+        active === document.documentElement ||
+        !active ||
+        (active instanceof HTMLElement && !containerRef.current?.contains(active))
+      ) {
+        focusTvPlayPause();
+      }
+    }, 180);
+    return () => window.clearTimeout(timer);
+  }, [controls, focusTvPlayPause, isWatchPartyGuest, onlyQualityMenu, src]);
+
+  useEffect(() => {
+    if (!showTvQuickMenu) return;
+    const frame = window.requestAnimationFrame(() => {
+      const preferred = tvQuickMenuFirstActionRef.current;
+      const first = preferred || tvQuickMenuRef.current?.querySelector<HTMLElement>(
+        'button:not([disabled]), [tabindex]:not([tabindex="-1"])'
+      );
+      try { first?.focus({ preventScroll: true }); }
+      catch { first?.focus(); }
+    });
+    return () => window.cancelAnimationFrame(frame);
+  }, [showTvQuickMenu, tvPlaybackCandidate, tvPlaybackScanStatus]);
+
   useEffect(() => {
     const video = videoRef.current;
     if (!video) return;
