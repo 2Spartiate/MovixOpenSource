@@ -296,24 +296,26 @@ export default function BrowserScreen() {
             </Text>
             <View
               style={styles.exitActions}
-              onFocusCapture={(event) => {
-                const focusedTarget = event.nativeEvent.target;
-                const noTarget = findNodeHandle(exitNoButtonRef.current);
-                const yesTarget = findNodeHandle(exitYesButtonRef.current);
-                if (focusedTarget === noTarget) {
-                  setExitChoice('no');
-                } else if (focusedTarget === yesTarget) {
-                  setExitChoice('yes');
-                }
-              }}
-              onBlurCapture={(event) => {
-                const blurredTarget = event.nativeEvent.target;
-                const noTarget = findNodeHandle(exitNoButtonRef.current);
-                const yesTarget = findNodeHandle(exitYesButtonRef.current);
-                if (blurredTarget === noTarget || blurredTarget === yesTarget) {
-                  setExitChoice(null);
-                }
-              }}>
+              {...({
+                onFocusCapture: (event: any) => {
+                  const focusedTarget = event.nativeEvent.target;
+                  const noTarget = findNodeHandle(exitNoButtonRef.current);
+                  const yesTarget = findNodeHandle(exitYesButtonRef.current);
+                  if (focusedTarget === noTarget) {
+                    setExitChoice('no');
+                  } else if (focusedTarget === yesTarget) {
+                    setExitChoice('yes');
+                  }
+                },
+                onBlurCapture: (event: any) => {
+                  const blurredTarget = event.nativeEvent.target;
+                  const noTarget = findNodeHandle(exitNoButtonRef.current);
+                  const yesTarget = findNodeHandle(exitYesButtonRef.current);
+                  if (blurredTarget === noTarget || blurredTarget === yesTarget) {
+                    setExitChoice(null);
+                  }
+                },
+              } as any)}>
               <Pressable
                 ref={exitNoButtonRef}
                 accessibilityRole="button"
@@ -324,7 +326,11 @@ export default function BrowserScreen() {
                   nextFocusLeft: findNodeHandle(exitNoButtonRef.current) ?? undefined,
                   nextFocusRight: findNodeHandle(exitYesButtonRef.current) ?? undefined,
                 } as any)}
-                onFocus={() => setExitPreferredFocus(false)}
+                onFocus={() => {
+                  setExitChoice('no');
+                  setExitPreferredFocus(false);
+                }}
+                onBlur={() => setExitChoice(current => current === 'no' ? null : current)}
                 onPress={() => {
                   setExitConfirmVisible(false);
                   setExitChoice(null);
@@ -348,7 +354,11 @@ export default function BrowserScreen() {
                   nextFocusLeft: findNodeHandle(exitNoButtonRef.current) ?? undefined,
                   nextFocusRight: findNodeHandle(exitYesButtonRef.current) ?? undefined,
                 } as any)}
-                onFocus={() => setExitPreferredFocus(false)}
+                onFocus={() => {
+                  setExitChoice('yes');
+                  setExitPreferredFocus(false);
+                }}
+                onBlur={() => setExitChoice(current => current === 'yes' ? null : current)}
                 onPress={() => BackHandler.exitApp()}
                 style={[
                   styles.exitButton,
