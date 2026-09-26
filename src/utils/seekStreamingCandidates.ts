@@ -17,6 +17,10 @@ export interface SeekStreamingResultLike {
 export interface SeekStreamingHlsSource {
   url: string;
   label: string;
+  /** Provenance retained by generic extraction passes when available. */
+  source?: string;
+  /** True when the aggregator explicitly identified burned/embedded VOSTFR. */
+  isVostfr?: boolean;
   seekKind?: SeekStreamingCandidateKind;
   seekGroupKey?: string;
   seekEmbedUrl?: string;
