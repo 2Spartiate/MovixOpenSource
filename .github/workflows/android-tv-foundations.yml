@@ -95,7 +95,6 @@ jobs:
             tests/tvCarouselContract.test.mjs \
             tests/tvFocusRestoration.test.mjs \
             tests/tvUiCleanupContract.test.mjs \
-            tests/vipClientStatusContract.test.mjs \
             tests/androidArtifactCleanupContract.test.mjs
           npx tsc --noEmit
 

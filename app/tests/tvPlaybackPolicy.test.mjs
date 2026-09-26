@@ -94,12 +94,14 @@ test('original_language gates compatibility before resolution', async () => {
     maxHeight: 2160,
     audioLanguages: ['eng'],
     subtitleLanguages: ['fr'],
+    likelyMulti: true,
   });
   const original720 = candidate({
     url: 'https://example.invalid/original-720.m3u8',
     maxHeight: 720,
     audioLanguages: ['jpn'],
     subtitleLanguages: ['fr'],
+    likelyMulti: true,
   });
   assert.equal(chooseTvPlaybackCandidate([wrong4k, original720], 'vo-fr', 'ja').candidate?.url, original720.url);
 });
@@ -110,6 +112,7 @@ test('French-original content can use its natural French original audio without 
     url: 'https://example.invalid/fr-original.m3u8',
     audioLanguages: ['fra'],
     subtitleLanguages: [],
+    likelyMulti: true,
   });
   assert.equal(chooseTvPlaybackCandidate([frenchOriginal], 'vo-fr', 'fr').candidate?.url, frenchOriginal.url);
 });

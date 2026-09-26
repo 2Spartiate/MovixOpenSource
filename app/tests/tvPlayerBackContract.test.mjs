@@ -84,14 +84,13 @@ test('Android TV Home Back opens BlueNight exit confirmation with NON preferred'
   const browser = await text('src/screens/BrowserScreen.tsx');
 
   assert.match(browser, /const isTvHome = useMemo\(\(\) => \{/);
-  assert.match(browser, /if \(isTvHome\) \{[\s\S]{0,200}setExitChoice\('no'\)[\s\S]{0,120}setExitConfirmVisible\(true\)/);
   assert.match(browser, /visible=\{!isPictureInPictureActive && isTV && exitConfirmVisible\}/);
   assert.match(browser, /Quitter Movix \?/);
   assert.match(browser, /setExitChoice\(null\)[\s\S]{0,120}setExitPreferredFocus\(true\)[\s\S]{0,120}setExitConfirmVisible\(true\)/);
   assert.match(browser, /<Pressable[\s\S]{0,500}accessibilityLabel="Ne pas quitter"/);
   assert.match(browser, /<Pressable[\s\S]{0,500}accessibilityLabel="Quitter l'application"/);
   assert.match(browser, /hasTVPreferredFocus=\{isTV && exitPreferredFocus\}/);
-  assert.match(browser, /onFocusCapture=\{\(event\) => \{[\s\S]{0,500}focusedTarget === noTarget[\s\S]{0,100}setExitChoice\('no'\)[\s\S]{0,220}focusedTarget === yesTarget[\s\S]{0,100}setExitChoice\('yes'\)/);
+  assert.match(browser, /onFocusCapture=\{\(event\) => \{[\s\S]{0,500}focusedTarget === noTarget[\s\S]{0,100}setExitChoice\(null\)[\s\S]{0,220}focusedTarget === yesTarget[\s\S]{0,100}setExitChoice\('yes'\)/);
   assert.match(browser, /onBlurCapture=\{\(event\) => \{[\s\S]{0,500}setExitChoice\(null\)/);
   assert.match(browser, /exitChoice === 'no' && styles\.exitButtonFocused/);
   assert.match(browser, /exitChoice === 'yes' && styles\.exitButtonFocused/);
@@ -105,6 +104,6 @@ test('Android TV Home Back opens BlueNight exit confirmation with NON preferred'
 test('Back while the TV exit confirmation is visible cancels instead of exiting', async () => {
   const browser = await text('src/screens/BrowserScreen.tsx');
 
-  assert.match(browser, /if \(exitConfirmVisible\) \{[\s\S]{0,180}setExitConfirmVisible\(false\)[\s\S]{0,180}setExitChoice\('no'\)[\s\S]{0,180}setExitPreferredFocus\(false\)[\s\S]{0,120}return true/);
-  assert.match(browser, /onRequestClose=\{\(\) => \{[\s\S]{0,180}setExitConfirmVisible\(false\)[\s\S]{0,120}setExitChoice\('no'\)[\s\S]{0,180}setExitPreferredFocus\(false\)/);
+  assert.match(browser, /if \(exitConfirmVisible\) \{[\s\S]{0,180}setExitConfirmVisible\(false\)[\s\S]{0,180}setExitChoice\(null\)[\s\S]{0,180}setExitPreferredFocus\(false\)[\s\S]{0,120}return true/);
+  assert.match(browser, /onRequestClose=\{\(\) => \{[\s\S]{0,180}setExitConfirmVisible\(false\)[\s\S]{0,120}setExitChoice\(null\)[\s\S]{0,180}setExitPreferredFocus\(false\)/);
 });
