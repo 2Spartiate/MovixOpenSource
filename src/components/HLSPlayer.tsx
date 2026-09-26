@@ -9286,6 +9286,12 @@ const HLSPlayer = forwardRef<HLSPlayerRef, HLSPlayerProps>(({
         unlockPlayer();
         return;
       }
+      if (showTvQuickMenu) {
+        consume();
+        setShowTvQuickMenu(false);
+        focusTvPlayPause();
+        return;
+      }
       if (showSettings) {
         consume();
         setShowSettings(false);
@@ -9369,7 +9375,8 @@ const HLSPlayer = forwardRef<HLSPlayerRef, HLSPlayerProps>(({
     window.addEventListener('movix-tv-back', handleTvBack);
     return () => window.removeEventListener('movix-tv-back', handleTvBack);
   }, [
-    isLocked, unlockPlayer, showSettings, showCastMenu, showSeasonDropdown,
+    isLocked, unlockPlayer, showTvQuickMenu, focusTvPlayPause,
+    showSettings, showCastMenu, showSeasonDropdown,
     showInternalEpisodesMenu, studioOpen, showStreamInfo, showShortcutsHelp,
     showVolumeSlider, skipPromptVisible, dismissActiveSegment, votableSubmission,
     dismissVote, nextEpisodePromptVisible, handleIgnore, showNextMovie,
