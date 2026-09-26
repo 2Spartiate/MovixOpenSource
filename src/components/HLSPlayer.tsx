@@ -11825,7 +11825,7 @@ const HLSPlayer = forwardRef<HLSPlayerRef, HLSPlayerProps>(({
 
   const tvPlaybackQualityLabel = tvPlaybackCandidate?.maxHeight
     ? String(tvPlaybackCandidate.maxHeight) + 'p'
-    : 'Auto';
+    : null;
   const tvPlaybackProviderLabel = tvPlaybackCandidate?.provider === 'bravo'
     ? 'Bravo MULTI'
     : (tvPlaybackCandidate?.provider === 'nexus' ? 'Nexus VOSTFR' : null);
@@ -11891,13 +11891,17 @@ const HLSPlayer = forwardRef<HLSPlayerRef, HLSPlayerProps>(({
               <div className="rounded-xl border border-zinc-800 bg-zinc-900/80 px-4 py-3">
                 <div className="text-xs uppercase tracking-wide text-zinc-500">Source automatique</div>
                 {tvPlaybackScanStatus === 'running' ? (
-                  <div className="mt-1 font-semibold text-white">Analyse Nexus / Bravo…</div>
+                  <div className="mt-1 font-semibold text-white">Recherche de la meilleure source…</div>
                 ) : tvPlaybackCandidate && tvPlaybackProviderLabel ? (
                   <div className="mt-1 flex items-center justify-between gap-3">
-                    <span className="font-semibold text-white">{tvPlaybackProviderLabel}</span>
-                    <span className="rounded-md bg-red-950/60 px-2 py-1 text-sm font-semibold text-red-300">
-                      {tvPlaybackQualityLabel}
+                    <span className="font-semibold text-white">
+                      Auto : {tvPlaybackProviderLabel}
                     </span>
+                    {tvPlaybackQualityLabel && (
+                      <span className="rounded-md bg-red-950/60 px-2 py-1 text-sm font-semibold text-red-300">
+                        {tvPlaybackQualityLabel}
+                      </span>
+                    )}
                   </div>
                 ) : tvPlaybackSourceCount === 0 ? (
                   <div className="mt-1 text-sm font-medium text-amber-300">
@@ -11905,7 +11909,7 @@ const HLSPlayer = forwardRef<HLSPlayerRef, HLSPlayerProps>(({
                   </div>
                 ) : (
                   <div className="mt-1 text-sm font-medium text-amber-300">
-                    Aucune source compatible avec ce profil
+                    Aucune source automatique compatible
                   </div>
                 )}
               </div>
@@ -11918,9 +11922,14 @@ const HLSPlayer = forwardRef<HLSPlayerRef, HLSPlayerProps>(({
                   className="flex w-full items-center justify-between rounded-xl border border-zinc-800 bg-zinc-900/80 px-4 py-3 text-left text-white focus:outline-none focus:ring-2 focus:ring-red-500"
                   data-player-controls
                 >
-                  <span>Mode</span>
+                  <span>
+                    <span className="block">Mode</span>
+                    <span className="mt-0.5 block text-xs font-normal text-zinc-500">
+                      {tvPlaybackProfile === 'vo-fr' ? 'VO + sous-titres FR' : 'audio français'}
+                    </span>
+                  </span>
                   <span className="font-semibold text-red-300">
-                    {tvPlaybackProfile === 'vo-fr' ? 'VO + FR' : 'VF'}
+                    {tvPlaybackProfile === 'vo-fr' ? 'VOSTFR' : 'VF'}
                   </span>
                 </button>
               )}
@@ -12004,7 +12013,7 @@ const HLSPlayer = forwardRef<HLSPlayerRef, HLSPlayerProps>(({
                 className="flex w-full items-center justify-between rounded-xl border border-zinc-700 bg-zinc-900 px-4 py-3 text-left font-semibold text-white focus:outline-none focus:ring-2 focus:ring-red-500"
                 data-player-controls
               >
-                <span>Paramètres avancés</span>
+                <span>Sources avancées</span>
                 <span className="text-zinc-500">›</span>
               </button>
             </div>
