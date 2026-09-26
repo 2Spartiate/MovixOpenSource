@@ -215,7 +215,8 @@ test('TV detail pages hide TVmaze source line and keep TMDB attribution visually
   const overrides = await text('src/injection/app-site-overrides.ts');
 
   assert.match(overrides, /const applyTvDetailExternalLinkPolicy = \(\) =>/);
-  assert.match(overrides, /\^\\\/\(\?:movie\|tv\)\\\//);
+  assert.match(overrides, /pathname\.startsWith\('\/movie\/'\)/);
+  assert.match(overrides, /pathname\.startsWith\('\/tv\/'\)/);
   assert.match(overrides, /href\.includes\('tvmaze\.com'\)/);
   assert.match(overrides, /const sourceLine = link\.closest\('p'\)/);
   assert.match(overrides, /hideManagedNode\(sourceLine\)/);
