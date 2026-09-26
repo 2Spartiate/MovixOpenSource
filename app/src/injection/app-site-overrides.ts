@@ -505,6 +505,48 @@ export function buildAppSiteOverrides(): string {
     });
   };
 
+  const installTvShortcutBadgeStyle = () => {
+    if (window.MOVIX_TV !== true) return;
+    if (document.getElementById('movix-tv-shortcut-badges')) return;
+
+    const style = document.createElement('style');
+    style.id = 'movix-tv-shortcut-badges';
+    style.textContent = [
+      '[data-tv-shortcut-badge]{position:relative!important;}',
+      '[data-tv-shortcut-badge]::after{',
+      'content:attr(data-tv-shortcut-badge);',
+      'position:absolute;',
+      'top:-7px;',
+      'right:-7px;',
+      'width:18px;',
+      'height:18px;',
+      'display:flex;',
+      'align-items:center;',
+      'justify-content:center;',
+      'border-radius:9999px;',
+      'background:rgba(220,38,38,.96);',
+      'border:1px solid rgba(255,255,255,.72);',
+      'box-shadow:0 0 0 2px rgba(0,0,0,.7),0 0 12px rgba(239,68,68,.45);',
+      'color:#fff;',
+      'font:700 11px/1 system-ui,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;',
+      'z-index:2147483000;',
+      'pointer-events:none;',
+      '}',
+    ].join('');
+    document.head.appendChild(style);
+  };
+
+  const markTvShortcutBadge = (target, label) => {
+    if (!(target instanceof HTMLElement)) return;
+    let host = target;
+    if (target instanceof HTMLInputElement) {
+      const form = target.closest('form');
+      if (form instanceof HTMLElement) host = form;
+      else if (target.parentElement instanceof HTMLElement) host = target.parentElement;
+    }
+    host.setAttribute('data-tv-shortcut-badge', String(label));
+  };
+
   const markTvHeaderShortcutTargets = () => {
     if (window.MOVIX_TV !== true) return null;
     const header = document.querySelector('header');
@@ -515,12 +557,14 @@ export function buildAppSiteOverrides(): string {
     ).find((element) => element instanceof HTMLInputElement && element.offsetParent !== null);
     if (search instanceof HTMLElement) {
       search.setAttribute('data-tv-header-shortcut', 'search');
+      markTvShortcutBadge(search, '1');
     }
 
     const explore = Array.from(header.querySelectorAll('[data-explore-trigger]'))
       .find((element) => element instanceof HTMLElement && element.offsetParent !== null);
     if (explore instanceof HTMLElement) {
       explore.setAttribute('data-tv-header-shortcut', 'explore');
+      markTvShortcutBadge(explore, '3');
     }
 
     let account = header.querySelector(
@@ -543,6 +587,7 @@ export function buildAppSiteOverrides(): string {
     }
     if (account instanceof HTMLElement) {
       account.setAttribute('data-tv-header-shortcut', 'account');
+      markTvShortcutBadge(account, '2');
     }
 
     return { header, search, account, explore };
@@ -876,6 +921,7 @@ export function buildAppSiteOverrides(): string {
     // Product behavior below is TV-only.
     makeMovixBrandInert();
     markTvHeroFocusPolicy();
+    installTvShortcutBadgeStyle();
     exposeTvHeaderPointerPolicy();
     lockTvHeaderPointerNavigation();
     ensureTvHomeLayout();
