@@ -100,3 +100,15 @@ test('app blocks popup windows before page scripts and at the native WebView bou
   assert.match(webView, /javaScriptCanOpenWindowsAutomatically=\{false\}/);
   assert.doesNotMatch(webView, /Linking\.openURL|isSameOrigin/);
 });
+
+test('Android TV WebView requests native focus before DOM navigation while handheld keeps defaults', async () => {
+  const webView = await text('src/components/WebViewBrowser.tsx');
+
+  assert.match(webView, /const requestTvWebViewFocus = useCallback\(\(\) => \{/);
+  assert.match(webView, /if \(!isTV\) return/);
+  assert.match(webView, /requestFocus\?\.\(\)/);
+  assert.match(webView, /setTimeout\(requestTvWebViewFocus, 80\)/);
+  assert.match(webView, /setTimeout\(requestTvWebViewFocus, 450\)/);
+  assert.match(webView, /focusable=\{isTV \? true : undefined\}/);
+  assert.match(webView, /onLoadEnd=\{requestTvWebViewFocus\}/);
+});
