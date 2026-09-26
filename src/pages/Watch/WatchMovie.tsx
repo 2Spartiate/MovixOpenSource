@@ -367,6 +367,7 @@ const WatchMovie: React.FC = () => {
   const [isLoading, setIsLoading] = useState(true);
   const [loadingText, setLoadingText] = useState(t('watch.loadingSources'));
   const [movieTitle, setMovieTitle] = useState<string>('');
+  const [originalLanguage, setOriginalLanguage] = useState<string>('');
   const [backdropPath, setBackdropPath] = useState<string | null>(null);
   const [posterPath, setPosterPath] = useState<string | null>(null);
   // Poster localisé (langue d'interface > EN > sans langue) via l'endpoint
@@ -799,6 +800,7 @@ const WatchMovie: React.FC = () => {
       });
 
       setMovieTitle(tmdbResponse.data.title);
+      setOriginalLanguage(tmdbResponse.data.original_language || '');
       setBackdropPath(tmdbResponse.data.backdrop_path);
       setPosterPath(tmdbResponse.data.poster_path);
 
@@ -2909,6 +2911,7 @@ const WatchMovie: React.FC = () => {
                   <div className="p-4">
                     <HLSPlayer
                       priorityCategory="moviesTv"
+                       originalLanguage={originalLanguage}
                       autoFallbackGuard={autoFallbackGuard}
                       src={''}
                       className="hidden"
@@ -3020,6 +3023,7 @@ const WatchMovie: React.FC = () => {
                   <div className="p-4">
                     <HLSPlayer
                       priorityCategory="moviesTv"
+                       originalLanguage={originalLanguage}
                       autoFallbackGuard={autoFallbackGuard}
                       src={''}
                       className="hidden"
@@ -3063,6 +3067,7 @@ const WatchMovie: React.FC = () => {
         <div className="w-full h-full flex items-center justify-center">
           <HLSPlayer
             priorityCategory="moviesTv"
+                       originalLanguage={originalLanguage}
             autoFallbackGuard={autoFallbackGuard}
             key={`darkino-${selectedDarkinoSource}-${id}`}
             src={darkinoSources[selectedDarkinoSource]?.m3u8 || darkinoSources[0]?.m3u8 || ""}
@@ -3178,6 +3183,7 @@ const WatchMovie: React.FC = () => {
                   <div className="p-4">
                     <HLSPlayer
                       priorityCategory="moviesTv"
+                       originalLanguage={originalLanguage}
                       autoFallbackGuard={autoFallbackGuard}
                       src={''}
                       className="hidden"
@@ -3225,6 +3231,7 @@ const WatchMovie: React.FC = () => {
         <div className="w-full h-full flex items-center justify-center">
           <HLSPlayer
             priorityCategory="moviesTv"
+                       originalLanguage={originalLanguage}
             autoFallbackGuard={autoFallbackGuard}
             key={`swiftflux-${id}-${swiftfluxPlayback?.url || 'pending'}`}
             src={swiftfluxPlayback?.url || ''}
@@ -3295,6 +3302,7 @@ const WatchMovie: React.FC = () => {
                   <div className="p-4">
                     <HLSPlayer
                       priorityCategory="moviesTv"
+                       originalLanguage={originalLanguage}
                       autoFallbackGuard={autoFallbackGuard}
                       src={''}
                       className="hidden"
@@ -3334,6 +3342,7 @@ const WatchMovie: React.FC = () => {
         <div className="w-full h-full flex items-center justify-center">
           <HLSPlayer
             priorityCategory="moviesTv"
+                       originalLanguage={originalLanguage}
             autoFallbackGuard={autoFallbackGuard}
             key={`mp4-${selectedMp4Source}-${id}-${videoSource}`}
             src={videoSource || mp4Sources[selectedMp4Source]?.url || ""}
@@ -3408,6 +3417,7 @@ const WatchMovie: React.FC = () => {
                   <div className="p-4">
                     <HLSPlayer
                       priorityCategory="moviesTv"
+                       originalLanguage={originalLanguage}
                       autoFallbackGuard={autoFallbackGuard}
                       src={''}
                       className="hidden"
@@ -3448,6 +3458,7 @@ const WatchMovie: React.FC = () => {
         <div className="w-full h-full flex items-center justify-center">
           <HLSPlayer
             priorityCategory="moviesTv"
+                       originalLanguage={originalLanguage}
             autoFallbackGuard={autoFallbackGuard}
             key={`nexus_hls-${selectedNexusHlsSource}-${id}-${videoSource}`}
             src={videoSource || nexusHlsSources[selectedNexusHlsSource]?.url || ""}
@@ -3522,6 +3533,7 @@ const WatchMovie: React.FC = () => {
                   <div className="p-4">
                     <HLSPlayer
                       priorityCategory="moviesTv"
+                       originalLanguage={originalLanguage}
                       autoFallbackGuard={autoFallbackGuard}
                       src={''}
                       className="hidden"
@@ -3565,6 +3577,7 @@ const WatchMovie: React.FC = () => {
         <div className="w-full h-full flex items-center justify-center">
           <HLSPlayer
             priorityCategory="moviesTv"
+                       originalLanguage={originalLanguage}
             autoFallbackGuard={autoFallbackGuard}
             key={`nexus_file-${selectedNexusFileSource}-${id}-${videoSource}`}
             src={videoSource || nexusFileSources[selectedNexusFileSource]?.url || ""}
@@ -3639,6 +3652,7 @@ const WatchMovie: React.FC = () => {
                   <div className="p-4">
                     <HLSPlayer
                       priorityCategory="moviesTv"
+                       originalLanguage={originalLanguage}
                       autoFallbackGuard={autoFallbackGuard}
                       src={''}
                       className="hidden"
@@ -3682,6 +3696,7 @@ const WatchMovie: React.FC = () => {
         <div className="w-full h-full flex items-center justify-center">
           <HLSPlayer
             priorityCategory="moviesTv"
+                       originalLanguage={originalLanguage}
             autoFallbackGuard={autoFallbackGuard}
             key={`darkino-${selectedDarkinoSource}-${id}`}
             src={darkinoSources[selectedDarkinoSource]?.m3u8 || darkinoSources[0]?.m3u8 || ""}
@@ -3760,6 +3775,7 @@ const WatchMovie: React.FC = () => {
                   <div className="p-4">
                     <HLSPlayer
                       priorityCategory="moviesTv"
+                       originalLanguage={originalLanguage}
                       autoFallbackGuard={autoFallbackGuard}
                       src={''}
                       className="hidden"
@@ -3886,6 +3902,7 @@ const WatchMovie: React.FC = () => {
                   <div className="p-4">
                     <HLSPlayer
                       priorityCategory="moviesTv"
+                       originalLanguage={originalLanguage}
                       autoFallbackGuard={autoFallbackGuard}
                       src={''}
                       className="hidden"
@@ -3994,6 +4011,7 @@ const WatchMovie: React.FC = () => {
                   <div className="p-4">
                     <HLSPlayer
                       priorityCategory="moviesTv"
+                       originalLanguage={originalLanguage}
                       autoFallbackGuard={autoFallbackGuard}
                       src={''}
                       className="hidden"
