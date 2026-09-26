@@ -83,10 +83,12 @@ test('dynamic content is discovered at navigation time instead of cached', () =>
   const discovery = runtime.indexOf('api.getTVFocusCandidates()', moveStart);
   assert.ok(moveStart >= 0);
   assert.ok(discovery > moveStart);
-  // O may use a MutationObserver for guarded focus-loss recovery, but
+  // O may use a MutationObserver for guarded focus/search-scope recovery, but
   // candidate discovery itself must remain lazy and uncached.
   assert.doesNotMatch(runtime, /cachedCandidates|candidateObserver/);
-  assert.match(runtime, /new MutationObserver\(scheduleFocusRecovery\)/);
+  assert.match(runtime, /new MutationObserver\(\(\) => \{/);
+  assert.match(runtime, /syncSearchSuggestionScope\(\)/);
+  assert.match(runtime, /scheduleFocusRecovery\(\)/);
 });
 
 test('TV D-pad runtime is injected only behind tvMode', async () => {
@@ -158,11 +160,15 @@ test('runtime keeps horizontal movement local and header chrome outside normal D
 });
 
 
-test('empty page focus enters the explicit primary hero CTA before cards/header', () => {
+test('automatic startup focus waits briefly for Hero Play and never auto-scrolls to a card', () => {
   const runtime = buildTvDpadRuntime('(function () { return null; })', '/* dom discovery */');
-  assert.match(runtime, /const primary = elements\.find\(element => element\.hasAttribute\('data-tv-primary-focus'\)\)/);
-  assert.match(runtime, /data-tv-autofocus[\s\S]{0,180}primary[\s\S]{0,180}contentCard/);
-  assert.match(runtime, /if \(pageFocusIsEmpty\(\)\) \{\s*return api\.ensureInitialFocus\(\)/);
+  assert.match(runtime, /api\.ensureInitialFocus = \(allowContentFallback = false\) =>/);
+  assert.match(runtime, /const heroPlay = getHeroPlay\(\)/);
+  assert.match(runtime, /focusWithoutJank\(heroPlay, false\)/);
+  assert.match(runtime, /if \(!allowContentFallback\) return false/);
+  assert.match(runtime, /api\.heroAutofocusReadyAt = performance\.now\(\) \+ 300/);
+  assert.match(runtime, /api\.ensureInitialFocus\(false\)/);
+  assert.match(runtime, /return api\.ensureInitialFocus\(true\)/);
 });
 
 test('Embla fallback clicks the live hidden arrow only when focused card reaches the viewport edge', () => {
@@ -174,13 +180,18 @@ test('Embla fallback clicks the live hidden arrow only when focused card reaches
 });
 
 
-test('Search keeps the full D-pad native so Android TV IME and voice action stay navigable', () => {
+test('Search stays native until autocomplete exists, then Down enters a confined TV suggestion scope', () => {
   const runtime = buildTvDpadRuntime('(function () { return null; })', '/* dom discovery */');
-  assert.match(runtime, /A real text input must keep the whole D-pad/);
-  assert.match(runtime, /ArrowDown is needed to leave the edit field/);
-  assert.match(runtime, /including its microphone\/voice action/);
+  assert.match(runtime, /if \(kind === 'search'\)/);
+  assert.match(runtime, /a\[href\*="\/search\?q="\]/);
+  assert.match(runtime, /data-tv-search-suggestions/);
+  assert.match(runtime, /max-height', 'calc\(100vh - 96px\)'/);
+  assert.match(runtime, /overflow-y', 'auto'/);
+  assert.match(runtime, /overscroll-behavior', 'contain'/);
+  assert.match(runtime, /direction === 'down'[\s\S]{0,420}focusFirstScopeItem\(scope, input\)/);
+  assert.match(runtime, /direction === 'up'[\s\S]{0,760}input\.focus/);
+  assert.match(runtime, /Plain text editing remains native/);
   assert.match(runtime, /if \(!api\.shouldSpatialNavigationHandle\(event\)\) return false/);
-  assert.doesNotMatch(runtime, /data-tv-header-shortcut'\) === 'search'[\s\S]{0,220}consumeEvent\(event\)/);
 });
 
 test('header gating detects internal scrolling from hero geometry, not only window.scrollY', () => {
