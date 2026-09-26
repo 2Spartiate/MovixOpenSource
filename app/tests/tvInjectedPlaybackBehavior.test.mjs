@@ -207,6 +207,16 @@ test('0 and Back close the TV menu and non-TV never installs this listener', asy
   assert.equal(handheld.actions().length, 0);
 });
 
+test('0 waits for the real fullscreen exit before focusing the first menu row', async () => {
+  const app = await harness();
+  app.document.fullscreenElement = app.video;
+  app.document.exitFullscreen = async () => { app.document.fullscreenElement = null; };
+  app.press('0', 'Digit0');
+  await new Promise(resolve => setImmediate(resolve));
+  assert.equal(app.document.fullscreenElement, null);
+  assert.equal(app.document.activeElement, app.actions()[0]);
+});
+
 test('injected resolver actually clicks the quality-ranked compatible Nexus/Bravo source', async () => {
   const app = await harness(true, [
     { provider: 'nexus', label: 'Nexus VOSTFR', quality: 720 },
@@ -237,4 +247,32 @@ test('VOSTFR fallback is title-local and leaves the saved preference untouched',
   assert.equal(result.profile, 'vf');
   assert.equal(result.requestedProfile, 'vo-fr');
   assert.equal(app.storage.get('movix.tv.playback.profile.v1'), 'vo-fr');
+});
+
+test('a legacy boolean resolver is not treated as successful selection', async () => {
+  const app = await harness(true, [
+    { provider: 'nexus', label: 'Nexus VOSTFR', quality: 720 },
+  ]);
+  app.window.__MOVIX_TV_PROFILE_RESOLVER = true;
+  const selected = [];
+  app.window.addEventListener('sourceChange', event => selected.push(event.detail.url));
+  const result = await app.window.__MOVIX_TV_PLAYBACK.selectBestProfileSource('vo-fr');
+  assert.equal(result.status, 'selected');
+  assert.deepEqual(selected, ['Nexus VOSTFR']);
+});
+
+test('a versioned frontend must acknowledge the actual source before delegation succeeds', async () => {
+  const app = await harness();
+  app.window.__MOVIX_TV_PROFILE_RESOLVER = { version: 2 };
+  app.window.addEventListener('movix-tv-playback-profile-change', event => {
+    app.window.dispatchEvent({
+      type: 'movix-tv-playback-profile-result',
+      detail: { status: 'selected', requestedProfile: event.detail.profile,
+        profile: event.detail.profile, provider: 'nexus', quality: 1080 },
+    });
+  });
+  const result = await app.window.__MOVIX_TV_PLAYBACK.selectBestProfileSource('vo-fr');
+  assert.equal(result.status, 'selected');
+  assert.equal(result.quality, 1080);
+  assert.equal(app.settings.clicks, 0);
 });

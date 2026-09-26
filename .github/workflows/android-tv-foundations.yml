@@ -22,6 +22,7 @@ on:
       - agent/google-tv-playback-ux-v12
       - agent/google-tv-playback-ux-v13
       - agent/google-tv-playback-ux-v14
+      - agent/google-tv-playback-ux-v15
     paths:
       - 'app/**'
       - 'src/**'
@@ -86,6 +87,7 @@ jobs:
             tests/tvPlaybackQuickMenuContract.test.mjs \
             tests/tvPlaybackRemoteV12Contract.test.mjs \
             tests/tvInjectedPlaybackRuntimeContract.test.mjs \
+            tests/tvInjectedPlaybackBehavior.test.mjs \
             tests/tvOriginalLanguageContract.test.mjs \
             tests/tvPlayerMenusContract.test.mjs \
             tests/tvLivePlayerDpadContract.test.mjs \
@@ -139,6 +141,10 @@ jobs:
           APK="app/build/outputs/apk/release/app-release.apk"
           test -f "$APK"
           unzip -l "$APK" | grep -q 'assets/index.android.bundle'
+          unzip -p "$APK" assets/index.android.bundle > "${RUNNER_TEMP}/movix-v15.bundle"
+          grep -aFq 'tv-playback-v15' "${RUNNER_TEMP}/movix-v15.bundle"
+          unzip -p "$APK" 'classes*.dex' > "${RUNNER_TEMP}/movix-v15.dex"
+          grep -aFq 'TvExitDialogModule' "${RUNNER_TEMP}/movix-v15.dex"
           echo "Standalone React Native bundle is packaged in $APK"
 
       - name: Delete previous Movix Android APK/AAB artifacts

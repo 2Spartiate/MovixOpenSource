@@ -4,6 +4,7 @@ export function buildTvPlaybackRuntime(): string {
   if (window.MOVIX_TV !== true) return;
 
   const api = window.__MOVIX_TV_PLAYBACK || (window.__MOVIX_TV_PLAYBACK = {});
+  api.runtimeVersion = 'tv-playback-v15';
 
   if (typeof api.keydownHandler === 'function') {
     window.removeEventListener('keydown', api.keydownHandler, true);

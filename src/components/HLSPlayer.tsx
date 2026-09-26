@@ -11921,6 +11921,7 @@ const HLSPlayer = forwardRef<HLSPlayerRef, HLSPlayerProps>(({
     <div
       ref={containerRef}
       {...{ [HLS_PLAYER_ROOT_ATTRIBUTE]: '' }}
+      data-tv-original-language={isMovixTvRuntime() ? originalLanguage : undefined}
       className={`relative group w-full h-full bg-black rounded-xl overflow-hidden ${isLoading ? 'aspect-[16/9]' : ''} video-container ${className} ${isFullscreenAnimating ? 'fullscreen-animating' : ''} ${isPageFullscreen ? PLAYER_FULLSCREEN_FILL_CLASS : ''} select-none ${shouldHideCursor || isLocked ? 'cursor-none' : ''}`}
       onPointerMove={handleMouseMove}
       onMouseMove={handleMouseMove}
