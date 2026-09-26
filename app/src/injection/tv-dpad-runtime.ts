@@ -915,7 +915,7 @@ ${domDiscoveryRuntime}
           (target.getAttribute('type') || 'text').toLowerCase()
         )) ||
         target.closest(
-          '[data-tv-consume-arrows], [data-tv-player-control], [data-tv-dpad-scope="native"]'
+          '[data-tv-consume-arrows], [data-tv-player-control], [data-tv-dpad-scope="native"], [data-hls-player-root]'
         )
       ) {
         return null;
