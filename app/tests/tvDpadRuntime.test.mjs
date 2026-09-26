@@ -174,13 +174,13 @@ test('Embla fallback clicks the live hidden arrow only when focused card reaches
 });
 
 
-test('shortcut Search Down restores content while stale accidental header focus is ejected synchronously', () => {
+test('Search keeps the full D-pad native so Android TV IME and voice action stay navigable', () => {
   const runtime = buildTvDpadRuntime('(function () { return null; })', '/* dom discovery */');
-  assert.match(runtime, /data-tv-header-shortcut'\) === 'search'/);
-  assert.match(runtime, /deactivateHeaderShortcut\(false, true\)/);
-  assert.match(runtime, /if \(isHeaderElement\(target\)\)/);
-  assert.match(runtime, /try \{ target\.blur\(\); \} catch \{\}/);
-  assert.match(runtime, /api\.restoreContentFocus\(\)/);
+  assert.match(runtime, /A real text input must keep the whole D-pad/);
+  assert.match(runtime, /ArrowDown is needed to leave the edit field/);
+  assert.match(runtime, /including its microphone\/voice action/);
+  assert.match(runtime, /if \(!api\.shouldSpatialNavigationHandle\(event\)\) return false/);
+  assert.doesNotMatch(runtime, /data-tv-header-shortcut'\) === 'search'[\s\S]{0,220}consumeEvent\(event\)/);
 });
 
 test('header gating detects internal scrolling from hero geometry, not only window.scrollY', () => {
@@ -231,4 +231,15 @@ test('numeric shortcut scopes are temporary and Back relocks header before resto
   assert.match(runtime, /policy\.lock\(\)/);
   assert.match(runtime, /window\.addEventListener\('movix-tv-back', handleTvBack\)/);
   assert.match(runtime, /deactivateHeaderShortcut\(true, true\)/);
+});
+
+test('Account shortcut turns the visible profile panel into its own scroll container', () => {
+  const runtime = buildTvDpadRuntime('(function () { return null; })', '/* dom discovery */');
+  assert.match(runtime, /if \(kind === 'account'\)/);
+  assert.match(runtime, /classes\.includes\('absolute'\) && classes\.includes\('top-full'\)/);
+  assert.match(runtime, /data-tv-shortcut-scroll-container/);
+  assert.match(runtime, /max-height', 'calc\(100vh - 76px\)'/);
+  assert.match(runtime, /overflow-y', 'auto'/);
+  assert.match(runtime, /overscroll-behavior', 'contain'/);
+  assert.match(runtime, /return panel/);
 });
