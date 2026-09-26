@@ -5109,7 +5109,10 @@ const HLSPlayer = forwardRef<HLSPlayerRef, HLSPlayerProps>(({
       desiredAudio = audioTracks.find(track => isFrenchLanguage(audioText(track)));
     } else {
       desiredAudio =
-        audioTracks.find(track => languageMatchesOriginal(audioText(track), originalLanguage))
+        audioTracks.find(track => (
+          languageMatchesOriginal(track.language, originalLanguage)
+          || languageMatchesOriginal(track.name, originalLanguage)
+        ))
         || audioTracks.find(track => !isFrenchLanguage(audioText(track)));
     }
 
