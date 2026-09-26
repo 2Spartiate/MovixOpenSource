@@ -2619,7 +2619,7 @@ const HLSPlayer = forwardRef<HLSPlayerRef, HLSPlayerProps>(({
       hls.on(HlsCtor.Events.MANIFEST_PARSED, (_event, data) => {
         const levels = data?.levels || [];
         const top = [...levels].sort((a, b) => (b.height || 0) - (a.height || 0))[0];
-        const maxHeight = Number(top?.height) > 0 ? Number(top.height) : null;
+        const directHeight = Number(top?.height) > 0 ? Number(top.height) : null;
         const audioEntries = ((hls as any).audioTracks || (data as any)?.audioTracks || []) as Array<any>;
         const subtitleEntries = ((hls as any).subtitleTracks || (data as any)?.subtitleTracks || []) as Array<any>;
 
@@ -2635,6 +2635,10 @@ const HLSPlayer = forwardRef<HLSPlayerRef, HLSPlayerProps>(({
           ? formatAvailableHlsQualities(qualityOptions)
           : formatDetectedStreamQuality(top);
         rememberSourceQuality(source.url, qualityLabel);
+        const parsedHeights = Array.from(String(qualityLabel || '').matchAll(/(\d{3,4})p/gi))
+          .map(match => Number(match[1]))
+          .filter(height => Number.isFinite(height) && height > 0);
+        const maxHeight = directHeight ?? (parsedHeights.length > 0 ? Math.max(...parsedHeights) : null);
 
         finish({ maxHeight, audioLanguages, subtitleLanguages });
       });
