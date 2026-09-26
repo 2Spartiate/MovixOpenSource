@@ -49,6 +49,7 @@ interface WebViewBrowserProps {
   onNavigationStateChange?: (state: WebViewNavigation) => void;
   onError?: (error: string) => void;
   onPictureInPictureModeChange?: (active: boolean) => void;
+  onTvRouteChange?: (pathname: string, href: string) => void;
 }
 
 function getPictureInPictureShimMode(): PictureInPictureShimMode {
@@ -115,14 +116,14 @@ function isUsableHttpUrl(value: unknown): value is string {
 }
 
 const WebViewBrowser = forwardRef<WebViewBrowserRef, WebViewBrowserProps>(
-  ({ url, isTV, onNavigationStateChange, onError, onPictureInPictureModeChange }, ref) => {
+  ({ url, isTV, onNavigationStateChange, onError, onPictureInPictureModeChange, onTvRouteChange }, ref) => {
     const webViewRef = useRef<WebView>(null);
     const topLevelUrlRef = useRef(url);
     const navigationGenerationRef = useRef(0);
 
     React.useEffect(() => {
       topLevelUrlRef.current = url;
-    }, [url]);
+    }, [isTV, onTvRouteChange, url]);
 
     React.useEffect(() => {
       const stopCastStatusForwarding = startCastShimEventForwarding(webViewRef);
@@ -170,6 +171,22 @@ const WebViewBrowser = forwardRef<WebViewBrowserRef, WebViewBrowserProps>(
     }));
 
     const onMessage = useCallback((event: WebViewMessageEvent) => {
+      if (isTV && onTvRouteChange) {
+        try {
+          const parsed = JSON.parse(event.nativeEvent.data);
+          if (
+            parsed?.type === 'MOVIX_TV_ROUTE' &&
+            typeof parsed.pathname === 'string' &&
+            typeof parsed.href === 'string'
+          ) {
+            onTvRouteChange(parsed.pathname, parsed.href);
+            return;
+          }
+        } catch {
+          // Not a route-sync message; pass it to the regular bridge.
+        }
+      }
+
       const isTopFrame = typeof event.nativeEvent.isTopFrame === 'boolean'
         ? event.nativeEvent.isTopFrame
         : undefined;
