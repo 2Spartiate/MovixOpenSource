@@ -100,6 +100,7 @@ async function harness(tvMode = true, sourceFixtures = [], options = {}) {
       if (selector === '[data-source-menu]') return this.querySelectorAll('*').find(element => element.getAttribute('data-source-menu') !== null) || null;
       if (selector === 'h3') return this.querySelectorAll('h3')[0] || null;
       if (selector === '.overflow-y-auto') return this.querySelectorAll('*').find(element => element.className.split(' ').includes('overflow-y-auto')) || null;
+      if (selector === '.overflow-x-auto') return this.querySelectorAll('*').find(element => element.className.split(' ').includes('overflow-x-auto')) || null;
       if (selector === '.overflow-y-auto button') return this.querySelectorAll('*').find(element => element.tagName === 'BUTTON' && element.closest('.overflow-y-auto')) || null;
       if (selector === 'button') return this.querySelectorAll('button')[0] || null;
       return null;
@@ -152,17 +153,22 @@ async function harness(tvMode = true, sourceFixtures = [], options = {}) {
       close.addEventListener('click', () => panel.remove());
       header.appendChild(close);
       panel.appendChild(header);
+      const tabStrip = options.legacySettingsTabs ? new Element('div') : panel;
+      if (options.legacySettingsTabs) {
+        tabStrip.className = 'overflow-x-auto';
+        panel.appendChild(tabStrip);
+      }
       const quality = new Element('button');
-      quality.setAttribute('data-tv-settings-tab', 'quality');
+      if (!options.legacySettingsTabs) quality.setAttribute('data-tv-settings-tab', 'quality');
       quality.setAttribute('aria-pressed', 'true');
-      panel.appendChild(quality);
+      tabStrip.appendChild(quality);
       const format = new Element('button');
-      format.setAttribute('data-tv-settings-tab', 'format');
+      if (!options.legacySettingsTabs) format.setAttribute('data-tv-settings-tab', 'format');
       format.addEventListener('click', () => {
         quality.setAttribute('aria-pressed', 'false');
         format.setAttribute('aria-pressed', 'true');
       });
-      panel.appendChild(format);
+      tabStrip.appendChild(format);
       const sourceMenu = new Element('div');
       sourceMenu.setAttribute('data-source-menu', '');
       const qualityAction = new Element('button');
@@ -272,6 +278,8 @@ async function harness(tvMode = true, sourceFixtures = [], options = {}) {
       if (selector === 'video') return options.noPlayerVideo ? [] : [video];
       if (selector === 'div') return body.querySelectorAll('div');
       if (selector === 'button, [role="button"]') return body.querySelectorAll('button');
+      if (selector.startsWith('.settings-menu')) return body.querySelectorAll('*')
+        .filter(element => element.className.split(' ').includes('settings-menu'));
       return [];
     },
     querySelector(selector) {
@@ -362,7 +370,7 @@ test('V13 Watch video retains its initial source without a hidden scan', async (
 });
 
 test('0 exits fullscreen first and opens the one-action movie menu', async () => {
-  const app = await harness();
+  const app = await harness(true, [], { route: '/watch/movie/123' });
   const root = app.video.parentElement;
   app.document.fullscreenElement = root;
   app.document.exitFullscreen = async () => { app.document.fullscreenElement = null; };
@@ -409,7 +417,7 @@ test('Qualité et langues opens the real settings panel and navigates its source
   const app = await harness(true, [
     { provider: 'nexus', label: 'Nexus VOSTFR', quality: 1080 },
     { provider: 'bravo', label: 'Bravo MULTI', quality: 720 },
-  ]);
+  ], { route: '/watch/movie/123' });
   const selected = [];
   app.window.addEventListener('sourceChange', event => selected.push(event.detail.url));
   app.settings.opacity = '0'; // Hidden player toolbar remains clickable from the quick menu.
@@ -434,7 +442,7 @@ test('Qualité et langues opens the real settings panel and navigates its source
 });
 
 test('quick menu disappears before a delayed real settings panel mounts', async () => {
-  const app = await harness(true, [], { settingsDelayMs: 80 });
+  const app = await harness(true, [], { settingsDelayMs: 80, route: '/watch/movie/123' });
   app.press('0', 'Digit0');
   await nextTurn();
   app.press('Enter');
@@ -446,4 +454,125 @@ test('quick menu disappears before a delayed real settings panel mounts', async 
   assert.equal(app.document.activeElement.getAttribute('data-tv-settings-tab'), 'quality');
   assert.equal(app.press('ArrowDown').prevented, true);
   assert.equal(app.document.activeElement.textContent, 'Qualité auto');
+});
+
+test('episode action survives a route change and a temporarily unmounted trigger', async () => {
+  const app = await harness(true, [], { episodes: true });
+  app.press('0', 'Digit0');
+  await nextTurn();
+  app.press('Enter');
+  await nextTurn();
+  app.press('ArrowDown');
+  app.press('Enter');
+  assert.deepEqual(app.episodeClicks, [2]);
+
+  // A new episode remounts the player; its toolbar can appear after 0.
+  app.window.location.pathname = '/watch/tv/123/s/1/e/2';
+  app.episodesTrigger.remove();
+  app.press('0', 'Digit0');
+  await nextTurn();
+  assert.equal(app.actions().length, 2);
+  assert.match(app.actions()[0].textContent, /Épisodes/);
+  app.press('Enter');
+  assert.equal(app.actions().length, 0);
+  setTimeout(() => app.video.parentElement.appendChild(app.episodesTrigger), 20);
+  await new Promise(resolve => setTimeout(resolve, 90));
+  assert.equal(app.episodesTrigger.clicks, 2);
+  assert.equal(app.document.activeElement.textContent, 'Épisode 1');
+});
+
+test('scan replacing its own focused button stays within the real settings panel', async () => {
+  const app = await harness(true, [{ provider: 'nexus', label: 'Nexus VOSTFR', quality: 1080 }],
+    { route: '/watch/movie/123' });
+  app.press('0', 'Digit0');
+  await nextTurn();
+  app.press('Enter');
+  await nextTurn();
+  app.press('ArrowDown');
+  app.press('ArrowDown');
+  assert.equal(app.document.activeElement.textContent, 'Vérification de la qualité');
+  const before = app.video.currentTime;
+  app.press('Enter');
+  assert.notEqual(app.document.activeElement, app.playPause);
+  for (const key of ['ArrowDown', 'ArrowUp', 'ArrowLeft', 'ArrowRight']) {
+    assert.equal(app.press(key).prevented, true);
+    assert.equal(app.video.currentTime, before);
+    assert.notEqual(app.document.activeElement, app.playPause);
+  }
+  assert.equal(app.window.__MOVIX_TV_PLAYBACK.focusPlayPause(), false);
+});
+
+test('settings tabs and list edges consume every D-pad arrow and recover stolen focus', async () => {
+  const app = await harness(true, [{ provider: 'bravo', label: 'Bravo MULTI', quality: 720 }],
+    { route: '/watch/movie/123' });
+  app.press('0', 'Digit0');
+  await nextTurn();
+  app.press('Enter');
+  await nextTurn();
+
+  const before = app.video.currentTime;
+  app.press('ArrowDown');
+  app.press('ArrowUp');
+  assert.equal(app.document.activeElement.getAttribute('data-tv-settings-tab'), 'quality');
+  app.press('ArrowRight');
+  assert.equal(app.document.activeElement.getAttribute('data-tv-settings-tab'), 'format');
+  app.press('ArrowLeft');
+  assert.equal(app.document.activeElement.getAttribute('data-tv-settings-tab'), 'quality');
+  app.press('ArrowUp');
+  assert.equal(app.document.activeElement.textContent, 'Fermer');
+  assert.equal(app.press('ArrowUp').prevented, true);
+  assert.equal(app.document.activeElement.textContent, 'Fermer');
+  for (let i = 0; i < 20; i++) assert.equal(app.press('ArrowDown').prevented, true);
+  const bottom = app.document.activeElement;
+  assert.equal(app.press('ArrowDown').prevented, true);
+  assert.equal(app.document.activeElement, bottom);
+  assert.equal(app.video.currentTime, before);
+
+  // The frontend may focus Play/Pause after a source state update.
+  app.playPause.focus();
+  assert.equal(app.document.activeElement, bottom);
+  const back = { type: 'movix-tv-back', cancelable: true, preventDefault() { this.prevented = true; } };
+  app.window.dispatchEvent(back);
+  assert.equal(back.prevented, true);
+  assert.equal(app.document.body.querySelector('.settings-menu'), null);
+  assert.equal(app.window.location.pathname, '/watch/movie/123');
+});
+
+test('a transiently hidden or replaced settings node retains Back and D-pad ownership', async () => {
+  const app = await harness(true, [], { route: '/watch/movie/123' });
+  app.press('0', 'Digit0');
+  await nextTurn();
+  app.press('Enter');
+  await nextTurn();
+  const first = app.document.querySelector('.settings-menu');
+  first.opacity = '0';
+  const before = app.video.currentTime;
+  assert.equal(app.press('ArrowRight').prevented, true);
+  assert.equal(app.video.currentTime, before);
+  first.remove();
+  app.settings.click(); // The same React panel is mounted with a new DOM node.
+  const replacement = app.document.querySelector('.settings-menu');
+  assert.notEqual(replacement, first);
+  assert.equal(app.press('ArrowDown').prevented, true);
+  assert.equal(app.document.activeElement.textContent, 'Qualité auto');
+  assert.equal(replacement.getAttribute('data-tv-injected-panel'), 'settings');
+  const back = { type: 'movix-tv-back', cancelable: true, preventDefault() { this.prevented = true; } };
+  app.window.dispatchEvent(back);
+  assert.equal(back.prevented, true);
+  assert.equal(app.document.body.querySelector('.settings-menu'), null);
+});
+
+test('older settings tabs without data hooks remain navigable in their real strip', async () => {
+  const app = await harness(true, [], { legacySettingsTabs: true, route: '/watch/movie/123' });
+  app.press('0', 'Digit0');
+  await nextTurn();
+  app.press('Enter');
+  await nextTurn();
+  assert.equal(app.document.activeElement.getAttribute('aria-pressed'), 'true');
+  const firstTab = app.document.activeElement;
+  assert.equal(app.press('ArrowRight').prevented, true);
+  assert.notEqual(app.document.activeElement, firstTab);
+  assert.equal(app.document.activeElement.getAttribute('data-tv-settings-tab'), null);
+  app.press('Enter');
+  assert.equal(app.document.activeElement.getAttribute('aria-pressed'), 'true');
 });
