@@ -1,3 +1,4 @@
+/// <reference lib="dom" />
 /**
  * Device-local parental controls for the remote site actually loaded by the
  * native WebView. This runtime is installed on handheld and TV before the site
@@ -106,6 +107,7 @@ function installParentalControlsRuntime() {
   const dictionary = {
     fr: {
       title: 'Contrôle parental', desc: 'Réglez les accès sur cet appareil, avec ou sans connexion.',
+      priorityNav: 'Priorité',
       local: 'Ce PIN et ces réglages restent sur cet appareil. Ce verrou local ne protège pas les accès hors de Movix.',
       create: 'Créez un PIN de 6 à 8 chiffres.', confirmPin: 'Confirmer le nouveau PIN',
       newPin: 'Nouveau PIN (6 à 8 chiffres)', currentPin: 'PIN actuel', enterPin: 'PIN parental',
@@ -121,6 +123,7 @@ function installParentalControlsRuntime() {
     },
     en: {
       title: 'Parental controls', desc: 'Set access rules on this device, signed in or not.',
+      priorityNav: 'Priority',
       local: 'This PIN and these settings stay on this device. This local guard does not protect access outside Movix.',
       create: 'Create a 6 to 8 digit PIN.', confirmPin: 'Confirm new PIN',
       newPin: 'New PIN (6 to 8 digits)', currentPin: 'Current PIN', enterPin: 'Parental PIN',
@@ -366,7 +369,10 @@ function installParentalControlsRuntime() {
     for (const [index, list] of lists.entries()) {
       if (!list || list.querySelector('[data-movix-parental-nav]')) continue;
       const buttons = Array.from(list.querySelectorAll<HTMLButtonElement>('button'));
-      const sourceButton = buttons.find(button => button.textContent?.trim() === title);
+      const sourceButton = buttons.find(button => {
+        const label = button.textContent?.trim();
+        return label === strings().priorityNav || label === title;
+      });
       if (!sourceButton) continue;
       const item = document.createElement(index === 0 ? 'li' : 'span');
       item.setAttribute('data-movix-parental-nav', '');

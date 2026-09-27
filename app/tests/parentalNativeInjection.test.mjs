@@ -99,3 +99,13 @@ test('local PIN storage uses PBKDF2 and the injected overlay owns focus and inte
   assert.match(source, /data-movix-parental-nav/);
   assert.match(source, /source\.parentElement\?\.insertBefore\(section, source\)/);
 });
+
+test('injected sidebar and mobile entries match the shorter live navigation labels', async () => {
+  const fr = JSON.parse(await text('../src/i18n/locales/fr.json'));
+  const en = JSON.parse(await text('../src/i18n/locales/en.json'));
+  for (const locale of [fr, en]) {
+    assert.notEqual(locale.settings.sections.sourcePriority, locale.settings.sourcePriority.title);
+    assert.ok(source.includes(`priorityNav: '${locale.settings.sections.sourcePriority}'`));
+  }
+  assert.match(source, /const lists = \[[\s\S]*data-settings-sidebar-scroll[\s\S]*lg\\\\:hidden\.fixed/);
+});
