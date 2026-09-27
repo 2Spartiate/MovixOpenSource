@@ -151,9 +151,14 @@ jobs:
           unzip -l "$APK" | grep -q 'assets/index.android.bundle'
           unzip -p "$APK" assets/index.android.bundle > "$RUNNER_TEMP/movix-native-bundle"
           strings "$RUNNER_TEMP/movix-native-bundle" > "$RUNNER_TEMP/movix-native-strings"
-          grep -Fq 'movix_parental_pin_v1' "$RUNNER_TEMP/movix-native-strings"
-          grep -Fq 'movix-parental-overlay' "$RUNNER_TEMP/movix-native-strings"
-          grep -Fq 'installParentalControlsRuntime();' "$RUNNER_TEMP/movix-native-strings"
+          # Hermes can store a Unicode injection literal as UTF-16LE.
+          strings -el "$RUNNER_TEMP/movix-native-bundle" >> "$RUNNER_TEMP/movix-native-strings"
+          for marker in 'movix_parental_pin_v1' 'movix-parental-overlay' 'installParentalControlsRuntime();'; do
+            grep -Fq "$marker" "$RUNNER_TEMP/movix-native-strings" || {
+              echo "Missing parental runtime marker in release bundle: $marker" >&2
+              exit 1
+            }
+          done
           echo "Standalone React Native bundle is packaged in $APK"
 
       - name: Upload Google TV standalone APK
