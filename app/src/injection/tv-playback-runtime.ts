@@ -120,8 +120,22 @@ export function buildTvPlaybackRuntime(): string {
     video?.webkitDisplayingFullscreen
   );
 
+  const onWatchRoute = () => window.location.pathname.startsWith('/watch/');
+
+  const getOpenPlayerPanel = () => {
+    const open = api.openPlayerPanel;
+    if (!open) return null;
+    if (!onWatchRoute() || open.route !== window.location.pathname + window.location.search ||
+        !(open.element instanceof HTMLElement) || !open.element.isConnected ||
+        !visible(open.element)) {
+      api.openPlayerPanel = null;
+      return null;
+    }
+    return open;
+  };
+
   const focusPlayPause = () => {
-    if (getQuickMenu()) return false;
+    if (!onWatchRoute() || getQuickMenu() || api.panelPending || getOpenPlayerPanel()) return false;
     const video = getActiveVideo();
     const root = getPlayerRoot(video);
     const button = getPlayPauseButton(root);
@@ -134,7 +148,7 @@ export function buildTvPlaybackRuntime(): string {
     if (api.focusTimer) clearTimeout(api.focusTimer);
     api.focusTimer = setTimeout(() => {
       api.focusTimer = null;
-      if (getQuickMenu()) return;
+      if (!onWatchRoute() || getQuickMenu() || api.panelPending || getOpenPlayerPanel()) return;
       const video = getActiveVideo();
       const root = getPlayerRoot(video);
       if (!video || !(root instanceof HTMLElement)) return;
@@ -231,82 +245,8 @@ export function buildTvPlaybackRuntime(): string {
     });
   };
 
-  const PROFILE_KEY = 'movix.tv.playback.profile.v1';
   const MENU_ID = 'movix-tv-injected-playback-menu';
   const MENU_STYLE_ID = 'movix-tv-injected-playback-menu-style';
-
-  const getPlaybackProfile = () => {
-    try { return localStorage.getItem(PROFILE_KEY) === 'vf' ? 'vf' : 'vo-fr'; }
-    catch { return 'vo-fr'; }
-  };
-
-  const isFrenchLanguage = (value) => {
-    const language = normalise(value).split('-')[0];
-    return (
-      language === 'fr' ||
-      language === 'fra' ||
-      language === 'fre' ||
-      normalise(value).includes('french') ||
-      normalise(value).includes('francais')
-    );
-  };
-
-  const applyProfileToCurrentTracks = (video, profile) => {
-    if (!(video instanceof HTMLVideoElement)) return;
-
-    // Best effort on the current manifest only. Cross-source Nexus/Bravo
-    // selection remains owned by the full V12 resolver when that frontend is
-    // actually deployed; the injected fallback never invents compatibility.
-    try {
-      const audioTracks = video.audioTracks;
-      if (audioTracks && typeof audioTracks.length === 'number') {
-        let selected = -1;
-        for (let index = 0; index < audioTracks.length; index += 1) {
-          const track = audioTracks[index];
-          const french = isFrenchLanguage(track.language || track.label || '');
-          if (profile === 'vf' ? french : !french) {
-            selected = index;
-            break;
-          }
-        }
-        if (selected >= 0) {
-          for (let index = 0; index < audioTracks.length; index += 1) {
-            audioTracks[index].enabled = index === selected;
-          }
-        }
-      }
-    } catch {}
-
-    try {
-      const tracks = video.textTracks;
-      if (tracks && typeof tracks.length === 'number') {
-        let frenchSubtitle = -1;
-        for (let index = 0; index < tracks.length; index += 1) {
-          const track = tracks[index];
-          if (isFrenchLanguage(track.language || track.label || '')) {
-            frenchSubtitle = index;
-            break;
-          }
-        }
-        for (let index = 0; index < tracks.length; index += 1) {
-          tracks[index].mode =
-            profile === 'vo-fr' && index === frenchSubtitle ? 'showing' : 'disabled';
-        }
-      }
-    } catch {}
-  };
-
-  const setPlaybackProfile = (profile) => {
-    try { localStorage.setItem(PROFILE_KEY, profile); } catch {}
-    const video = getActiveVideo();
-    applyProfileToCurrentTracks(video, profile);
-    try {
-      window.dispatchEvent(new CustomEvent('movix-tv-playback-profile-change', {
-        detail: { profile, origin: 'tv-webview-injection' },
-      }));
-    } catch {}
-    return profile;
-  };
 
   const ensureQuickMenuStyle = () => {
     if (document.getElementById(MENU_STYLE_ID)) return;
@@ -323,51 +263,163 @@ export function buildTvPlaybackRuntime(): string {
     (document.head || document.documentElement).appendChild(style);
   };
 
-  const getQuickMenu = () => document.getElementById(MENU_ID);
+  const getQuickMenu = () => {
+    const menu = document.getElementById(MENU_ID);
+    if (menu && (!onWatchRoute() ||
+        api.quickMenuRoute !== window.location.pathname + window.location.search)) {
+      menu.remove();
+      return null;
+    }
+    return menu;
+  };
 
-  const closeQuickMenu = () => {
+  const closeQuickMenu = (restoreFocus = true) => {
     const menu = getQuickMenu();
     if (menu) menu.remove();
-    setTimeout(focusPlayPause, 0);
+    api.quickMenuIndex = 0;
+    if (restoreFocus) setTimeout(focusPlayPause, 0);
   };
 
   const findActionButton = (root, labels, explicitSelector) => {
-    if (explicitSelector && root instanceof HTMLElement) {
-      const explicit = root.querySelector(explicitSelector);
-      if (explicit instanceof HTMLElement && visible(explicit)) return explicit;
+    if (!onWatchRoute()) return null;
+    const scopes = [];
+    for (let node = root, depth = 0; node instanceof HTMLElement && depth < 10;
+         node = node.parentElement, depth += 1) scopes.push(node);
+    scopes.push(document);
+    for (const scope of scopes) {
+      if (explicitSelector) {
+        const exact = scope.querySelector(explicitSelector);
+        if (exact instanceof HTMLElement && !exact.disabled && exact.isConnected) return exact;
+      }
+      const match = Array.from(scope.querySelectorAll('button, [role="button"]')).find((button) => {
+        if (!(button instanceof HTMLElement) || !button.isConnected || button.disabled ||
+            (scope === document && !visible(button)) ||
+            button.closest('[data-tv-playback-quick-menu]')) return false;
+        const signature = buttonSignature(button);
+        return labels.some((label) => signature === label || signature.includes(label)) ||
+          (explicitSelector && Boolean(button.querySelector(
+            'svg.lucide-settings, svg.lucide-settings-2, .lucide-settings'
+          )));
+      });
+      if (match) return match;
     }
-    const scope = root instanceof HTMLElement ? root : document;
-    return Array.from(scope.querySelectorAll('button, [role="button"]')).find((button) => {
-      if (!(button instanceof HTMLElement) || !visible(button)) return false;
-      const signature = buttonSignature(button);
-      return labels.some((label) => signature === label || signature.includes(label));
+    return null;
+  };
+
+  const waitForPanel = async (findPanel) => {
+    const started = performance.now();
+    while (performance.now() - started < 3500) {
+      const panel = findPanel();
+      if (panel instanceof HTMLElement && visible(panel)) return panel;
+      await new Promise((resolve) => setTimeout(resolve, 50));
+    }
+    return null;
+  };
+
+  const getSettingsPanel = () => {
+    const panel = document.querySelector('.settings-menu[data-player-menu="settings"], .settings-menu');
+    return panel instanceof HTMLElement && visible(panel) ? panel : null;
+  };
+
+  const getEpisodesPanel = () => {
+    const exact = document.querySelector('[data-tv-episodes-menu]');
+    if (exact instanceof HTMLElement && visible(exact)) return exact;
+    return Array.from(document.querySelectorAll('div')).find((node) => {
+      if (!(node instanceof HTMLElement) || !visible(node)) return false;
+      const classes = String(node.className || '');
+      return (classes.includes('z-[11000]') || classes.includes('z-[12000]')) &&
+        Boolean(node.querySelector('h3') && node.querySelector('.overflow-y-auto'));
     }) || null;
   };
 
-  const openExistingEpisodes = (root) => {
-    const button = findActionButton(root, ['episodes', 'episode'], null);
-    closeQuickMenu();
-    if (button instanceof HTMLElement) {
-      button.click();
-      return true;
-    }
-    try { window.dispatchEvent(new Event('movix-tv-open-episodes')); } catch {}
-    return false;
+  const getPanelFocusables = (panel) => Array.from(panel.querySelectorAll(
+    'button, a[href], input, select, textarea, [role="button"], [role="slider"], [tabindex]'
+  )).filter((item) => item instanceof HTMLElement && !item.disabled &&
+    item.getAttribute('tabindex') !== '-1' && visible(item) &&
+    !item.closest('[aria-hidden="true"], [inert]'));
+
+  const focusPanelItem = (item) => {
+    if (!(item instanceof HTMLElement)) return false;
+    try { item.focus({ preventScroll: true }); } catch { item.focus(); }
+    try { item.scrollIntoView({ block: 'nearest', inline: 'nearest' }); } catch {}
+    return document.activeElement === item;
   };
 
-  const openExistingSettings = (root) => {
-    const button = findActionButton(
-      root,
-      ['parametres', 'settings', 'sources'],
-      '[data-tv-player-menu-trigger="settings"]'
-    );
-    closeQuickMenu();
-    if (button instanceof HTMLElement) {
+  const getPanelCloseButton = (panel) => {
+    const heading = panel.querySelector('h3');
+    const headerButton = heading?.parentElement?.querySelector('button');
+    if (headerButton instanceof HTMLElement) return headerButton;
+    return Array.from(panel.querySelectorAll('button')).find((button) =>
+      button.querySelector('svg.lucide-x, .lucide-x') ||
+      ['fermer', 'close'].includes(buttonSignature(button))) || null;
+  };
+
+  const ensurePanelFocusStyle = () => {
+    if (document.getElementById('movix-tv-player-panel-focus')) return;
+    const style = document.createElement('style');
+    style.id = 'movix-tv-player-panel-focus';
+    style.textContent = '[data-tv-injected-panel] :is(button,a,[tabindex]):focus{' +
+      'outline:3px solid #ef4444!important;outline-offset:2px!important;}';
+    (document.head || document.documentElement).appendChild(style);
+  };
+
+  const ownPanel = (kind, panel) => {
+    ensurePanelFocusStyle();
+    panel.setAttribute('data-tv-injected-panel', kind);
+    api.openPlayerPanel = {
+      kind, element: panel, route: window.location.pathname + window.location.search,
+    };
+  };
+
+  const closePlayerPanel = (open) => {
+    const button = getPanelCloseButton(open.element);
+    if (!(button instanceof HTMLElement)) return false;
+    api.openPlayerPanel = null;
+    button.click();
+    schedulePlayPauseFocus(300);
+    return true;
+  };
+
+  const openExistingEpisodes = async (root) => {
+    const button = findActionButton(root, ['episodes', 'episode'], null);
+    if (!(button instanceof HTMLElement)) return false;
+    api.panelPending = true;
+    closeQuickMenu(false);
+    try {
       button.click();
+      const panel = await waitForPanel(getEpisodesPanel);
+      if (!(panel instanceof HTMLElement)) return false;
+      ownPanel('episodes', panel);
+      const items = getPanelFocusables(panel);
+      focusPanelItem(items.find((item) => item.closest('.overflow-y-auto')) ||
+        items.find((item) => item !== getPanelCloseButton(panel)) || items[0]);
       return true;
+    } finally {
+      api.panelPending = false;
     }
-    try { window.dispatchEvent(new Event('movix-tv-open-sources')); } catch {}
-    return false;
+  };
+
+  const openExistingSettings = async (root) => {
+    const existing = getSettingsPanel();
+    const button = findActionButton(
+      root, ['parametres', 'settings'], '[data-tv-player-menu-trigger="settings"]'
+    );
+    if (!existing && !(button instanceof HTMLElement)) return false;
+    api.panelPending = true;
+    closeQuickMenu(false);
+    try {
+      if (!existing) button.click();
+      const panel = await waitForPanel(getSettingsPanel);
+      if (!(panel instanceof HTMLElement)) return false;
+      ownPanel('settings', panel);
+      const quality = panel.querySelector('[data-tv-settings-tab="quality"]');
+      if (quality instanceof HTMLElement && visible(quality)) quality.click();
+      focusPanelItem(quality instanceof HTMLElement && visible(quality)
+        ? quality : getPanelFocusables(panel)[0]);
+      return true;
+    } finally {
+      api.panelPending = false;
+    }
   };
 
   const waitForFullscreenExit = async (video, root) => {
@@ -428,33 +480,21 @@ export function buildTvPlaybackRuntime(): string {
       return button;
     };
 
-    const profileButton = addAction('', '', () => {
-      const next = getPlaybackProfile() === 'vo-fr' ? 'vf' : 'vo-fr';
-      setPlaybackProfile(next);
-      updateProfileLabel();
-    });
-
-    const updateProfileLabel = () => {
-      const profile = getPlaybackProfile();
-      profileButton.innerHTML = profile === 'vf'
-        ? '<span>Mode : VF</span><span class="movix-tv-menu-sub">audio français</span>'
-        : '<span>Mode : VOSTFR</span><span class="movix-tv-menu-sub">VO + sous-titres FR</span>';
-    };
-    updateProfileLabel();
-
     const episodeButton = findActionButton(activeRoot, ['episodes', 'episode'], null);
     if (episodeButton instanceof HTMLElement) {
       addAction('Épisodes', 'ouvrir', () => openExistingEpisodes(activeRoot));
     }
 
-    addAction('Sources avancées', 'ouvrir les réglages', () => openExistingSettings(activeRoot));
-    addAction('Fermer', '0 ou Back', closeQuickMenu);
+    addAction('Qualité et langues', 'Sources VOSTFR/VF, audio, sous-titres',
+      () => openExistingSettings(activeRoot));
 
     overlay.appendChild(card);
     document.body.appendChild(overlay);
+    api.quickMenuRoute = window.location.pathname + window.location.search;
+    api.quickMenuIndex = 0;
 
     requestAnimationFrame(() => {
-      try { profileButton.focus({ preventScroll: true }); } catch { profileButton.focus(); }
+      focusPanelItem(card.querySelector('.movix-tv-menu-action'));
     });
     return true;
   };
@@ -475,6 +515,141 @@ export function buildTvPlaybackRuntime(): string {
     }
   };
 
+  const keyArrow = (event) => {
+    const code = String(event.code || '');
+    const key = String(event.key || '');
+    const legacy = Number(event.keyCode || event.which || 0);
+    return code.startsWith('Arrow') ? code : key.startsWith('Arrow') ? key :
+      ({ 19: 'ArrowUp', 20: 'ArrowDown', 21: 'ArrowLeft', 22: 'ArrowRight',
+         37: 'ArrowLeft', 38: 'ArrowUp', 39: 'ArrowRight', 40: 'ArrowDown' })[legacy] || '';
+  };
+
+  const isEnterKey = (event) => event.key === 'Enter' || event.code === 'Enter' ||
+    event.code === 'NumpadEnter' || event.keyCode === 23 || event.keyCode === 66;
+
+  const getQuickMenuActions = () => {
+    const menu = getQuickMenu();
+    return menu instanceof HTMLElement
+      ? Array.from(menu.querySelectorAll('.movix-tv-menu-action')) : [];
+  };
+
+  const handleQuickMenuKeydown = (event) => {
+    const actions = getQuickMenuActions();
+    if (isZeroKey(event) || ['Escape', 'Backspace', 'BrowserBack'].includes(event.key)) {
+      consume(event);
+      closeQuickMenu();
+      return true;
+    }
+    const arrow = keyArrow(event);
+    if ((arrow === 'ArrowUp' || arrow === 'ArrowDown') && actions.length) {
+      const focused = actions.indexOf(document.activeElement);
+      const current = focused >= 0 ? focused : Number(api.quickMenuIndex || 0);
+      const delta = arrow === 'ArrowDown' ? 1 : -1;
+      api.quickMenuIndex = Math.max(0, Math.min(actions.length - 1, current + delta));
+      focusPanelItem(actions[api.quickMenuIndex]);
+    } else if (isEnterKey(event) && actions.length) {
+      const focused = actions.indexOf(document.activeElement);
+      actions[focused >= 0 ? focused : Number(api.quickMenuIndex || 0)].click();
+    }
+    consume(event);
+    return true;
+  };
+
+  const getPanelHorizontalNeighbor = (items, active, direction) => {
+    if (!(active instanceof HTMLElement)) return null;
+    const rect = active.getBoundingClientRect();
+    const x = (rect.left + rect.right) / 2;
+    const y = (rect.top + rect.bottom) / 2;
+    return items.map((item) => {
+      if (item === active) return null;
+      const candidate = item.getBoundingClientRect();
+      const dx = (candidate.left + candidate.right) / 2 - x;
+      const dy = Math.abs((candidate.top + candidate.bottom) / 2 - y);
+      if (dx * direction < 4 || dy > Math.max(rect.height, candidate.height) * 0.65) return null;
+      return { item, score: Math.abs(dx) + dy * 2 };
+    }).filter(Boolean).sort((a, b) => a.score - b.score)[0]?.item || null;
+  };
+
+  const handlePlayerPanelKeydown = (event, open) => {
+    const panel = open.element;
+    if (isZeroKey(event) || ['Escape', 'Backspace', 'BrowserBack'].includes(event.key)) {
+      consume(event);
+      if (open.kind === 'episodes') {
+        const dropdown = Array.from(panel.querySelectorAll('.top-full')).find((node) =>
+          node instanceof HTMLElement && visible(node) && node.querySelector('button'));
+        const season = dropdown?.parentElement?.querySelector('button');
+        if (season instanceof HTMLElement) {
+          season.click();
+          focusPanelItem(season);
+          return true;
+        }
+      }
+      closePlayerPanel(open);
+      return true;
+    }
+
+    const items = getPanelFocusables(panel);
+    const current = items.includes(document.activeElement)
+      ? document.activeElement : items[Number(api.panelFocusIndex || 0)] || null;
+    const arrow = keyArrow(event);
+    if (arrow) {
+      if (current instanceof HTMLElement && current.closest(
+        'input, textarea, select, [role="slider"], [data-tv-consume-arrows]'
+      )) return false;
+      let next = null;
+      if (open.kind === 'episodes') {
+        const dropdown = Array.from(panel.querySelectorAll('.top-full')).find((node) =>
+          node instanceof HTMLElement && visible(node) && node.querySelector('button'));
+        const choices = dropdown instanceof HTMLElement ? getPanelFocusables(dropdown) : items;
+        if (arrow === 'ArrowUp' || arrow === 'ArrowDown') {
+          const delta = arrow === 'ArrowDown' ? 1 : -1;
+          const index = choices.indexOf(current);
+          next = choices[Math.max(0, Math.min(choices.length - 1,
+            index < 0 ? 0 : index + delta))];
+        }
+      } else {
+        const tabs = items.filter((item) => item.hasAttribute('data-tv-settings-tab'));
+        const close = getPanelCloseButton(panel);
+        const body = items.filter((item) => item !== close && !tabs.includes(item));
+        const activeTab = tabs.find((item) => item.getAttribute('aria-pressed') === 'true') || tabs[0];
+        if ((arrow === 'ArrowLeft' || arrow === 'ArrowRight') && tabs.includes(current)) {
+          const delta = arrow === 'ArrowRight' ? 1 : -1;
+          next = tabs[Math.max(0, Math.min(tabs.length - 1, tabs.indexOf(current) + delta))];
+        } else if (arrow === 'ArrowLeft' || arrow === 'ArrowRight') {
+          next = getPanelHorizontalNeighbor(body, current, arrow === 'ArrowRight' ? 1 : -1);
+        } else {
+          const delta = arrow === 'ArrowDown' ? 1 : -1;
+          if (current === close) next = delta > 0 ? activeTab : close;
+          else if (tabs.includes(current)) next = delta > 0 ? body[0] : close;
+          else {
+            const index = body.indexOf(current) + delta;
+            next = index < 0 ? activeTab : body[Math.min(body.length - 1, index)];
+          }
+        }
+      }
+      consume(event);
+      if (next instanceof HTMLElement) {
+        focusPanelItem(next);
+        api.panelFocusIndex = getPanelFocusables(panel).indexOf(next);
+      }
+      return true;
+    }
+
+    if (isEnterKey(event)) {
+      consume(event);
+      if (current instanceof HTMLElement) current.click();
+      else focusPanelItem(items[0]);
+      return true;
+    }
+
+    // A panel opened by this menu owns numeric keys, including 1/2/3.
+    if (/^[1-9]$/.test(String(event.key || ''))) {
+      consume(event);
+      return true;
+    }
+    return false;
+  };
+
   const isZeroKey = (event) => {
     const key = String(event.key || '');
     const code = String(event.code || '');
@@ -489,6 +664,16 @@ export function buildTvPlaybackRuntime(): string {
 
   const handleKeydown = (event) => {
     if (event.altKey || event.ctrlKey || event.metaKey) return false;
+
+    if (getQuickMenu()) return handleQuickMenuKeydown(event);
+    if (api.panelPending) {
+      consume(event);
+      return true;
+    }
+    const open = getOpenPlayerPanel();
+    if (open) return handlePlayerPanelKeydown(event, open);
+
+    if (!onWatchRoute()) return false;
 
     const video = getActiveVideo();
     if (!(video instanceof HTMLVideoElement)) return false;
@@ -510,7 +695,6 @@ export function buildTvPlaybackRuntime(): string {
     const arrow = code.startsWith('Arrow') ? code : (key.startsWith('Arrow') ? key : '');
     if (!arrow) return false;
 
-    if (getQuickMenu()) return false;
     if (hasPriorityOverlay(root) || playerControlOwnsArrows(root)) return false;
 
     if (arrow === 'ArrowLeft') {
@@ -537,6 +721,12 @@ export function buildTvPlaybackRuntime(): string {
   const handleTvBack = (event) => {
     if (getQuickMenu()) {
       closeQuickMenu();
+      if (event?.cancelable) event.preventDefault();
+      return;
+    }
+
+    const open = getOpenPlayerPanel();
+    if (open && closePlayerPanel(open)) {
       if (event?.cancelable) event.preventDefault();
       return;
     }

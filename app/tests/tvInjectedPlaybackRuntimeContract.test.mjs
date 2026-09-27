@@ -41,18 +41,15 @@ test('TV injected player restores Play Pause focus when a remote player appears'
 });
 
 
-test('0 opens an injected TV quick menu with persistent VF VOSTFR profile', async () => {
+test('0 opens the two-action TV menu without a fake automatic profile switch', async () => {
   const runtime = await text('src/injection/tv-playback-runtime.ts');
 
-  assert.match(runtime, /PROFILE_KEY = 'movix\.tv\.playback\.profile\.v1'/);
   assert.match(runtime, /key === '0'[\s\S]{0,120}Digit0[\s\S]{0,120}Numpad0/);
   assert.match(runtime, /consume\(event\)[\s\S]{0,120}void toggleQuickMenu\(video, root\)/);
-  assert.match(runtime, /Mode : VF/);
-  assert.match(runtime, /Mode : VOSTFR/);
-  assert.match(runtime, /VO \+ sous-titres FR/);
-  assert.match(runtime, /audio français/);
-  assert.match(runtime, /localStorage\.setItem\(PROFILE_KEY, profile\)/);
-  assert.match(runtime, /movix-tv-playback-profile-change/);
+  assert.match(runtime, /addAction\('Épisodes'/);
+  assert.match(runtime, /addAction\('Qualité et langues'/);
+  assert.doesNotMatch(runtime, /Mode : VF|Mode : VOSTFR|addAction\('Fermer'/);
+  assert.doesNotMatch(runtime, /movix-tv-playback-profile-change/);
 });
 
 test('injected TV quick menu reuses remote episodes and settings controls', async () => {
@@ -60,7 +57,8 @@ test('injected TV quick menu reuses remote episodes and settings controls', asyn
 
   assert.match(runtime, /findActionButton\(root, \['episodes', 'episode'\]/);
   assert.match(runtime, /data-tv-player-menu-trigger="settings"/);
-  assert.match(runtime, /Sources avancées/);
+  assert.match(runtime, /\.settings-menu\[data-player-menu="settings"\]/);
+  assert.match(runtime, /getEpisodesPanel/);
   assert.match(runtime, /data-tv-playback-quick-menu/);
   assert.match(runtime, /data-tv-shortcut-scope/);
 });
@@ -90,8 +88,8 @@ test('quick menu exits fullscreen before mounting and owns modal focus', async (
 test('quick menu blocks player autofocus and transport arrows while open', async () => {
   const runtime = await text('src/injection/tv-playback-runtime.ts');
 
-  assert.match(runtime, /const focusPlayPause = \(\) => \{[\s\S]{0,120}if \(getQuickMenu\(\)\) return false/);
-  assert.match(runtime, /api\.focusTimer = setTimeout\(\(\) => \{[\s\S]{0,160}if \(getQuickMenu\(\)\) return/);
+  assert.match(runtime, /const focusPlayPause = \(\) => \{[\s\S]{0,160}getQuickMenu\(\) \|\| api\.panelPending \|\| getOpenPlayerPanel\(\)/);
+  assert.match(runtime, /api\.focusTimer = setTimeout\(\(\) => \{[\s\S]{0,180}getQuickMenu\(\) \|\| api\.panelPending \|\| getOpenPlayerPanel\(\)/);
   assert.match(runtime, /const hasPriorityOverlay = \(root\) => \{[\s\S]{0,100}if \(getQuickMenu\(\)\) return true/);
-  assert.match(runtime, /if \(getQuickMenu\(\)\) return false;[\s\S]{0,100}hasPriorityOverlay\(root\)/);
+  assert.match(runtime, /if \(getQuickMenu\(\)\) return handleQuickMenuKeydown\(event\)/);
 });
