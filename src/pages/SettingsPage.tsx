@@ -7,7 +7,7 @@ import {
   ArrowLeft, Settings, Shield, Monitor, Smartphone, Tablet,
   Copy, X, Snowflake, Activity, Trash2, Crown, Volume2,
   Database, Key, Lock, Palette, Eye, Download, Upload, Globe, AlertTriangle, History, CalendarClock, FlaskConical, Link2, MessageCircle, BellOff, Sparkles,
-  Zap, RefreshCw, ChevronDown, ListOrdered, Gauge, Megaphone, Square, Captions
+  Zap, RefreshCw, ChevronDown, ListOrdered, Gauge, Megaphone, Square, Captions, LockKeyhole
 } from 'lucide-react';
 import axios from 'axios';
 import { useAuth } from '../context/AuthContext';
@@ -88,6 +88,7 @@ import {
 import { getOverlayPortalRoot } from '@/utils/overlayPortal';
 import { useMovieReleaseWarnings } from '@/hooks/useMovieReleaseWarnings';
 import { setMovieReleaseWarningsEnabled } from '@/utils/movieReleasePreferences';
+import { ParentalSettings } from '@/components/parental/ParentalSettings';
 
 const API_URL = import.meta.env.VITE_MAIN_API;
 
@@ -178,6 +179,7 @@ const SECTIONS = [
   { id: 'sessions', labelKey: 'settings.sections.sessions', icon: Monitor },
   { id: 'accounts', labelKey: 'settings.sections.accounts', icon: Link2 },
   { id: 'privacy', labelKey: 'settings.sections.privacy', icon: Shield },
+  { id: 'parental', labelKey: 'settings.sections.parental', icon: LockKeyhole },
   { id: 'source-priority', labelKey: 'settings.sections.sourcePriority', icon: ListOrdered },
   { id: 'intermission', labelKey: 'settings.sections.adPopup', icon: Megaphone },
   { id: 'extractions', labelKey: 'settings.sections.extractions', icon: Zap },
@@ -1722,7 +1724,7 @@ const SettingsPage: React.FC = () => {
                   <li key={id}>
                     <button
                       onClick={() => scrollToSection(id)}
-                      className={`relative w-full flex items-center gap-3 px-4 py-2.5 rounded-xl text-sm font-medium transition-colors duration-200 border focus:outline-none ${isActive
+                      className={`relative w-full flex items-center gap-3 px-4 py-2.5 rounded-xl text-sm font-medium transition-colors duration-200 border focus-visible:outline focus-visible:outline-2 focus-visible:outline-red-400 ${isActive
                         ? 'text-red-400 border-transparent'
                         : 'border-transparent text-gray-400 hover:text-gray-200 hover:bg-gray-800/40'
                         }`}
@@ -1781,7 +1783,7 @@ const SettingsPage: React.FC = () => {
                       <button
                         key={id}
                         onClick={() => scrollToSection(id)}
-                        className={`flex w-[92px] flex-shrink-0 flex-col items-center justify-center gap-1 rounded-lg px-3 py-1.5 text-center transition-colors ${isActive ? 'text-red-400' : 'text-gray-500'
+                        className={`flex w-[92px] flex-shrink-0 flex-col items-center justify-center gap-1 rounded-lg px-3 py-1.5 text-center transition-colors focus-visible:outline focus-visible:outline-2 focus-visible:outline-red-400 ${isActive ? 'text-red-400' : 'text-gray-500'
                           }`}
                       >
                         <Icon className="w-4 h-4" />
@@ -1795,7 +1797,7 @@ const SettingsPage: React.FC = () => {
           </div>
 
           {/* ─── Scrollable Content ─────────────────────────────────── */}
-          <div ref={contentRef} className="mx-auto mt-8 min-w-0 max-w-[1440px] space-y-12 pb-24 lg:pb-8">
+          <div ref={contentRef} className="mx-auto mt-8 min-w-0 max-w-[1440px] space-y-12 pb-[calc(7rem+env(safe-area-inset-bottom))] lg:pb-8">
 
             {/* ════════════════════════════════════════════════════════ */}
             {/* SECTION: Apparence                                      */}
@@ -2966,6 +2968,19 @@ const SettingsPage: React.FC = () => {
               </AnimatePresence>
             </section>
             )}
+
+            <section id="parental" className="scroll-mt-36">
+              <div data-settings-search-title data-settings-search-keywords="pin,âge,age,horreur,horror,anime,contrôle parental,parental controls" className="mb-6 flex items-center gap-3">
+                <div className="rounded-xl border border-red-500/20 bg-gradient-to-br from-red-600/20 to-orange-600/20 p-2">
+                  <LockKeyhole className="h-5 w-5 text-red-400" />
+                </div>
+                <div>
+                  <h2 className="text-xl font-semibold text-white">{t('settings.parental.title')}</h2>
+                  <p className="text-sm text-gray-500">{t('settings.parental.description')}</p>
+                </div>
+              </div>
+              <ParentalSettings active={activeSection === 'parental'} onCancel={() => scrollToSection('appearance')} />
+            </section>
 
             {/* ════════════════════════════════════════════════════════ */}
             {/* SECTION: Priorité des sources (Milestone 5)            */}

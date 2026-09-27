@@ -9,6 +9,7 @@ export type RouteEntry = {
   loader: (opts?: { silent?: boolean }) => Promise<{ default: ComponentType<unknown> }>;
   fallback?: ReactNode;
   guard?: 'private';
+  parentalMedia?: 'movie' | 'tv';
 };
 
 const lz = <P extends object>(loader: () => Promise<{ default: ComponentType<P> }>) =>
@@ -34,8 +35,8 @@ export const ROUTES: RouteEntry[] = [
   { path: '/provider/:providerId/:type/:genreId',           loader: lz(() => import('../pages/ProviderCatalogPage')),   fallback: <GridSkeleton /> },
 
   // Details pages
-  { path: '/movie/:id',               loader: lz(() => import('../pages/MovieDetails')),            fallback: <DetailsSkeleton /> },
-  { path: '/tv/:id',                  loader: lz(() => import('../pages/TVDetails')),               fallback: <DetailsSkeleton /> },
+  { path: '/movie/:id',               loader: lz(() => import('../pages/MovieDetails')),            fallback: <DetailsSkeleton />, parentalMedia: 'movie' },
+  { path: '/tv/:id',                  loader: lz(() => import('../pages/TVDetails')),               fallback: <DetailsSkeleton />, parentalMedia: 'tv' },
   { path: '/collection/:id',          loader: lz(() => import('../pages/CollectionDetails')),       fallback: <DetailsSkeleton /> },
   { path: '/person/:id',              loader: lz(() => import('../pages/PersonDetails')),           fallback: <DetailsSkeleton /> },
   { path: '/list/:shareCode',         loader: lz(() => import('../pages/SharedListPage')),          fallback: <DetailsSkeleton /> },
@@ -47,9 +48,9 @@ export const ROUTES: RouteEntry[] = [
   { path: '/search',                  loader: lz(() => import('../pages/Search')) },
 
   // Watch routes (no skeleton — RouteProgressBar fallback)
-  { path: '/watch/movie/:tmdbid',                         loader: lz(() => import('../pages/Watch/WatchMovie')) },
-  { path: '/watch/tv/:tmdbid/s/:season/e/:episode',       loader: lz(() => import('../pages/Watch/WatchTv')) },
-  { path: '/watch/anime/:id/season/:season/episode/:episode', loader: lz(() => import('../pages/Watch/WatchAnime')) },
+  { path: '/watch/movie/:tmdbid',                         loader: lz(() => import('../pages/Watch/WatchMovie')), parentalMedia: 'movie' },
+  { path: '/watch/tv/:tmdbid/s/:season/e/:episode',       loader: lz(() => import('../pages/Watch/WatchTv')), parentalMedia: 'tv' },
+  { path: '/watch/anime/:id/season/:season/episode/:episode', loader: lz(() => import('../pages/Watch/WatchAnime')), parentalMedia: 'tv' },
   { path: '/live-tv',                 loader: lz(() => import('../pages/LiveTV')) },
   { path: '/ftv/info/:encoded',       loader: lz(() => import('../pages/FranceTV/FranceTVInfo')) },
   { path: '/ftv/watch/:encoded',      loader: lz(() => import('../pages/FranceTV/FranceTVPlayer')) },

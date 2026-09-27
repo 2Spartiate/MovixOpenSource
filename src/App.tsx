@@ -4,6 +4,8 @@ import { Toaster } from './components/ui/sonner';
 import { TooltipProvider } from './components/ui/tooltip';
 import Header from './components/Header';
 import Home from './pages/Home';
+import { ParentalMediaGate } from './components/parental/ParentalMediaGate';
+import { getParentalPreferences, shouldOpenAnimeHome } from './utils/parentalControls';
 import DnsBlockBanner from './components/DnsBlockBanner';
 import { AdFreePopupProvider } from './context/AdFreePopupContext';
 import { SearchProvider } from './context/SearchContext';
@@ -538,13 +540,25 @@ const RouteLazyContent: React.FC<{
   );
 };
 
+const MediaRouteContent = ({ entry, children }: { entry: RouteEntry; children: React.ReactNode }) => {
+  const location = useLocation();
+  if (!entry.parentalMedia) return <>{children}</>;
+  return <ParentalMediaGate key={location.pathname} mediaType={entry.parentalMedia}>{children}</ParentalMediaGate>;
+};
+
+const ParentalHome = () => {
+  return shouldOpenAnimeHome(getParentalPreferences()) ? <Navigate to="/anime" replace /> : <Home />;
+};
+
 const renderRouteEntry = (entry: RouteEntry) => {
   const Lazy = getCachedLazy(entry);
   let element: React.ReactNode = (
-    <RouteLazyContent
-      Lazy={Lazy}
-      fallback={entry.fallback ?? <RouteProgressBar />}
-    />
+    <MediaRouteContent entry={entry}>
+      <RouteLazyContent
+        Lazy={Lazy}
+        fallback={entry.fallback ?? <RouteProgressBar />}
+      />
+    </MediaRouteContent>
   );
   if (entry.guard === 'private') {
     element = <PrivateRoute>{element}</PrivateRoute>;
@@ -1879,7 +1893,7 @@ const AppWithIntro: React.FC = () => {
         <ProfileGate>
           <Routes>
             {/* Eager — landing page, kept in main bundle */}
-            <Route path="/" element={<Home />} />
+            <Route path="/" element={<ParentalHome />} />
 
             {/* Routes spéciales avec props ou logique conditionnelle — lazy (perf) */}
             <Route path="/login-bip39" element={<DelayedSuspense fallback={<RouteProgressBar />}><LoginBip39Lazy /></DelayedSuspense>} />

@@ -31,6 +31,14 @@ test('text editing controls retain native arrow behavior', () => {
   assert.equal(shouldSpatialNavigationHandleSnapshot({ tagName: 'div', contentEditable: true }), false);
 });
 
+test('parental PIN input can leave with D-pad and its keypad owns remote digits 1/2/3', () => {
+  assert.equal(shouldSpatialNavigationHandleSnapshot({ tagName: 'input', inputType: 'password', parentalPinInput: true }), true);
+  assert.equal(shouldSpatialNavigationHandleSnapshot({ tagName: 'input', inputType: 'password' }), false);
+  const runtime = buildTvDpadRuntime('(function () { return null; })', '/* dom discovery */');
+  assert.match(runtime, /target\.hasAttribute\('data-tv-parental-pin-input'\)/);
+  assert.match(runtime, /target\?\.closest\('\[data-parental-pin-keypad\]'\)\) return null/);
+});
+
 test('button-like controls can participate in spatial navigation', () => {
   assert.equal(shouldSpatialNavigationHandleSnapshot({ tagName: 'button' }), true);
   assert.equal(shouldSpatialNavigationHandleSnapshot({ tagName: 'input', inputType: 'button' }), true);

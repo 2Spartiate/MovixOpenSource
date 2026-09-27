@@ -1,6 +1,7 @@
 export interface TVArrowTargetSnapshot {
   tagName: string;
   inputType?: string | null;
+  parentalPinInput?: boolean;
   contentEditable?: boolean;
   consumesArrows?: boolean;
   role?: string | null;
@@ -100,6 +101,7 @@ export function shouldSpatialNavigationHandleSnapshot(
   if (tag === 'textarea' || tag === 'select') return false;
 
   if (tag === 'input') {
+    if (snapshot.parentalPinInput) return true;
     const type = (snapshot.inputType || 'text').toLowerCase();
     return type === 'button' || type === 'submit' || type === 'reset';
   }
@@ -165,6 +167,7 @@ ${domDiscoveryRuntime}
     if (tag === 'textarea' || tag === 'select') return false;
 
     if (tag === 'input') {
+      if (target.hasAttribute('data-tv-parental-pin-input')) return true;
       const type = (target.getAttribute('type') || 'text').toLowerCase();
       if (type !== 'button' && type !== 'submit' && type !== 'reset') {
         return false;
@@ -915,6 +918,8 @@ ${domDiscoveryRuntime}
     const target = event.target instanceof HTMLElement
       ? event.target
       : (document.activeElement instanceof HTMLElement ? document.activeElement : null);
+    // PIN pad numbers belong to the parental form, including remote 1/2/3.
+    if (target?.closest('[data-parental-pin-keypad]')) return null;
     if (target) {
       const tag = target.tagName.toLowerCase();
       if (
