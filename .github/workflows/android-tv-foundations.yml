@@ -26,6 +26,7 @@ on:
       - agent/google-tv-playback-ux-v17
       - agent/google-tv-playback-ux-v18
       - agent/google-tv-playback-ux-v19
+      - agent/google-tv-playback-ux-v20
     paths:
       - 'app/**'
       - 'src/**'
@@ -91,6 +92,7 @@ jobs:
             tests/tvPlaybackRemoteV12Contract.test.mjs \
             tests/tvInjectedPlaybackRuntimeContract.test.mjs \
             tests/tvInjectedPlaybackBehavior.test.mjs \
+            tests/tvPlaybackOwnershipBehavior.test.mjs \
             tests/tvOriginalLanguageContract.test.mjs \
             tests/tvPlayerMenusContract.test.mjs \
             tests/tvLivePlayerDpadContract.test.mjs \
@@ -144,19 +146,25 @@ jobs:
           APK="app/build/outputs/apk/release/app-release.apk"
           test -f "$APK"
           unzip -l "$APK" | grep -q 'assets/index.android.bundle'
-          unzip -p "$APK" assets/index.android.bundle > "${RUNNER_TEMP}/movix-v19.bundle"
-          python3 - "${RUNNER_TEMP}/movix-v19.bundle" <<'PY'
+          unzip -p "$APK" assets/index.android.bundle > "${RUNNER_TEMP}/movix-v20.bundle"
+          python3 - "${RUNNER_TEMP}/movix-v20.bundle" <<'PY'
           import pathlib
           import sys
 
           bundle = pathlib.Path(sys.argv[1]).read_bytes()
-          marker = 'tv-playback-v19'
-          # Hermes stores this large accented template string as UTF-16 LE.
-          assert any(marker.encode(codec) in bundle for codec in ('utf-8', 'utf-16-le')), \
-              'V19 TV injection missing from packaged Hermes bundle'
+          # Hermes may store the injected template as UTF-16 LE. Check the
+          # actual ownership guards too, not merely the version marker.
+          for marker in (
+              'tv-playback-v20',
+              'if (isNumericOneToNine(event)) return false',
+              'data-tv-card], [data-tv-carousel-row]',
+              'Sources VOSTFR/VF',
+          ):
+              assert any(marker.encode(codec) in bundle for codec in ('utf-8', 'utf-16-le')), \
+                  f'V20 TV injection missing {marker!r} from packaged Hermes bundle'
           PY
-          unzip -p "$APK" 'classes*.dex' > "${RUNNER_TEMP}/movix-v19.dex"
-          grep -aFq 'TvExitDialogModule' "${RUNNER_TEMP}/movix-v19.dex"
+          unzip -p "$APK" 'classes*.dex' > "${RUNNER_TEMP}/movix-v20.dex"
+          grep -aFq 'TvExitDialogModule' "${RUNNER_TEMP}/movix-v20.dex"
           echo "Standalone React Native bundle is packaged in $APK"
 
       - name: Delete previous Movix Android APK/AAB artifacts
