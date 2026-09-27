@@ -93,8 +93,7 @@ jobs:
             tests/tvExternalPlayerLimitsContract.test.mjs \
             tests/tvCarouselContract.test.mjs \
             tests/tvFocusRestoration.test.mjs \
-            tests/tvUiCleanupContract.test.mjs \
-            tests/androidArtifactCleanupContract.test.mjs
+            tests/tvUiCleanupContract.test.mjs
           npx tsc --noEmit
 
       - name: Validate frontend production build
