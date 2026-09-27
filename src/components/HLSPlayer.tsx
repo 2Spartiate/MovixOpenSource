@@ -1592,6 +1592,10 @@ const HLSPlayer = forwardRef<HLSPlayerRef, HLSPlayerProps>(({
   const [tvPlaybackScanStatus, setTvPlaybackScanStatus] = useState<'idle' | 'running' | 'ready' | 'unavailable'>('idle');
   const [tvPlaybackCandidate, setTvPlaybackCandidate] = useState<TvPlaybackCandidate | null>(null);
   const [tvPlaybackSourceCount, setTvPlaybackSourceCount] = useState(0);
+  const [tvProfileSelectionRequest, setTvProfileSelectionRequest] = useState<{
+    contentKey: string;
+    sequence: number;
+  } | null>(null);
   const [showTvQuickMenu, setShowTvQuickMenu] = useState(false);
   const tvQuickMenuRef = useRef<HTMLDivElement>(null);
   const tvQuickMenuFirstActionRef = useRef<HTMLButtonElement>(null);
@@ -2664,6 +2668,9 @@ const HLSPlayer = forwardRef<HLSPlayerRef, HLSPlayerProps>(({
       ? 'movie:' + movieId
       : (tvShowId ? 'tv:' + tvShowId + ':' + (seasonNumber ?? 0) + ':' + (episodeNumber ?? 0) : null);
     if (!contentKey) return;
+    // Watch chooses and starts the initial source. Profile probing is a
+    // separate, explicit TV action and must never preempt that launch.
+    if (tvProfileSelectionRequest?.contentKey !== contentKey) return;
 
     const nexusCandidates = nexusHlsSources
       .map((source, index) => ({
@@ -2799,6 +2806,7 @@ const HLSPlayer = forwardRef<HLSPlayerRef, HLSPlayerProps>(({
     purstreamSources,
     seasonNumber,
     src,
+    tvProfileSelectionRequest,
     tvPlaybackProfile,
     tvShowId,
   ]);
@@ -8884,6 +8892,9 @@ const HLSPlayer = forwardRef<HLSPlayerRef, HLSPlayerProps>(({
     setTvPlaybackCandidate(null);
     setTvPlaybackScanStatus('idle');
     setTvPlaybackProfile(next);
+    if (contentKey) setTvProfileSelectionRequest(previous => ({
+      contentKey, sequence: (previous?.sequence ?? 0) + 1,
+    }));
   }, [episodeNumber, movieId, seasonNumber, tvPlaybackProfile, tvShowId]);
 
   useEffect(() => {
@@ -8914,6 +8925,9 @@ const HLSPlayer = forwardRef<HLSPlayerRef, HLSPlayerProps>(({
       setTvPlaybackCandidate(null);
       setTvPlaybackScanStatus('idle');
       setTvPlaybackProfile(next);
+      if (contentKey) setTvProfileSelectionRequest(previous => ({
+        contentKey, sequence: (previous?.sequence ?? 0) + 1,
+      }));
     };
 
     window.addEventListener('movix-tv-playback-profile-change', handleInjectedProfileChange);

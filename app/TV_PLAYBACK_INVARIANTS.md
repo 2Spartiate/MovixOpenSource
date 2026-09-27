@@ -1,0 +1,11 @@
+# Invariants Google TV : navigation et démarrage
+
+Ces règles sont des conditions de livraison pour toute modification de l'injection TV. Les tests comportementaux `tvPlaybackOwnershipBehavior.test.mjs` et `tvInjectedPlaybackBehavior.test.mjs` doivent faire échouer la CI si elles sont rompues. Le site distant n'est pas déployé par le build APK : vérifier aussi le bundle embarqué et, après installation, les scénarios sur une vraie TV.
+
+1. **Écrans Home et détail** : gauche/droite déplacent réellement le focus d'un poster au poster adjacent. Les touches 1/2/3 ouvrent Recherche/Compte/Explorer depuis le focus du contenu. La présence éventuelle d'une vidéo ou d'un ancien panneau dans le DOM n'autorise pas le runtime lecteur à prendre ces touches.
+2. **Watch hors menu** : `0` ouvre le menu rapide ; seules les flèches portant sur le lecteur actif pilotent seek gauche/droite et plein écran haut/bas. Le focus d'un poster ou du header ne doit jamais être ramené sur Play/Pause par un timer ou une mutation du lecteur. Les touches 1/2/3 restent aux raccourcis du header.
+3. **Watch avec menu** : le menu rapide garde Épisodes (si disponible) et Sources VOSTFR/VF ; haut/bas y circulent. Le panneau réel des épisodes ou des paramètres reçoit ensuite le D-pad et protège la page derrière lui. `0` et Back ferment la surface prioritaire.
+4. **Deux automations distinctes** : Watch choisit et lance sa source initiale selon le comportement produit existant. Le résolveur de qualité VF/VOSTFR ne doit ni ouvrir les réglages ni émettre `sourceChange` durant ce démarrage. Il ne s'exécute qu'après une demande de sélection de profil explicite et scoped au contenu courant. En particulier, afficher les deux boutons du menu rapide ne déclenche aucun scan de source.
+5. **Périmètre** : ces propriétaires de touches et de focus ne sont installés que sur Google TV (`Platform.isTV` / `window.MOVIX_TV === true`). Aucun raccourci TV ou changement de sélection initiale ne doit atteindre le site ou l'application mobile.
+
+Avant de publier une version, vérifier sur TV les trois premiers points ainsi que le lancement d'un épisode sans intervention. Les tests et le build valident les invariants du code embarqué, mais ne remplacent pas cette observation matérielle.

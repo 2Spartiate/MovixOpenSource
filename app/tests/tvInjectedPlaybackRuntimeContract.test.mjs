@@ -19,7 +19,7 @@ test('TV WebView injection owns player transport and fullscreen independently of
   assert.match(runtime, /arrow === 'ArrowUp'[\s\S]{0,180}enterFullscreen\(video, root\)/);
   assert.match(runtime, /arrow === 'ArrowDown'[\s\S]{0,180}exitFullscreen\(video, root\)/);
   assert.match(runtime, /return \/\^\[1-9\]\$\/\.test\(key\)/);
-  assert.match(runtime, /if \(isNumericOneToNine\(event\)\) \{[\s\S]{0,120}consume\(event\)[\s\S]{0,80}return true/);
+  assert.match(runtime, /if \(isNumericOneToNine\(event\)\) return false/);
   assert.match(runtime, /window\.addEventListener\('movix-tv-back', handleTvBack\)/);
 });
 
@@ -93,7 +93,8 @@ test('quick menu blocks player autofocus and transport arrows while open', async
   assert.match(runtime, /const focusPlayPause = \(\) => \{[\s\S]{0,180}if \(getQuickMenu\(\) \|\| api\.advancedSettingsPending/);
   assert.match(runtime, /api\.focusTimer = setTimeout\(\(\) => \{[\s\S]{0,200}if \(getQuickMenu\(\) \|\| api\.advancedSettingsPending/);
   assert.match(runtime, /const hasPriorityOverlay = \(root\) => \{[\s\S]{0,120}getOpenPlayerPanel\(\)/);
-  assert.match(runtime, /if \(getQuickMenu\(\)\) return false;[\s\S]{0,100}hasPriorityOverlay\(root\)/);
+  assert.match(runtime, /if \(getQuickMenu\(\) && handleQuickMenuKeydown\(event\)\) return true/);
+  assert.match(runtime, /if \(hasPriorityOverlay\(root\) \|\| playerControlOwnsArrows\(root\)\) return false/);
 });
 
 
@@ -149,4 +150,18 @@ test('source resolver stays available to TV code without a quick-menu mode butto
   assert.match(runtime, /window\.__MOVIX_TV_PROFILE_RESOLVER\?\.version !== 2/);
   assert.match(runtime, /movix-tv-playback-profile-result/);
   assert.match(runtime, /api\.selectBestProfileSource = selectBestProfileSource/);
+});
+
+test('checked-in TV profile resolver waits for an explicit request after Watch starts its initial source', async () => {
+  const [player, watchTv] = await Promise.all([
+    text('../src/components/HLSPlayer.tsx'),
+    text('../src/pages/Watch/WatchTv.tsx'),
+  ]);
+  const selection = player.slice(player.indexOf('const probeTvPlaybackSource ='), player.indexOf('const probeFileQuality ='));
+  assert.match(selection, /if \(tvProfileSelectionRequest\?\.contentKey !== contentKey\) return/);
+  assert.ok(selection.indexOf('tvProfileSelectionRequest?.contentKey !== contentKey') <
+    selection.indexOf("origin: 'tv-profile-auto'"));
+  assert.match(player, /setTvProfileSelectionRequest\(previous => \(\{/);
+  assert.match(watchTv, /if \(!areSourcesLoading\) \{[\s\S]*?setSelectedSource\('darkino'\)/);
+  assert.match(watchTv, /setIsLoading\(false\); \/\/ Mark loading as complete/);
 });

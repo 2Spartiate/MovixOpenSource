@@ -4,7 +4,7 @@ export function buildTvPlaybackRuntime(): string {
   if (window.MOVIX_TV !== true) return;
 
   const api = window.__MOVIX_TV_PLAYBACK || (window.__MOVIX_TV_PLAYBACK = {});
-  api.runtimeVersion = 'tv-playback-v19';
+  api.runtimeVersion = 'tv-playback-v20';
 
   if (typeof api.keydownHandler === 'function') {
     window.removeEventListener('keydown', api.keydownHandler, true);
@@ -148,6 +148,13 @@ export function buildTvPlaybackRuntime(): string {
     const root = getPlayerRoot(video);
     const button = getPlayPauseButton(root);
     if (!(button instanceof HTMLElement)) return false;
+    const active = document.activeElement;
+    // Delayed fullscreen/React callbacks must not pull focus out of a poster,
+    // the header, or another real control on the Watch page.
+    if (active instanceof HTMLElement && active.isConnected &&
+        active !== document.body && active !== document.documentElement &&
+        active !== button && (!root.contains(active) ||
+          active.closest('[data-tv-card], [data-tv-carousel-row]'))) return false;
     try { button.focus({ preventScroll: true }); } catch { button.focus(); }
     return document.activeElement === button;
   };
@@ -161,8 +168,9 @@ export function buildTvPlaybackRuntime(): string {
       const root = getPlayerRoot(video);
       if (!video || !(root instanceof HTMLElement)) return;
       const active = document.activeElement;
-      const empty = !active || active === document.body || active === document.documentElement;
-      if (empty || !(active instanceof HTMLElement) || !root.contains(active)) {
+      const empty = !active || active === document.body || active === document.documentElement ||
+        (active instanceof HTMLElement && !active.isConnected);
+      if (empty) {
         focusPlayPause();
       }
     }, delay);
@@ -441,6 +449,13 @@ export function buildTvPlaybackRuntime(): string {
       return null;
     }
     return open;
+  };
+
+  const getFocusedSettingsPanel = () => {
+    const active = document.activeElement;
+    const panel = active instanceof HTMLElement ? active.closest('.settings-menu') : null;
+    return panel instanceof HTMLElement && onWatchRoute() && visible(panel)
+      ? { kind: 'settings', panel } : null;
   };
 
   const ownPlayerPanel = (kind, panel) => {
@@ -1185,17 +1200,9 @@ export function buildTvPlaybackRuntime(): string {
       return;
     }
 
-    // The Watch page can expose its real HLS settings panel from the red
-    // Sources control before any HLS video has mounted. Adopt it only after
-    // the user actually focuses one of its controls; a DOM-wide search here
-    // would seize Home/detail posters and other unrelated overlays again.
-    if (!getOpenPlayerPanel() && onWatchRoute() && event.target instanceof HTMLElement) {
-      const focusedPanel = event.target.closest('.settings-menu');
-      if (focusedPanel instanceof HTMLElement && visible(focusedPanel)) {
-        ownPlayerPanel('settings', focusedPanel);
-      }
-    }
-
+    // Only the quick-menu handoff creates a persistent focus trap. A settings
+    // control on the loading Watch screen can still receive arrows while it
+    // actually has focus, without pinning the page to that panel forever.
     const open = getOpenPlayerPanel();
     if (!open) return;
     if (open.panel.contains(event.target)) {
@@ -1313,6 +1320,8 @@ export function buildTvPlaybackRuntime(): string {
     }
     const open = getOpenPlayerPanel();
     if (open && handlePlayerPanelKeydown(event, open)) return true;
+    const focusedSettings = getFocusedSettingsPanel();
+    if (focusedSettings && handlePlayerPanelKeydown(event, focusedSettings)) return true;
 
     const video = getActiveVideo();
     if (!(video instanceof HTMLVideoElement)) return false;
@@ -1324,17 +1333,22 @@ export function buildTvPlaybackRuntime(): string {
       return true;
     }
 
-    if (isNumericOneToNine(event)) {
-      consume(event);
-      return true;
-    }
+    // 1/2/3 are page-level Search/Account/Explore shortcuts. Leave them for
+    // the document D-pad runtime even while Play/Pause has focus. The player
+    // owns only 0, its visible panels, and transport arrows while focused.
+    if (isNumericOneToNine(event)) return false;
 
     const key = String(event.key || '');
     const code = String(event.code || '');
     const arrow = code.startsWith('Arrow') ? code : (key.startsWith('Arrow') ? key : '');
     if (!arrow) return false;
 
-    if (getQuickMenu()) return false;
+    const active = document.activeElement;
+    const playerFocused = !(active instanceof HTMLElement) ||
+      active === document.body || active === document.documentElement ||
+      !active.isConnected || (root instanceof HTMLElement && root.contains(active) &&
+        !active.closest('[data-tv-card], [data-tv-carousel-row]'));
+    if (!playerFocused) return false;
     if (hasPriorityOverlay(root) || playerControlOwnsArrows(root)) return false;
 
     if (arrow === 'ArrowLeft') {
@@ -1376,6 +1390,11 @@ export function buildTvPlaybackRuntime(): string {
     }
     const open = getOpenPlayerPanel();
     if (open && closePlayerPanel(open)) {
+      consumeTvBack();
+      return;
+    }
+    const focusedSettings = getFocusedSettingsPanel();
+    if (focusedSettings && closePlayerPanel(focusedSettings)) {
       consumeTvBack();
       return;
     }

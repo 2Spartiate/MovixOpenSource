@@ -143,13 +143,12 @@ ${domDiscoveryRuntime}
       : (document.activeElement instanceof HTMLElement ? document.activeElement : null);
     if (!target) return false;
 
-    // The HLS player owns its transport arrows (seek/fullscreen). Its TV quick
-    // menu is the exception: once open, ordinary spatial navigation should
-    // move between the menu rows.
-    if (
-      target.closest('[data-hls-player-root]') &&
-      !target.closest('[data-tv-playback-quick-menu]')
-    ) {
+    // Only a focused Watch player control owns transport arrows. A mounted
+    // player elsewhere in the document must not disable poster navigation;
+    // recommendation cards remain spatial even inside a broad player wrapper.
+    if (window.location.pathname.startsWith('/watch/') &&
+        target.closest('[data-hls-player-root], .video-container') &&
+        !target.closest('[data-tv-card], [data-tv-carousel-row]')) {
       return false;
     }
 
@@ -925,7 +924,7 @@ ${domDiscoveryRuntime}
           (target.getAttribute('type') || 'text').toLowerCase()
         )) ||
         target.closest(
-          '[data-tv-consume-arrows], [data-tv-player-control], [data-tv-dpad-scope="native"], [data-hls-player-root]'
+          '[data-tv-playback-quick-menu], [data-tv-injected-panel], .settings-menu, [data-tv-dpad-scope="native"]'
         )
       ) {
         return null;

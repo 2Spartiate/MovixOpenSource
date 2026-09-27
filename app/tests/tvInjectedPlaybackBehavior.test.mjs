@@ -42,9 +42,21 @@ async function harness(tvMode = true, sourceFixtures = [], options = {}) {
     addEventListener(name, callback) { (this.listeners[name] ||= []).push(callback); }
     click() { this.clicks++; for (const callback of this.listeners.click || []) callback(); }
     contains(target) { return target === this || this.children.some(child => child.contains(target)); }
+    matches(selector) { return selector.split(',').some(part => {
+      const value = part.trim();
+      return value.toUpperCase() === this.tagName ||
+        (value === '[role="slider"]' && this.getAttribute('role') === 'slider') ||
+        (value === '[role="button"]' && this.getAttribute('role') === 'button');
+    }); }
     focus() { document.activeElement = this; document.emit('focusin', { target: this }); }
     scrollIntoView() { this.scrollRequests = (this.scrollRequests || 0) + 1; }
     closest(selector) {
+      if (selector.includes('button') && this.matches(selector)) return this;
+      if (selector === '[data-tv-card], [data-tv-carousel-row]') {
+        for (let node = this; node; node = node.parentElement) {
+          if (node.hasAttribute('data-tv-card') || node.hasAttribute('data-tv-carousel-row')) return node;
+        }
+      }
       if (selector === '[data-hls-player-root]') return this.playerRoot || null;
       if (selector === '.settings-menu') {
         for (let node = this; node; node = node.parentElement) {
@@ -75,6 +87,7 @@ async function harness(tvMode = true, sourceFixtures = [], options = {}) {
       return [];
     }
     querySelector(selector) {
+      if (selector === '[data-tv-player-play-pause]') return this.querySelectorAll('*').find(element => element.hasAttribute('data-tv-player-play-pause')) || null;
       if (selector === '[data-tv-settings-tab="quality"]') return this.querySelectorAll('*').find(element => element.getAttribute('data-tv-settings-tab') === 'quality') || null;
       if (selector === '[data-tv-player-menu-trigger="settings"]') return this.querySelectorAll('*').find(element => element.getAttribute('data-tv-player-menu-trigger') === 'settings') || null;
       if (selector === '[data-tv-episodes-menu]') return this.querySelectorAll('*').find(element => element.hasAttribute('data-tv-episodes-menu')) || null;
@@ -103,6 +116,10 @@ async function harness(tvMode = true, sourceFixtures = [], options = {}) {
   }
   root.appendChild(video);
   body.appendChild(root);
+  if (options.posterInsidePlayerRoot) {
+    poster.setAttribute('data-tv-card', '');
+    root.appendChild(poster);
+  }
   const playPause = new Element('button');
   playPause.setAttribute('data-tv-player-play-pause', '');
   root.appendChild(playPause);
@@ -321,6 +338,31 @@ test('Home and detail posters and header shortcuts retain every key even with a 
   }
 });
 
+test('Watch transport follows actual player focus and never steals poster arrows or header numbers', async () => {
+  for (const inside of [false, true]) {
+    const app = await harness(true, [], { posterInsidePlayerRoot: inside });
+    app.poster.focus();
+    app.document.emit('DOMContentLoaded', {});
+    await new Promise(resolve => setTimeout(resolve, 220));
+    assert.equal(app.document.activeElement, app.poster, 'player mount does not focus Play/Pause over a poster');
+    const originalTime = app.video.currentTime;
+    for (const key of ['ArrowLeft', 'ArrowRight', 'ArrowUp', 'ArrowDown']) {
+      assert.equal(app.press(key).prevented, undefined, `${key} belongs to the focused poster`);
+    }
+    for (const [key, code] of [['1', 'Digit1'], ['2', 'Digit2'], ['3', 'Digit3']]) {
+      assert.equal(app.press(key, code).prevented, undefined, `${key} belongs to the header shortcut`);
+    }
+    assert.equal(app.video.currentTime, originalTime);
+    app.playPause.focus();
+    assert.equal(app.press('ArrowRight').prevented, true);
+    assert.equal(app.video.currentTime, originalTime + 10);
+    assert.equal(app.press('ArrowUp').prevented, true);
+    assert.equal(app.press('1', 'Digit1').prevented, undefined);
+    assert.equal(app.press('2', 'Digit2').prevented, undefined);
+    assert.equal(app.press('3', 'Digit3').prevented, undefined);
+  }
+});
+
 test('leaving Watch releases manual settings focus and all playback keys', async () => {
   const app = await harness();
   app.press('0', 'Digit0');
@@ -336,9 +378,12 @@ test('leaving Watch releases manual settings focus and all playback keys', async
 
 test('Watch loads its video without an automatic hidden source scan', async () => {
   const app = await harness();
+  const sourceChanges = [];
+  app.window.addEventListener('sourceChange', event => sourceChanges.push(event.detail));
   app.document.emit('DOMContentLoaded', {});
   await new Promise(resolve => setTimeout(resolve, 975));
   assert.equal(app.settings.clicks, 0);
+  assert.deepEqual(sourceChanges, [], 'injection does not replace the initial Watch source');
   assert.equal(app.document.documentElement.classList.contains('movix-tv-auto-source-selection'), false);
   assert.equal(app.window.__MOVIX_TV_PLAYBACK.getActiveVideo(), app.video);
 });
@@ -367,6 +412,19 @@ test('an actually focused Watch sources panel remains navigable while a series v
   assert.equal(app.document.activeElement.textContent, 'Qualité auto');
   assert.equal(app.press('ArrowUp').prevented, true);
   assert.equal(app.document.activeElement, quality);
+});
+
+test('loading Watch sources do not create a lasting focus trap without quick-menu handoff', async () => {
+  const app = await harness(true, [], { noPlayerVideo: true });
+  app.settings.click();
+  const panel = app.document.body.querySelectorAll('*').find(item => item.className === 'settings-menu');
+  panel.querySelector('[data-tv-settings-tab="quality"]').focus();
+  assert.equal(app.press('ArrowDown').prevented, true);
+  assert.equal(app.window.__MOVIX_TV_PLAYBACK.activePlayerPanel, null);
+  app.poster.focus();
+  assert.equal(app.document.activeElement, app.poster);
+  assert.equal(app.press('ArrowRight').prevented, undefined);
+  assert.equal(app.press('1', 'Digit1').prevented, undefined);
 });
 
 test('packaged TV script owns D-pad focus and transport while the injected menu is visible', async () => {
