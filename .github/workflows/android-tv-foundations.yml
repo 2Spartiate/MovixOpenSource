@@ -23,6 +23,7 @@ on:
       - agent/google-tv-playback-ux-v13
       - agent/google-tv-playback-ux-v21
       - agent/google-tv-playback-ux-v22
+      - agent/parental-controls-v1
     paths:
       - 'app/**'
       - 'src/**'
@@ -104,6 +105,11 @@ jobs:
           # does not deploy the generated frontend.
           VITE_SITE_URL: https://movix.example
         run: npm run build
+
+      - name: Validate parental controls and local PIN types
+        run: |
+          npx tsc --noEmit -p tsconfig.parental.json
+          node --test tests/parentalControls.test.mjs tests/parentalRoutes.test.mjs app/tests/tvDpadRuntime.test.mjs
 
       - name: Build standalone Android APK
         working-directory: app/android

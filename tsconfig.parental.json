@@ -1,0 +1,13 @@
+{
+  "extends": "./tsconfig.app.json",
+  "compilerOptions": {
+    "ignoreDeprecations": "5.0"
+  },
+  "include": [
+    "src/utils/parentalControls.ts",
+    "src/utils/parentalPolicy.ts",
+    "src/utils/certificationUtils.ts",
+    "src/utils/syncStorage.ts",
+    "src/utils/profileStorage.ts"
+  ]
+}
