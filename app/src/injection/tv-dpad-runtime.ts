@@ -919,7 +919,7 @@ ${domDiscoveryRuntime}
       ? event.target
       : (document.activeElement instanceof HTMLElement ? document.activeElement : null);
     // PIN pad numbers belong to the parental form, including remote 1/2/3.
-    if (target?.closest('[data-parental-pin-keypad]')) return null;
+    if (target?.closest('[data-parental-pin-keypad], [data-pin-form], #movix-parental-overlay')) return null;
     if (target) {
       const tag = target.tagName.toLowerCase();
       if (

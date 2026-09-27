@@ -36,7 +36,7 @@ test('parental PIN input can leave with D-pad and its keypad owns remote digits 
   assert.equal(shouldSpatialNavigationHandleSnapshot({ tagName: 'input', inputType: 'password' }), false);
   const runtime = buildTvDpadRuntime('(function () { return null; })', '/* dom discovery */');
   assert.match(runtime, /target\.hasAttribute\('data-tv-parental-pin-input'\)/);
-  assert.match(runtime, /target\?\.closest\('\[data-parental-pin-keypad\]'\)\) return null/);
+  assert.match(runtime, /target\?\.closest\('\[data-parental-pin-keypad\], \[data-pin-form\], #movix-parental-overlay'\)\) return null/);
 });
 
 test('button-like controls can participate in spatial navigation', () => {

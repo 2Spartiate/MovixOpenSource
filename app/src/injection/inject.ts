@@ -1,4 +1,5 @@
 import { buildAppSiteOverrides } from './app-site-overrides';
+import { buildParentalControlsRuntime } from './parental-controls-runtime';
 import { buildBridgeRuntime } from './bridge-runtime';
 import { buildCastShim } from './cast-shim';
 import {
@@ -25,6 +26,7 @@ export function buildInjectedJavaScript(
   } = {},
 ): string {
   const appSiteOverrides = buildAppSiteOverrides();
+  const parentalControlsRuntime = buildParentalControlsRuntime();
   const castShim = buildCastShim();
   const pipShim = buildPictureInPictureShim(
     options.pictureInPictureMode ?? 'disabled',
@@ -69,6 +71,8 @@ ${popupBlocker}
 ${tvBootstrap}
 
 ${appSiteOverrides}
+
+${parentalControlsRuntime}
 
 ${castShim}
 
