@@ -25,6 +25,7 @@ function load(relativePath, dependencies = {}) {
   vm.runInNewContext(output, {
     module,
     exports: module.exports,
+    URL,
     require(id) {
       assert.ok(id in dependencies, `Unexpected dependency: ${id}`);
       return dependencies[id];
@@ -38,6 +39,7 @@ const config = load('../src/config/index.ts');
 
 function renderWebView(os = 'ios', version = '18.0') {
   let clearedCapabilities = 0;
+  const injectedScripts = [];
   const react = {
     createElement: (_component, props) => props,
     forwardRef: component => component,
@@ -45,7 +47,7 @@ function renderWebView(os = 'ios', version = '18.0') {
     useEffect() {},
     useImperativeHandle() {},
     useMemo: factory => factory(),
-    useRef: value => ({ current: value }),
+    useRef: value => ({ current: value === null ? { injectJavaScript: script => injectedScripts.push(script) } : value }),
     useState: initial => [typeof initial === 'function' ? initial() : initial],
   };
   const { default: WebViewBrowser } = load('../src/components/WebViewBrowser.tsx', {
@@ -62,10 +64,12 @@ function renderWebView(os = 'ios', version = '18.0') {
       getPreparedNativePlaybackSourceProtocolVersion: () => 1,
     },
     '../injection/inject': { buildInjectedJavaScript: () => 'MOVIX_INJECTION' },
+    '../injection/parental-injection': { buildParentalControlsRuntime: () => 'PARENTAL_SCRIPT;' },
   });
   return {
-    props: WebViewBrowser({ url: 'https://movix.tax' }, null),
+    props: WebViewBrowser({ url: 'https://movix.tax', isTV: false }, null),
     get clearedCapabilities() { return clearedCapabilities; },
+    injectedScripts,
   };
 }
 
@@ -134,4 +138,14 @@ test('Turnstile retains JavaScript, persistent storage, and iframe isolation', (
   assert.notEqual(props.incognito, true);
   assert.equal(props.injectedJavaScriptBeforeContentLoaded, 'MOVIX_INJECTION');
   assert.equal(props.injectedJavaScriptBeforeContentLoadedForMainFrameOnly, true);
+  assert.equal(props.injectedJavaScript, 'PARENTAL_SCRIPT;\ntrue;');
+  assert.equal(props.injectedJavaScriptForMainFrameOnly, true);
+});
+
+test('handheld re-injects parental DOM runtime after site load on the top-level origin', () => {
+  const browser = renderWebView('android', 34);
+  browser.props.onLoadEnd({ nativeEvent: { url: 'https://movix.tax/settings' } });
+  assert.deepEqual(browser.injectedScripts, ['PARENTAL_SCRIPT;\ntrue;']);
+  browser.props.onLoadEnd({ nativeEvent: { url: 'https://challenges.cloudflare.com/turnstile' } });
+  assert.equal(browser.injectedScripts.length, 1);
 });

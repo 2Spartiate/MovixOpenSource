@@ -10,9 +10,10 @@
     "clean:android": "cd android && ./gradlew clean && cd ..",
     "clean:ios": "cd ios && rm -rf Pods && pod install && cd ..",
     "build:userscript": "node scripts/build-userscript.js",
+    "build:parental-injection": "node scripts/build-parental-injection.js",
     "test:ios-contract": "node --test tests/iosProjectContract.test.mjs",
     "package:ios-unsigned": "bash scripts/package-unsigned-ios.sh",
-    "prebuild": "node scripts/build-userscript.js",
+    "prebuild": "node scripts/build-userscript.js && node scripts/build-parental-injection.js",
     "postinstall": "patch-package"
   },
   "dependencies": {

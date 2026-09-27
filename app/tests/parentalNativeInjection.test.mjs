@@ -11,17 +11,26 @@ const { outputText } = ts.transpileModule(source, {
   compilerOptions: { module: ts.ModuleKind.ESNext, target: ts.ScriptTarget.ES2022 },
 });
 const runtime = await import(`data:text/javascript;base64,${Buffer.from(outputText).toString('base64')}`);
+const generated = await text('src/injection/parental-runtime-source.ts');
+const browserRuntime = JSON.parse(generated.match(/^export const PARENTAL_RUNTIME_SOURCE = (.+);$/m)?.[1] || 'null');
 const prefs = (extra = {}) => ({ enabled: true, maximumAge: 12, lockHorror: false, animeHome: false, ...extra });
 
-test('both handheld and TV receive the same runtime before site scripts', async () => {
+test('both handheld and TV receive the shared runtime at document start and after load', async () => {
   const inject = await text('src/injection/inject.ts');
+  const builder = await text('src/injection/parental-injection.ts');
   const webView = await text('src/components/WebViewBrowser.tsx');
   assert.match(inject, /const parentalControlsRuntime = buildParentalControlsRuntime\(\)/);
   assert.match(inject, /\$\{appSiteOverrides\}[\s\S]*\$\{parentalControlsRuntime\}[\s\S]*\$\{castShim\}/);
   assert.match(webView, /injectedJavaScriptBeforeContentLoaded=\{injectedJS\}/);
+  assert.match(webView, /injectedJavaScript=\{PARENTAL_RUNTIME_AFTER_LOAD\}/);
+  assert.match(webView, /onLoadEnd=\{onPageLoadEnd\}/);
   assert.match(webView, /tvMode: isTV/);
   assert.doesNotMatch(inject, /options\.tvMode \? buildParentalControlsRuntime/);
-  assert.doesNotThrow(() => new Function(runtime.buildParentalControlsRuntime()));
+  assert.match(builder, /return PARENTAL_RUNTIME_SOURCE/);
+  assert.doesNotMatch(builder, /toString\(\)/);
+  assert.match(browserRuntime, /function installParentalControlsRuntime\(/);
+  assert.match(browserRuntime, /installParentalControlsRuntime\(\);/);
+  assert.doesNotThrow(() => new Function(browserRuntime));
 });
 
 test('FR then US classifications, unknown ratings and independent Horror rule', () => {
@@ -68,7 +77,7 @@ function bootAt(pathname, settings) {
     HTMLMediaElement: class { play() { return Promise.resolve(); } },
     requestAnimationFrame() {}, setTimeout, Promise,
   };
-  vm.runInNewContext(runtime.buildParentalControlsRuntime(), context);
+  vm.runInNewContext(browserRuntime, context);
   return { location, calls, window };
 }
 
@@ -97,7 +106,7 @@ test('local PIN storage uses PBKDF2 and the injected overlay owns focus and inte
   assert.match(source, /data-parental-pin-keypad/);
   assert.match(source, /route\.type.*route\.id/);
   assert.match(source, /data-movix-parental-nav/);
-  assert.match(source, /source\.parentElement\?\.insertBefore\(section, source\)/);
+  assert.match(source, /content\.insertBefore\(section, source \|\| privacy\?\.nextSibling \|\| null\)/);
 });
 
 test('injected sidebar and mobile entries match the shorter live navigation labels', async () => {
@@ -108,4 +117,61 @@ test('injected sidebar and mobile entries match the shorter live navigation labe
     assert.ok(source.includes(`priorityNav: '${locale.settings.sections.sourcePriority}'`));
   }
   assert.match(source, /const lists = \[[\s\S]*data-settings-sidebar-scroll[\s\S]*lg\\\\:hidden\.fixed/);
+});
+
+test('late phone injection mounts a discoverable section without the source-priority anchor', () => {
+  const location = new URL('https://fixture.invalid/settings');
+  const callbacks = [];
+  const listeners = new Map();
+  const nodes = [];
+  const makeNode = tagName => ({
+    tagName: tagName.toUpperCase(), children: [], attributes: {}, innerHTML: '',
+    setAttribute(key, value) { this.attributes[key] = value; },
+    addEventListener() {},
+    appendChild(node) { this.children.push(node); nodes.push(node); node.parentElement = this; },
+    insertBefore(node, before) {
+      const index = before ? this.children.indexOf(before) : -1;
+      this.children.splice(index < 0 ? this.children.length : index, 0, node);
+      nodes.push(node); node.parentElement = this;
+    },
+    get firstChild() { return this.children[0] || null; },
+    querySelector(selector) { return selector === 'span' ? { textContent: '' } : null; },
+  });
+  const main = makeNode('main');
+  const document = {
+    documentElement: null, body: null, readyState: 'loading',
+    addEventListener(name, callback) { listeners.set(name, [...(listeners.get(name) || []), callback]); },
+    getElementById(id) { return nodes.find(node => node.id === id) || null; },
+    querySelector(selector) {
+      if (selector === 'main') return main;
+      if (selector === '[data-movix-parental-section]') return nodes.find(node => 'data-movix-parental-section' in node.attributes) || null;
+      if (selector === '[data-movix-parental-entry]') return nodes.find(node => 'data-movix-parental-entry' in node.attributes) || null;
+      return null;
+    },
+    querySelectorAll() { return []; },
+    createElement: makeNode,
+  };
+  const history = { state: null, pushState() {}, replaceState() {} };
+  const window = { location, history, fetch() {}, addEventListener() {} };
+  const context = {
+    window, document, history, URL, localStorage: { getItem() { return null; } },
+    XMLHttpRequest: class { open() {} }, HTMLMediaElement: class { play() {} },
+    MutationObserver: class { observe(element) { assert.equal(element, document.documentElement); } },
+    requestAnimationFrame(callback) { callbacks.push(callback); },
+  };
+  // The Android document-start evaluation may run before <html> exists.
+  vm.runInNewContext(browserRuntime, context);
+  assert.equal(nodes.length, 0);
+  document.documentElement = makeNode('html');
+  document.body = makeNode('body');
+  for (const callback of listeners.get('DOMContentLoaded') || []) callback();
+  while (callbacks.length) callbacks.shift()();
+  assert.equal(document.getElementById('parental')?.attributes['data-movix-parental-section'], '');
+  assert.equal(main.children[0]?.attributes['data-movix-parental-entry'], '');
+  const push = history.pushState;
+  vm.runInNewContext(browserRuntime, context);
+  while (callbacks.length) callbacks.shift()();
+  assert.equal(history.pushState, push, 're-injection refreshes rather than wrapping history twice');
+  assert.equal(main.children.filter(node => node.id === 'parental').length, 1);
+  assert.equal(main.children.filter(node => 'data-movix-parental-entry' in node.attributes).length, 1);
 });

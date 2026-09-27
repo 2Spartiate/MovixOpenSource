@@ -31,6 +31,7 @@ import {
   setPictureInPicturePlaybackActive,
 } from '../services/pictureInPicture';
 import { buildInjectedJavaScript } from '../injection/inject';
+import { buildParentalControlsRuntime } from '../injection/parental-injection';
 import type { PictureInPictureShimMode } from '../injection/picture-in-picture-shim';
 import { CONFIG } from '../config';
 
@@ -89,6 +90,9 @@ const BASE_INJECTION_OPTIONS = {
 // Never reuse a handheld script for TV (or vice versa). The clean-baseline
 // network/WebView options remain identical; only the injected product layer differs.
 const INJECTED_JS_BY_RUNTIME_STATE = new Map<string, string>();
+// Android WebView does not guarantee that the document-start hook runs. Keep
+// this shared handheld/TV runtime independent of the larger early bootstrap.
+const PARENTAL_RUNTIME_AFTER_LOAD = `${buildParentalControlsRuntime()}\ntrue;`;
 
 function injectedJavaScriptFor(
   journalConsoleEnabled: boolean,
@@ -251,6 +255,18 @@ const WebViewBrowser = forwardRef<WebViewBrowserRef, WebViewBrowserProps>(
       }
     }, [isTV]);
 
+    const onPageLoadEnd = useCallback((event: { nativeEvent: { url?: string } }) => {
+      requestTvWebViewFocus();
+      const pageUrl = event.nativeEvent.url;
+      if (!isUsableHttpUrl(pageUrl)) return;
+      try {
+        if (new URL(pageUrl).origin !== new URL(url).origin) return;
+      } catch { return; }
+      // This also repairs a document-start attempt that ran before <html>
+      // existed. The runtime refreshes its observer without duplicating hooks.
+      webViewRef.current?.injectJavaScript(PARENTAL_RUNTIME_AFTER_LOAD);
+    }, [requestTvWebViewFocus, url]);
+
     useEffect(() => {
       if (!isTV) return;
       // Native Android focus and DOM focus are separate. Request the WebView
@@ -274,11 +290,13 @@ const WebViewBrowser = forwardRef<WebViewBrowserRef, WebViewBrowserProps>(
         source={{ uri: url }}
         style={{ flex: 1, backgroundColor: '#0a0a0a' }}
         focusable={isTV ? true : undefined}
-        onLoadEnd={requestTvWebViewFocus}
+        onLoadEnd={onPageLoadEnd}
         // Injection du bridge + userscript avant le chargement
         injectedJavaScriptBeforeContentLoaded={injectedJS}
         // Garder les iframes Turnstile sans bridge ni userscript Movix.
         injectedJavaScriptBeforeContentLoadedForMainFrameOnly={true}
+        injectedJavaScript={PARENTAL_RUNTIME_AFTER_LOAD}
+        injectedJavaScriptForMainFrameOnly={true}
         // Bridge messages
         onMessage={onMessage}
         onShouldStartLoadWithRequest={(request) => {

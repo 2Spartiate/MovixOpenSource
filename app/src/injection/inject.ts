@@ -1,5 +1,5 @@
 import { buildAppSiteOverrides } from './app-site-overrides';
-import { buildParentalControlsRuntime } from './parental-controls-runtime';
+import { buildParentalControlsRuntime } from './parental-injection';
 import { buildBridgeRuntime } from './bridge-runtime';
 import { buildCastShim } from './cast-shim';
 import {

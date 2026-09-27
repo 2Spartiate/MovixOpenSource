@@ -24,13 +24,17 @@ app/
 │   ├── injection/
 │   │   ├── bridge-runtime.ts     # JS injecté dans le WebView (API GM_*)
 │   │   ├── inject.ts             # Assembleur bridge + userscript
+│   │   ├── parental-controls-runtime.ts # Règles et interface DOM locales
+│   │   ├── parental-injection.ts # Script parental commun TV et téléphone
+│   │   ├── parental-runtime-source.ts # JS compilé en chaîne au build
 │   │   └── userscript-source.ts  # Source du userscript (auto-généré)
 │   └── config/
 │       └── index.ts              # Configuration de l'app
 ├── android/                       # Code natif Android (VPN DNS)
 ├── ios/                           # Code natif iOS (NEDNSSettings)
 └── scripts/
-    └── build-userscript.js        # Génère userscript-source.ts
+    ├── build-userscript.js        # Génère userscript-source.ts
+    └── build-parental-injection.js # Génère le script WebView parental
 ```
 
 ### Comment ça marche
@@ -41,6 +45,14 @@ app/
 4. Quand le userscript fait une requête via `GM_xmlhttpRequest`, le bridge envoie un message à React Native
 5. **React Native** fait la requête HTTP nativement (pas de CORS) et renvoie la réponse
 6. **DNS 1.1.1.1** : sur Android via un VPN local, sur iOS via `NEDNSSettingsManager`
+
+Le contrôle parental du site distant est aussi installé par injection DOM dans
+la WebView commune au téléphone, à la tablette et à la TV. Le script est compilé
+en texte avant le bundle Hermes : `Function.toString()` dans l'APK ne fournit pas
+de source fiable. Sur Android, l'injection après chargement et `onLoadEnd` réparent
+un démarrage précoce manqué ; les hooks sont idempotents. L'APK contient ainsi le
+code servi dans la WebView même si le frontend distant n'a pas été déployé. Il
+reste nécessaire de vérifier son rendu sur les vrais appareils.
 
 ## Prérequis
 
@@ -59,6 +71,7 @@ npm install
 
 # Générer le userscript source
 node scripts/build-userscript.js
+node scripts/build-parental-injection.js
 
 # iOS seulement
 cd ios && pod install && cd ..

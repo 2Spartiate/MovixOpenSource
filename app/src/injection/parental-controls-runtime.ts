@@ -81,8 +81,8 @@ export function parentalHomeTarget(pathname: string, prefs: Preferences): string
 }
 
 function installParentalControlsRuntime() {
-  if ((window as any).__MOVIX_PARENTAL_NATIVE_V1) return;
-  (window as any).__MOVIX_PARENTAL_NATIVE_V1 = true;
+  const existing = (window as any).__MOVIX_PARENTAL_NATIVE_V1;
+  if (existing?.refresh) { existing.refresh(); return; }
   const PIN_KEY = 'movix_parental_pin_v1';
   const PREF_KEY = 'movix_parental_preferences_v1';
   const ITERATIONS = 310000;
@@ -215,6 +215,8 @@ function installParentalControlsRuntime() {
       .movix-parental .switch[aria-checked=true] { background:#b91c1c }
       .movix-parental .step { display:flex; align-items:center; gap:.6rem }
       .movix-parental .step button { font-size:1.2rem; min-width:2.7rem; min-height:2.7rem; padding:.2rem }
+      .movix-parental-entry { display:inline-flex; align-items:center; gap:.6rem; margin:0 0 1rem; color:#f87171; border:1px solid #7f1d1d; border-radius:.75rem; background:#450a0a60; padding:.65rem .9rem; font:inherit; cursor:pointer }
+      .movix-parental-entry:focus-visible { outline:3px solid #f87171; outline-offset:3px }
       .movix-parental label, #movix-parental-overlay label { display:block; margin:.7rem 0; color:#e5e7eb; font-size:.875rem }
       .movix-parental input[type=password], #movix-parental-overlay input[type=password] { display:block; width:100%; max-width:20rem; margin-top:.3rem; padding:.65rem; border:1px solid #6b7280; border-radius:.7rem; background:#111827; color:white; font:inherit }
       .movix-parental-error { color:#fca5a5 !important; min-height:1.3rem }
@@ -301,7 +303,12 @@ function installParentalControlsRuntime() {
   const ensureSettings = () => {
     if (window.location.pathname !== '/settings') return;
     const source = document.getElementById('source-priority');
-    if (!source || (document.getElementById('parental') && !document.querySelector('[data-movix-parental-section]'))) return; // deployed SPA implementation owns its section
+    if (document.getElementById('parental') && !document.querySelector('[data-movix-parental-section]')) return; // deployed SPA implementation owns its section
+    const privacy = document.getElementById('privacy');
+    const content = source?.parentElement || privacy?.parentElement
+      || document.querySelector('main section[id]')?.parentElement
+      || document.querySelector('main');
+    if (!content) return; // React has not mounted the settings page yet.
     style();
     let section = document.querySelector<HTMLElement>('[data-movix-parental-section]');
     if (!section) {
@@ -309,7 +316,7 @@ function installParentalControlsRuntime() {
       section.id = 'parental';
       section.setAttribute('data-movix-parental-section', '');
       section.className = 'movix-parental';
-      source.parentElement?.insertBefore(section, source);
+      content.insertBefore(section, source || privacy?.nextSibling || null);
       renderSection(section);
       section.addEventListener('click', event => {
         if (padClick(event)) return;
@@ -361,7 +368,7 @@ function installParentalControlsRuntime() {
     }
     // React owns the surrounding lists. Reinsert only our own nodes if a render
     // removed them; never replace a React child or its event listener.
-    const title = source.querySelector('h2')?.textContent?.trim();
+    const title = source?.querySelector('h2')?.textContent?.trim();
     const lists = [
       document.querySelector('[data-settings-sidebar-scroll] ul'),
       document.querySelector('main .lg\\:hidden.fixed .overflow-x-auto > div'),
@@ -373,7 +380,7 @@ function installParentalControlsRuntime() {
         const label = button.textContent?.trim();
         return label === strings().priorityNav || label === title;
       });
-      if (!sourceButton) continue;
+      const privacyButton = buttons.find(button => /^(confidentialit[ée]|privacy)$/i.test(button.textContent?.trim() || ''));
       const item = document.createElement(index === 0 ? 'li' : 'span');
       item.setAttribute('data-movix-parental-nav', '');
       if (index === 1) item.className = 'flex flex-shrink-0';
@@ -384,7 +391,23 @@ function installParentalControlsRuntime() {
       button.lastElementChild!.textContent = strings().title;
       button.addEventListener('click', activateSection);
       item.appendChild(button);
-      list.insertBefore(item, sourceButton.parentElement?.parentElement === list ? sourceButton.parentElement : sourceButton);
+      const anchor = sourceButton || privacyButton;
+      const anchorItem = anchor?.parentElement?.parentElement === list ? anchor.parentElement : anchor;
+      list.insertBefore(item, sourceButton ? anchorItem || null : anchorItem?.nextSibling || null);
+    }
+    // Older deployed frontends can lack both navigation lists. Keep an entry
+    // visible at the top of Settings in that case, including when signed out.
+    if (!document.querySelector('[data-movix-parental-entry]')) {
+      const main = document.querySelector('main');
+      if (main) {
+        const entry = document.createElement('button');
+        entry.type = 'button'; entry.className = 'movix-parental-entry';
+        entry.setAttribute('data-movix-parental-entry', '');
+        entry.innerHTML = `${lockIcon}<span></span>`;
+        entry.querySelector('span')!.textContent = strings().title;
+        entry.addEventListener('click', activateSection);
+        main.insertBefore(entry, main.firstElementChild?.nextSibling || main.firstChild);
+      }
     }
     if (window.location.hash === '#parental') {
       if (!section.dataset.hashSeen) { section.dataset.hashSeen = 'true'; requestAnimationFrame(activateSection); }
@@ -633,18 +656,14 @@ function installParentalControlsRuntime() {
     if (document.getElementById('movix-parental-overlay')) { event.preventDefault(); goBack(); }
     else if (window.location.pathname === '/settings' && ['create', 'unlock', 'change'].includes(sectionMode)) { event.preventDefault(); cancelSection(); }
   }, true);
-  if (typeof MutationObserver === 'function') new MutationObserver(schedule).observe(document.documentElement, { subtree: true, childList: true });
+  const observer = typeof MutationObserver === 'function' ? new MutationObserver(schedule) : null;
+  const observe = () => {
+    if (document.documentElement) observer?.observe(document.documentElement, { subtree: true, childList: true });
+    schedule();
+  };
+  if (document.documentElement) observe();
+  else document.addEventListener('DOMContentLoaded', observe, { once: true });
   if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', schedule, { once: true });
+  (window as any).__MOVIX_PARENTAL_NATIVE_V1 = { refresh: schedule };
   schedule();
-}
-
-export function buildParentalControlsRuntime(): string {
-  return `(() => {
-    const parentalMediaRoute = ${parentalMediaRoute.toString()};
-    const parentalCertificationAge = ${parentalCertificationAge.toString()};
-    const parentalPreferredAge = ${parentalPreferredAge.toString()};
-    const parentalLockReason = ${parentalLockReason.toString()};
-    const parentalHomeTarget = ${parentalHomeTarget.toString()};
-    (${installParentalControlsRuntime.toString()})();
-  })();`;
 }

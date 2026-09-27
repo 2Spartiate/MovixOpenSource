@@ -64,7 +64,10 @@ jobs:
 
       - name: Rebuild injected userscript
         working-directory: app
-        run: npm run build:userscript
+        run: |
+          npm run build:userscript
+          npm run build:parental-injection
+          node scripts/build-parental-injection.js --check
 
       - name: Validate clean baseline, TV runtime and handheld isolation contracts
         working-directory: app
@@ -150,6 +153,7 @@ jobs:
           strings "$RUNNER_TEMP/movix-native-bundle" > "$RUNNER_TEMP/movix-native-strings"
           grep -Fq 'movix_parental_pin_v1' "$RUNNER_TEMP/movix-native-strings"
           grep -Fq 'movix-parental-overlay' "$RUNNER_TEMP/movix-native-strings"
+          grep -Fq 'installParentalControlsRuntime();' "$RUNNER_TEMP/movix-native-strings"
           echo "Standalone React Native bundle is packaged in $APK"
 
       - name: Upload Google TV standalone APK

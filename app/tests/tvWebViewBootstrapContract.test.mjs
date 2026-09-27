@@ -110,5 +110,6 @@ test('Android TV WebView requests native focus before DOM navigation while handh
   assert.match(webView, /setTimeout\(requestTvWebViewFocus, 80\)/);
   assert.match(webView, /setTimeout\(requestTvWebViewFocus, 450\)/);
   assert.match(webView, /focusable=\{isTV \? true : undefined\}/);
-  assert.match(webView, /onLoadEnd=\{requestTvWebViewFocus\}/);
+  assert.match(webView, /onLoadEnd=\{onPageLoadEnd\}/);
+  assert.match(webView, /requestTvWebViewFocus\(\);[\s\S]*injectJavaScript\(PARENTAL_RUNTIME_AFTER_LOAD\)/);
 });
