@@ -412,7 +412,7 @@ function installParentalControlsRuntime() {
   if (typeof originalFetch === 'function') window.fetch = function (...args: Parameters<typeof fetch>) {
     const url = String(args[0] instanceof Request ? args[0].url : args[0]);
     learnTmdb(url);
-    return originalFetch.apply(this, args).then(response => {
+    return originalFetch.apply(this, args as unknown as Parameters<typeof originalFetch>).then(response => {
       if (url.includes('api.themoviedb.org/3/')) response.clone().json().then(body => learnTmdb(url, body)).catch(() => {});
       return response;
     });
