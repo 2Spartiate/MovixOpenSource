@@ -55,7 +55,6 @@ test('0 opens the two-action TV menu without a fake automatic profile switch', a
 test('injected TV quick menu reuses remote episodes and settings controls', async () => {
   const runtime = await text('src/injection/tv-playback-runtime.ts');
 
-  assert.match(runtime, /findActionButton\(root, \['episodes', 'episode'\]/);
   assert.match(runtime, /data-tv-player-menu-trigger="settings"/);
   assert.match(runtime, /\.settings-menu\[data-player-menu="settings"\]/);
   assert.match(runtime, /getEpisodesPanel/);

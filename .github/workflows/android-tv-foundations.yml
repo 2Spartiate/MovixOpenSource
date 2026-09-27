@@ -22,6 +22,7 @@ on:
       - agent/google-tv-playback-ux-v12
       - agent/google-tv-playback-ux-v13
       - agent/google-tv-playback-ux-v21
+      - agent/google-tv-playback-ux-v22
     paths:
       - 'app/**'
       - 'src/**'
@@ -84,6 +85,7 @@ jobs:
             tests/tvPlaybackPolicy.test.mjs \
             tests/tvPlaybackQuickMenuContract.test.mjs \
             tests/tvPlaybackRemoteV12Contract.test.mjs \
+            tests/tvV21MenuBehavior.test.mjs \
             tests/tvInjectedPlaybackRuntimeContract.test.mjs \
             tests/tvOriginalLanguageContract.test.mjs \
             tests/tvPlayerMenusContract.test.mjs \
