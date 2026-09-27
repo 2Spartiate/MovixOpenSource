@@ -4,11 +4,10 @@ import {
   Text,
   StyleSheet,
   BackHandler,
-  findNodeHandle,
+  NativeModules,
   Platform,
   Modal,
   TouchableOpacity,
-  Pressable,
   ActivityIndicator,
   AppState,
   PlatformColor,
@@ -55,11 +54,6 @@ export default function BrowserScreen() {
   const [tvPathname, setTvPathname] = useState('');
   const [dnsEnabled, setDnsEnabled] = useState(false);
   const [settingsVisible, setSettingsVisible] = useState(false);
-  const [exitConfirmVisible, setExitConfirmVisible] = useState(false);
-  const [exitChoice, setExitChoice] = useState<'no' | 'yes' | null>('no');
-  const [exitPreferredFocus, setExitPreferredFocus] = useState(false);
-  const exitNoButtonRef = useRef<React.ElementRef<typeof Pressable>>(null);
-  const exitYesButtonRef = useRef<React.ElementRef<typeof Pressable>>(null);
   const [isPictureInPictureActive, setIsPictureInPictureActive] = useState(false);
   const [webViewGeneration, setWebViewGeneration] = useState(0);
   const autoRecoveryAttemptedRef = useRef(false);
@@ -94,17 +88,12 @@ export default function BrowserScreen() {
         setSettingsVisible(false);
         return true;
       }
-      if (exitConfirmVisible) {
-        setExitConfirmVisible(false);
-        setExitChoice('no');
-        setExitPreferredFocus(false);
-        return true;
-      }
       if (isTV) {
         if (isTvHome) {
-          setExitChoice('no');
-          setExitPreferredFocus(true);
-          setExitConfirmVisible(true);
+          // The native Dialog owns Android TV focus, D-pad, Back and its
+          // focused-state drawable. React Native 0.75's Pressable callbacks
+          // did not follow the actual focus observed on the device.
+          NativeModules.TvExitDialog?.show();
           return true;
         }
         // TV always consumes Back inside the native shell. SPA routes do not
@@ -131,7 +120,7 @@ export default function BrowserScreen() {
     });
 
     return () => handler.remove();
-  }, [canGoBack, exitConfirmVisible, isTV, isTvHome, settingsVisible]);
+  }, [canGoBack, isTV, isTvHome, settingsVisible]);
 
   useEffect(() => {
     const subscription = AppState.addEventListener('change', nextState => {
@@ -280,84 +269,6 @@ export default function BrowserScreen() {
       )}
 
       <Modal
-        visible={!isPictureInPictureActive && isTV && exitConfirmVisible}
-        transparent
-        animationType="fade"
-        onRequestClose={() => {
-          setExitConfirmVisible(false);
-          setExitChoice('no');
-          setExitPreferredFocus(false);
-        }}>
-        <View style={styles.exitOverlay}>
-          <View style={styles.exitDialog}>
-            <Text style={styles.exitTitle}>Quitter Movix ?</Text>
-            <Text style={styles.exitMessage}>
-              Êtes-vous sûr de vouloir quitter l'application ?
-            </Text>
-            <View style={styles.exitActions}>
-              <Pressable
-                ref={exitNoButtonRef}
-                accessibilityRole="button"
-                accessibilityLabel="Ne pas quitter"
-                focusable
-                hasTVPreferredFocus={isTV && exitPreferredFocus}
-                {...({
-                  nextFocusLeft: findNodeHandle(exitNoButtonRef.current) ?? undefined,
-                  nextFocusRight: findNodeHandle(exitYesButtonRef.current) ?? undefined,
-                } as any)}
-                onFocus={() => {
-                  setExitChoice('no');
-                  setExitPreferredFocus(false);
-                }}
-                onBlur={() => {
-                  setExitChoice(current => current === 'no' ? null : current);
-                }}
-                onPress={() => {
-                  setExitConfirmVisible(false);
-                  setExitChoice('no');
-                  setExitPreferredFocus(false);
-                }}
-                style={[
-                  styles.exitButton,
-                  exitChoice === 'no' && styles.exitButtonFocused,
-                ]}>
-                <Text style={[
-                  styles.exitButtonText,
-                  exitChoice === 'no' && styles.exitButtonTextFocused,
-                ]}>NON</Text>
-              </Pressable>
-              <Pressable
-                ref={exitYesButtonRef}
-                accessibilityRole="button"
-                accessibilityLabel="Quitter l'application"
-                focusable
-                {...({
-                  nextFocusLeft: findNodeHandle(exitNoButtonRef.current) ?? undefined,
-                  nextFocusRight: findNodeHandle(exitYesButtonRef.current) ?? undefined,
-                } as any)}
-                onFocus={() => {
-                  setExitChoice('yes');
-                  setExitPreferredFocus(false);
-                }}
-                onBlur={() => {
-                  setExitChoice(current => current === 'yes' ? null : current);
-                }}
-                onPress={() => BackHandler.exitApp()}
-                style={[
-                  styles.exitButton,
-                  exitChoice === 'yes' && styles.exitButtonFocused,
-                ]}>
-                <Text style={[
-                  styles.exitButtonText,
-                  exitChoice === 'yes' && styles.exitButtonTextFocused,
-                ]}>OUI</Text>
-              </Pressable>
-            </View>
-          </View>
-        </View>
-      </Modal>
-
-      <Modal
         visible={!isPictureInPictureActive && settingsVisible}
         animationType="slide"
         onRequestClose={closeSettings}>
@@ -405,66 +316,6 @@ const styles = StyleSheet.create({
   },
   webViewContainer: {
     flex: 1,
-  },
-  exitOverlay: {
-    flex: 1,
-    alignItems: 'center',
-    justifyContent: 'center',
-    backgroundColor: 'rgba(0, 0, 0, 0.72)',
-    paddingHorizontal: 32,
-  },
-  exitDialog: {
-    width: '100%',
-    maxWidth: 460,
-    paddingHorizontal: 28,
-    paddingVertical: 26,
-    borderRadius: 18,
-    borderWidth: 1,
-    borderColor: 'rgba(239, 68, 68, 0.58)',
-    backgroundColor: '#111111',
-  },
-  exitTitle: {
-    color: '#ffffff',
-    fontSize: 24,
-    fontWeight: '700',
-    textAlign: 'center',
-  },
-  exitMessage: {
-    marginTop: 10,
-    color: '#d1d5db',
-    fontSize: 17,
-    lineHeight: 24,
-    textAlign: 'center',
-  },
-  exitActions: {
-    marginTop: 24,
-    flexDirection: 'row',
-    justifyContent: 'center',
-    gap: 16,
-  },
-  exitButton: {
-    minWidth: 120,
-    paddingHorizontal: 22,
-    paddingVertical: 13,
-    borderRadius: 12,
-    borderWidth: 1,
-    borderColor: '#4b5563',
-    backgroundColor: '#1f2937',
-    alignItems: 'center',
-    justifyContent: 'center',
-  },
-  exitButtonFocused: {
-    borderColor: '#ef4444',
-    backgroundColor: 'rgba(127, 29, 29, 0.42)',
-    transform: [{ scale: 1.05 }],
-  },
-  exitButtonText: {
-    color: '#e5e7eb',
-    fontSize: 17,
-    fontWeight: '600',
-  },
-  exitButtonTextFocused: {
-    color: '#ffffff',
   },
   modalContainer: {
     flex: 1,

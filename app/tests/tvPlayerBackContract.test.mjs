@@ -14,7 +14,7 @@ test('Android TV hardware Back is consumed by TV routing before WebView canGoBac
   assert.ok(start >= 0);
   assert.ok(handler.indexOf('if (isTV)') >= 0);
   assert.ok(handler.indexOf('if (canGoBack)') > handler.indexOf('if (isTV)'));
-  assert.match(handler, /if \(isTvHome\)[\s\S]{0,220}setExitConfirmVisible\(true\)[\s\S]{0,120}return true/);
+  assert.match(handler, /if \(isTvHome\)[\s\S]{0,360}NativeModules\.TvExitDialog\?\.show\(\)[\s\S]{0,120}return true/);
   assert.match(handler, /new Event\('movix-tv-back', \{ cancelable: true \}\)/);
   assert.match(handler, /if \(!event\.defaultPrevented\) \{[\s\S]{0,180}window\.history\.length > 1[\s\S]{0,160}window\.location\.href = '\/'/);
   assert.match(handler, /injectJavaScript[\s\S]{0,700}return true/);
@@ -80,31 +80,24 @@ test('France TV Back closes settings, then fullscreen, then exits its route', as
   assert.match(handler, /event\.preventDefault\(\)/);
 });
 
-test('Android TV Home Back opens BlueNight exit confirmation with NON preferred', async () => {
+test('Android TV Home Back opens the native focus-driven confirmation', async () => {
   const browser = await text('src/screens/BrowserScreen.tsx');
+  const native = await text('android/app/src/main/java/com/movix/app/TvExitDialogModule.kt');
+  const app = await text('android/app/src/main/java/com/movix/app/MainApplication.kt');
 
   assert.match(browser, /const isTvHome = useMemo\(\(\) => \{/);
-  assert.match(browser, /if \(isTvHome\) \{[\s\S]{0,200}setExitChoice\('no'\)[\s\S]{0,120}setExitConfirmVisible\(true\)/);
-  assert.match(browser, /visible=\{!isPictureInPictureActive && isTV && exitConfirmVisible\}/);
-  assert.match(browser, /Quitter Movix \?/);
-  assert.match(browser, /setExitPreferredFocus\(true\)[\s\S]{0,120}setExitConfirmVisible\(true\)/);
-  assert.match(browser, /<Pressable[\s\S]{0,500}accessibilityLabel="Ne pas quitter"/);
-  assert.match(browser, /<Pressable[\s\S]{0,500}accessibilityLabel="Quitter l'application"/);
-  assert.match(browser, /hasTVPreferredFocus=\{isTV && exitPreferredFocus\}/);
-  assert.match(browser, /nextFocusRight:\s*findNodeHandle\(exitYesButtonRef\.current\) \?\? undefined/);
-  assert.match(browser, /nextFocusLeft:\s*findNodeHandle\(exitNoButtonRef\.current\) \?\? undefined/);
-  assert.match(browser, /onFocus=\{\(\) => \{[\s\S]{0,120}setExitChoice\('no'\)[\s\S]{0,120}setExitPreferredFocus\(false\)/);
-  assert.match(browser, /onFocus=\{\(\) => \{[\s\S]{0,120}setExitChoice\('yes'\)[\s\S]{0,120}setExitPreferredFocus\(false\)/);
-  assert.match(browser, /onBlur=\{\(\) => \{[\s\S]{0,120}current === 'no' \? null : current/);
-  assert.match(browser, /onBlur=\{\(\) => \{[\s\S]{0,120}current === 'yes' \? null : current/);
-  assert.match(browser, />NON<\/Text>/);
-  assert.match(browser, />OUI<\/Text>/);
-  assert.match(browser, /onPress=\{\(\) => BackHandler\.exitApp\(\)\}/);
+  assert.match(app, /add\(TvExitDialogPackage\(\)\)/);
+  assert.match(native, /mode != Configuration\.UI_MODE_TYPE_TELEVISION\) return/);
+  assert.match(native, /addState\(intArrayOf\(android\.R\.attr\.state_focused\), rounded\(0xFF7F1D1D\.toInt\(\), 0xFFEF4444\.toInt\(\)\)\)/);
+  assert.match(native, /addState\(intArrayOf\(\), rounded\(0xFF1F2937\.toInt\(\), 0xFF4B5563\.toInt\(\)\)\)/);
+  assert.match(native, /no\.nextFocusRightId = yes\.id[\s\S]{0,80}yes\.nextFocusLeftId = no\.id/);
+  assert.match(native, /next\.show\(\)[\s\S]{0,120}no\.requestFocus\(\)/);
+  assert.match(native, /yes\.setOnClickListener \{ next\.dismiss\(\); activity\.finish\(\) \}/);
+  assert.doesNotMatch(browser, /exitChoice|exitButtonFocused|hasTVPreferredFocus/);
 });
 
 test('Back while the TV exit confirmation is visible cancels instead of exiting', async () => {
-  const browser = await text('src/screens/BrowserScreen.tsx');
-
-  assert.match(browser, /if \(exitConfirmVisible\) \{[\s\S]{0,180}setExitConfirmVisible\(false\)[\s\S]{0,180}setExitChoice\('no'\)[\s\S]{0,180}setExitPreferredFocus\(false\)[\s\S]{0,120}return true/);
-  assert.match(browser, /onRequestClose=\{\(\) => \{[\s\S]{0,180}setExitConfirmVisible\(false\)[\s\S]{0,120}setExitChoice\('no'\)[\s\S]{0,180}setExitPreferredFocus\(false\)/);
+  const native = await text('android/app/src/main/java/com/movix/app/TvExitDialogModule.kt');
+  assert.match(native, /no\.setOnClickListener \{ next\.dismiss\(\) \}/);
+  assert.match(native, /Dialog\(activity\)/);
 });
