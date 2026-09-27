@@ -1,3 +1,5 @@
+import { PARENTAL_STORAGE_PREFIX } from './parentalControls.ts';
+
 const SYNCABLE_EXACT_KEYS = new Set([
   'access_code',
   'access_code_expires',
@@ -148,6 +150,7 @@ export function getStorageKeySyncState(
   key: string | null | undefined
 ): 'syncable' | NonSyncableStorageReason {
   if (typeof key !== 'string') return 'invalid_format';
+  if (key.startsWith(PARENTAL_STORAGE_PREFIX)) return 'blocked';
   if (BLOCKED_SYNC_KEYS.has(key)) return 'blocked';
   if (!SAFE_SYNC_KEY_PATTERN.test(key)) return 'invalid_format';
   if (SYNCABLE_EXACT_KEYS.has(key)) return 'syncable';
@@ -160,7 +163,7 @@ export function isSyncableStorageKey(key: string | null | undefined): key is str
 }
 
 export function shouldPreserveStorageKeyOnProfileLoad(key: string | null | undefined): key is string {
-  return typeof key === 'string' && PROFILE_LOAD_PRESERVED_KEYS.has(key);
+  return typeof key === 'string' && (key.startsWith(PARENTAL_STORAGE_PREFIX) || PROFILE_LOAD_PRESERVED_KEYS.has(key));
 }
 
 export function getAllLocalStorageEntries(storage: Storage = window.localStorage) {
@@ -168,7 +171,7 @@ export function getAllLocalStorageEntries(storage: Storage = window.localStorage
 
   for (let index = 0; index < storage.length; index++) {
     const key = storage.key(index);
-    if (!key) continue;
+    if (!key || key.startsWith(PARENTAL_STORAGE_PREFIX)) continue;
     entries[key] = storage.getItem(key) || '';
   }
 
@@ -195,7 +198,7 @@ export function getNonSyncableLocalStorageEntries(storage: Storage = window.loca
 
   for (let index = 0; index < storage.length; index++) {
     const key = storage.key(index);
-    if (!key) continue;
+    if (!key || key.startsWith(PARENTAL_STORAGE_PREFIX)) continue;
 
     const syncState = getStorageKeySyncState(key);
     if (syncState === 'syncable') continue;

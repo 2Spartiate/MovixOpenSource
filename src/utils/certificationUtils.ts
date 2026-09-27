@@ -21,6 +21,32 @@ export const ageMap: Record<string, number> = {
   '19': 19, '21+': 21,
 };
 
+/** A missing or unrecognised classification is unknown, never all ages. */
+export const parseCertificationAge = (certification: unknown): number | null => {
+  if (typeof certification !== 'string') return null;
+  const normalized = certification.trim().toUpperCase();
+  if (allAgesCerts.has(normalized)) return 0;
+  return ageMap[normalized] ?? null;
+};
+
+/** Prefer a recognised French rating, then a recognised US rating, then other regions. */
+export function getPreferredRegionalAge<T extends { iso_3166_1?: string }>(
+  regions: readonly T[],
+  certifications: (region: T) => readonly unknown[],
+): number | null {
+  const ordered = [
+    ...['FR', 'US'].flatMap(code => regions.filter(region => region.iso_3166_1 === code)),
+    ...regions.filter(region => region.iso_3166_1 !== 'FR' && region.iso_3166_1 !== 'US'),
+  ];
+  for (const region of ordered) {
+    for (const certification of certifications(region)) {
+      const age = parseCertificationAge(certification);
+      if (age !== null) return age;
+    }
+  }
+  return null;
+}
+
 export const getClassificationLabel = (certification: string, t: (key: string, options?: Record<string, unknown>) => string): string => {
   if (allAgesCerts.has(certification)) {
     return t('details.allAges');
@@ -31,10 +57,9 @@ export const getClassificationLabel = (certification: string, t: (key: string, o
   return certification;
 };
 
-/** Get the numeric minimum age for a TMDB certification string. Returns 0 for all-ages or unknown. */
+/** Legacy display helper. Decisions must use parseCertificationAge, which preserves unknown. */
 export const getNumericAge = (certification: string): number => {
-  if (allAgesCerts.has(certification)) return 0;
-  return ageMap[certification] ?? 0;
+  return parseCertificationAge(certification) ?? 0;
 };
 
 /**
@@ -49,9 +74,9 @@ export const isContentAllowed = (contentCert: string, profileAgeRestriction: num
   // A missing/unrecognised classification must not expose a title to a minor
   // profile while the app cannot establish that it is suitable. Adults (18+)
   // retain access to these unrated titles.
-  if (!normalizedCert || (!allAgesCerts.has(normalizedCert) && !(normalizedCert in ageMap))) {
+  const contentAge = parseCertificationAge(normalizedCert);
+  if (contentAge === null) {
     return profileAgeRestriction >= 18;
   }
-  const contentAge = getNumericAge(normalizedCert);
   return contentAge <= profileAgeRestriction;
 };

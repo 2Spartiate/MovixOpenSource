@@ -1,4 +1,4 @@
-import { ageMap, allAgesCerts } from './certificationUtils';
+import { getPreferredRegionalAge } from './certificationUtils';
 
 const TMDB_API_KEY = import.meta.env.VITE_TMDB_API_KEY || '';
 const TMDB_API_BASE_URL = 'https://api.themoviedb.org/3';
@@ -55,14 +55,6 @@ export const getContentAgeKey = (content: AgeClassifiableContent): string => {
   return `${mediaType}:${content.id}:${content.adult === true ? 'adult' : 'standard'}`;
 };
 
-const getCertificationAge = (certification: unknown): number | null => {
-  if (typeof certification !== 'string') return null;
-  const normalized = certification.trim().toUpperCase();
-  if (!normalized) return null;
-  if (allAgesCerts.has(normalized)) return 0;
-  return ageMap[normalized] ?? null;
-};
-
 const getCachedAge = (key: string): number | null | undefined => {
   if (typeof sessionStorage === 'undefined') return undefined;
   try {
@@ -97,39 +89,19 @@ const getMovieCertificationAge = async (id: number): Promise<number | null> => {
   const response = await fetch(`${TMDB_API_BASE_URL}/movie/${id}/release_dates?api_key=${encodeURIComponent(TMDB_API_KEY)}`);
   if (!response.ok) return null;
   const data = await response.json() as { results?: Array<{ iso_3166_1?: string; release_dates?: Array<{ certification?: string; type?: number }> }> };
-  const regions = data.results || [];
-  const preferredRegions = ['FR', 'US', 'GB', 'CA'];
-  const orderedRegions = [
-    ...preferredRegions.map((region) => regions.find((entry) => entry.iso_3166_1 === region)).filter(Boolean),
-    ...regions.filter((entry) => !preferredRegions.includes(entry.iso_3166_1 || '')),
-  ] as Array<{ release_dates?: Array<{ certification?: string; type?: number }> }>;
-
-  for (const region of orderedRegions) {
+  return getPreferredRegionalAge(data.results || [], region => {
     const releases = region.release_dates || [];
-    const preferredRelease = releases.find((release) => (release.type === 3 || release.type === 2) && release.certification?.trim())
-      || releases.find((release) => release.certification?.trim());
-    const age = getCertificationAge(preferredRelease?.certification);
-    if (age !== null) return age;
-  }
-  return null;
+    // A region can contain an unrecognised first release and a valid later one.
+    const sorted = [...releases].sort((a, b) => Number(b.type === 3 || b.type === 2) - Number(a.type === 3 || a.type === 2));
+    return sorted.map(release => release.certification);
+  });
 };
 
 const getTvCertificationAge = async (id: number): Promise<number | null> => {
   const response = await fetch(`${TMDB_API_BASE_URL}/tv/${id}/content_ratings?api_key=${encodeURIComponent(TMDB_API_KEY)}`);
   if (!response.ok) return null;
   const data = await response.json() as { results?: Array<{ iso_3166_1?: string; rating?: string }> };
-  const ratings = data.results || [];
-  const preferredRegions = ['FR', 'US', 'GB', 'CA', 'JP'];
-  const orderedRatings = [
-    ...preferredRegions.map((region) => ratings.find((entry) => entry.iso_3166_1 === region)).filter(Boolean),
-    ...ratings.filter((entry) => !preferredRegions.includes(entry.iso_3166_1 || '')),
-  ] as Array<{ rating?: string }>;
-
-  for (const rating of orderedRatings) {
-    const age = getCertificationAge(rating.rating);
-    if (age !== null) return age;
-  }
-  return null;
+  return getPreferredRegionalAge(data.results || [], rating => [rating.rating]);
 };
 
 /**
