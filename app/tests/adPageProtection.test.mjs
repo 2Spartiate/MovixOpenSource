@@ -40,7 +40,7 @@ function mountAdPage(script, { origin, bodyText, title = '', historyLength = 4 }
   head.appendChild(cookieHeadMarker);
   const document = {
     readyState: 'complete',
-    body, head, title,
+    body, head, title, documentElement: node('html'),
     createElement: node,
     addEventListener(type, listener) { listeners.set('document:' + type, listener); },
   };
@@ -62,7 +62,7 @@ function mountAdPage(script, { origin, bodyText, title = '', historyLength = 4 }
     observe() {}
     disconnect() {}
   };
-  vm.runInNewContext(script, { window: win, document, MutationObserver, setTimeout: win.setTimeout });
+  vm.runInNewContext(script, { window: win, document, MutationObserver, setTimeout: win.setTimeout, URL });
   return {
     document, body, head, marker: cookieHeadMarker,
     get focused() { return focused; },
@@ -111,7 +111,7 @@ test('trusted Movix page and benign remote pages are left alone', async () => {
     origin: 'https://movix.luxe', bodyText: 'VPN setup and films porno in a documentary',
   });
   assert.equal(own.body.children.length, 0);
-  const remote = mountAdPage(build('https://video.example'), {
+  const remote = mountAdPage(build('https://movix.luxe'), {
     origin: 'https://another.example', bodyText: 'Video unavailable - retry player',
   });
   assert.equal(remote.body.children.length, 0);
@@ -123,4 +123,14 @@ test('invalid trusted origin fails closed rather than rewriting unrelated pages'
     origin: 'https://external.example', bodyText: 'VPN now',
   });
   assert.equal(page.body.children.length, 0);
+});
+
+test('short navigation history falls back to trusted Movix origin', async () => {
+  const build = await loadBuilder();
+  const page = mountAdPage(build('https://movix.luxe'), {
+    origin: 'https://ads.example', bodyText: 'VPN download', historyLength: 1,
+  });
+  page.clickTarget(page.focused);
+  assert.equal(page.historyDelta, null);
+  assert.equal(page.redirectedTo, 'https://movix.luxe');
 });
