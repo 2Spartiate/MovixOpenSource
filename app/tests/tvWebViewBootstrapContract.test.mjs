@@ -68,8 +68,8 @@ test('WebView injection cache is partitioned by journal and TV runtime', async (
   assert.match(webView, /INJECTED_JS_BY_RUNTIME_STATE = new Map<string, string>/);
   assert.match(webView, /isTV \? 'tv' : 'handheld'/);
   assert.match(webView, /tvMode: isTV/);
-  assert.match(webView, /injectedJavaScriptFor\(journalConsole, isTV\)/);
-  assert.match(webView, /\[journalConsole, isTV\]/);
+  assert.match(webView, /injectedJavaScriptFor\(journalConsole, isTV, trustedSiteOrigin\)/);
+  assert.match(webView, /\[journalConsole, isTV, trustedSiteOrigin\]/);
   assert.match(webView, /injectedJavaScriptBeforeContentLoadedForMainFrameOnly=\{true\}/);
 });
 
@@ -112,4 +112,13 @@ test('Android TV WebView requests native focus before DOM navigation while handh
   assert.match(webView, /focusable=\{isTV \? true : undefined\}/);
   assert.match(webView, /onLoadEnd=\{onPageLoadEnd\}/);
   assert.match(webView, /requestTvWebViewFocus\(\);[\s\S]*injectJavaScript\(PARENTAL_RUNTIME_AFTER_LOAD\)/);
+});
+
+test('ad landing page guard uses trusted site origin and main-frame-only injection', async () => {
+  const webView = await text('src/components/WebViewBrowser.tsx');
+  const injection = await text('src/injection/inject.ts');
+  assert.match(injection, /buildAdPageProtection/);
+  assert.match(webView, /new URL\(url\)\.origin/);
+  assert.match(webView, /buildAdPageProtection\(trustedSiteOrigin\)/);
+  assert.match(webView, /injectedJavaScriptBeforeContentLoadedForMainFrameOnly=\{true\}/);
 });
