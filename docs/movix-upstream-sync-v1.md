@@ -1,4 +1,4 @@
-# Migration Movix upstream V1
+# Migration Movix upstream V1 — bilan final
 
 ## Références et périmètre
 
@@ -43,15 +43,6 @@ Les fichiers frontend du dépôt ne sont pas le contenu distribué dans l'APK : 
 - Le hero upstream ne comporte plus qu'une entrée de fiche « Plus d'infos ». Sur TV, cette même entrée reçoit le rôle, le label et le style « Lire », avec son lien et son handler React conservés. Sur mobile, elle reste inchangée.
 - Trois tests exécutent les fonctions injectées sur ces formes DOM, dont l'isolation mobile.
 
-## Vérification du checkpoint de fusion
-
-- TypeScript application mobile et configuration parentale ciblée : réussis.
-- Contrats ciblés TV, spatial, télécommande, parental, Cloudflare et DOM upstream : réussis.
-- Suite mobile complète après migration : 354 tests, 348 réussis, 6 échecs également présents dans la source personnalisée. Ils concernent deux contrats PiP et quatre contrats d'une ancienne tentative de démarrage/résilience TV. Leur présence est consignée, pas masquée par une modification de leurs attentes.
-- Le frontend upstream possède déjà des diagnostics TypeScript globaux (273 observés avec le lockfile actuel et `--ignoreDeprecations 5.0`). Le build Vite ne remplace pas ce contrôle. Les erreurs d'intégration détectées pendant la fusion sont corrigées ; le contrôle global n'est pas annoncé vert.
-- Validation native Android et politique anti-mise à jour : checkpoint suivant.
-- Aucun appareil TV matériel utilisé ; pas de lecture réelle ou de tunnel VPN matériel revendiqué.
-
 ## Désactivation des mises à jour APK
 
 - Politique embarquée et gelée dans `app/src/config/appUpdates.ts` : Android désactivé, iOS conserve son comportement. Aucune configuration distante ni préférence utilisateur ne peut activer cette politique Android.
@@ -71,10 +62,33 @@ Commande reproductible : `cd app && npm ci && npm run prebuild && node --test te
 ## Validation élargie
 
 - Workflow Android réussi sur le commit `d5835c5253d3ae9d25822170eeb9f89a4ada7933` : [exécution 38071795735](https://github.com/2Spartiate/MovixOpenSource/actions/runs/38071795735). Les 198 contrats TV/parentaux/anti-updater, TypeScript mobile, build frontend Vite, types parentaux, tests unitaires natifs release/Robolectric, manifeste fusionné et APK autonome passent.
-- Suite mobile complète : 366 tests, 360 réussis, les six échecs préexistants consignés plus haut. Les contrôles élargis ne sont pas présentés comme intégralement verts.
+- Suite mobile complète : 366 tests, 360 réussis, six échecs également reproduits dans la branche personnalisée d'origine. Ils concernent deux contrats PiP et quatre contrats d'une ancienne tentative de démarrage/résilience TV. Leur présence est consignée, pas masquée par une modification de leurs attentes. Les contrôles élargis ne sont pas présentés comme intégralement verts.
 - TypeScript global frontend : 273 diagnostics dans l'upstream, 273 dans la migration ; mêmes diagnostics après normalisation des chemins, lignes et ordre des unions de types. Aucun diagnostic nouveau. Commande : `npx tsc --noEmit -p tsconfig.app.json --ignoreDeprecations 5.0`. L'option contourne un décalage déjà présent entre le lockfile TypeScript 5.9 et `ignoreDeprecations: "6.0"` dans la configuration officielle.
 - Lecteurs HLS/Cast/AirPlay, repli réseau HLS, parental, cache HTTP, service worker, images TMDB et relais Streamed : 71 tests réussis avec `node --test tests/hlsCasting.test.mjs tests/hlsNetworkFallback.test.mjs tests/hlsSafariStartup.test.mjs tests/parentalControls.test.mjs tests/parentalRoutes.test.mjs tests/httpCache.test.mjs tests/swNavigation.test.mjs tests/tmdbImagesCache.test.mjs tests/streamedPlayback.test.mjs`.
 - Bancs de test réadaptés : l'extraction AST accepte les déclarations de fonction ; les scénarios HLS/Safari et Cast exécutent les vrais helpers ajoutés ou conservés lors de la fusion, avec les dépendances de leur scénario. Le banc Python charge également la nouvelle méthode Uqload média/sous-titres. Aucune assertion fonctionnelle n'est retirée.
 - Proxy Python : deux tests d'en-têtes Uqload/fsvid/vidzy et dix tests du relais Streamed réussis. Commandes : `python -m unittest discover -s API/proxiesembed/tests -p test_provider_encoding.py` et `python -m unittest discover -s API/proxiesembed/tests -p test_streamed_proxy.py`. Prérequis : dépendances du proxy, dont `aiohttp` et `python-socks`.
 - Main API : 66 tests ciblés, 45 réussis et 21 échecs ; exactement les mêmes 21 échecs reproduits sur le commit upstream figé. Ils concernent des bancs de test Cpasmal incomplets (`sourceRefreshTelemetry`, `cpasmalProxyCooldowns`) et FStream. Les fichiers de production correspondants sont identiques à l'upstream. Commande depuis `API/Mainapi` après `npm ci` : `node --test routes/__tests__/fstreamUpstream.test.js routes/__tests__/sourceFreshness.test.js routes/__tests__/cpasmalTv.test.js utils/__tests__/fstreamRequest.test.js utils/__tests__/sharedSourceWork.test.js utils/__tests__/cpasmalRequest.test.js utils/__tests__/turnstile.test.js utils/__tests__/coflixAgentReuse.test.js`.
 - Contrôle réseau depuis l'environnement de compilation le 10 octobre 2026 : les onze domaines configurés retournent `Status=0` et deux adresses A chacun via `https://cloudflare-dns.com/dns-query` avec `Accept: application/dns-json`. Ceci valide leur résolution publique, pas le tunnel VPN sur un appareil Android.
+- Le protocole binaire réellement utilisé par le service DNS a aussi été testé : POST `application/dns-message` vers `https://1.1.1.1/dns-query` et `https://1.0.0.1/dns-query` pour `movix.luxe`. Les deux répondent HTTP 200, identifiant DNS conservé, RCODE 0, deux réponses A.
+- Les URLs `https://movix.online/address.json` et `https://movix.luxe` répondent HTTP 200. La configuration distante annonce le primaire `movix.luxe`, dix domaines actifs et le nouveau GitHub officiel. Le contrôle parental injecté, les modules TV de télécommande/focus/spatial et les modules natifs du dialogue de sortie restent identiques à la branche de départ ; l'injection commune reçoit les adaptations DOM décrites plus haut.
+
+## APK livrée et limites matérielles
+
+| Élément | Valeur vérifiée |
+| --- | --- |
+| Fichier non zippé | `Movix-2.6.5-TV-V22-Upstream-Sync-V1.apk` |
+| Taille | 66 086 717 octets |
+| SHA-256 | `a154930f5bb665e211176f40fe3fdcd66242dd2340a2bfadc5d833428f303ff3` |
+| Version Android | 2.6.5, versionCode 42 |
+| Identité Android | `com.movix.app` |
+| Compatibilité déclarée | Android 7/API 24 minimum, targetSdk 35 ; lanceurs TV et mobile |
+| Commit compilé | `d5835c5253d3ae9d25822170eeb9f89a4ada7933` |
+| CI de construction | Exécution `38071795735`, réussie |
+| Signature | APK v2 vérifiée avec le vérificateur Google `apksig` ; zéro erreur |
+| Certificat debug SHA-256 | `79c72c38246b1413eb534bf42131f426c390d4d2cb6e65a8f0385e24e9e925b7` |
+
+Les commits suivants ne modifient que des bancs de test et ce bilan : le code applicatif livré dans l'APK correspond à celui de la branche finale. Les octets de l'APK ont été revérifiés après sa sauvegarde. Le manifeste empaqueté ne contient pas `REQUEST_INSTALL_PACKAGES` ; le bundle autonome contient les marqueurs parentaux et la protection `APK_UPDATES_DISABLED`.
+
+La CI a utilisé le repli debug déjà prévu par le projet et a généré sa clé pour cette compilation. Aucune clé privée de release ou de l'APK actuellement installée n'est versionnée dans le dépôt. Une mise à niveau conservant les données d'une installation existante requiert la même clé de signature ; cette compatibilité n'est pas établie ici. L'APK est installable comme paquet valide, mais le remplacement direct d'un ancien APK signé autrement sera refusé par Android. Aucune désinstallation ni modification des données utilisateur n'a été effectuée.
+
+Aucun appareil Android/Google TV matériel ni émulateur Android n'a été utilisé. Les tests de télécommande, focus, lecteurs, parental et mises à jour sont des tests de contrat et d'intégration automatisés ; ils ne prouvent pas le rendu ou une lecture vidéo réelle sur votre téléviseur. Le VPN DNS natif, la WebView Android en fonctionnement et la lecture réelle restent à vérifier sur appareil. Aucun déploiement du site ou des API, aucune PR ni fusion de `main`.
