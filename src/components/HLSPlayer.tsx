@@ -5228,10 +5228,9 @@ const HLSPlayer = forwardRef<HLSPlayerRef, HLSPlayerProps>(({
           : audioTracks.find(track => !isFrenchLanguage(audioText(track))));
     }
 
-    // A MULTI source may expose tracks after MANIFEST_PARSED. Do not mark the
-    // policy as applied before at least one usable audio track arrives.
-    if (audioTracks.length === 0) return;
-
+    // Single-rendition HLS can carry its only audio inside video segments,
+    // exposing zero alternate audioTracks. Still enable French captions now;
+    // when additional audio tracks arrive, the applyKey changes and retries.
     if (desiredAudio) {
       if (hls) {
         hls.audioTrack = desiredAudio.id;
