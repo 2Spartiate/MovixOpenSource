@@ -31,6 +31,7 @@ import {
   setPictureInPicturePlaybackActive,
 } from '../services/pictureInPicture';
 import { buildInjectedJavaScript } from '../injection/inject';
+import { buildAdPageProtection } from '../injection/ad-page-protection';
 import { buildParentalControlsRuntime } from '../injection/parental-injection';
 import type { PictureInPictureShimMode } from '../injection/picture-in-picture-shim';
 import { CONFIG } from '../config';
@@ -97,14 +98,16 @@ const PARENTAL_RUNTIME_AFTER_LOAD = `${buildParentalControlsRuntime()}\ntrue;`;
 function injectedJavaScriptFor(
   journalConsoleEnabled: boolean,
   isTV: boolean,
+  trustedSiteOrigin: string,
 ): string {
-  const cacheKey = `${journalConsoleEnabled ? 'journal' : 'quiet'}:${isTV ? 'tv' : 'handheld'}`;
+  const cacheKey = `${journalConsoleEnabled ? 'journal' : 'quiet'}:${isTV ? 'tv' : 'handheld'}:${trustedSiteOrigin}`;
   const cached = INJECTED_JS_BY_RUNTIME_STATE.get(cacheKey);
   if (cached !== undefined) return cached;
   const built = buildInjectedJavaScript({
     ...BASE_INJECTION_OPTIONS,
     journalConsoleEnabled,
     tvMode: isTV,
+    trustedSiteOrigin,
   });
   INJECTED_JS_BY_RUNTIME_STATE.set(cacheKey, built);
   return built;
@@ -248,9 +251,12 @@ const WebViewBrowser = forwardRef<WebViewBrowserRef, WebViewBrowserProps>(
       isNetworkJournalEnabled,
     );
     useEffect(() => subscribeNetworkJournal(setJournalConsole), []);
+    const trustedSiteOrigin = useMemo(() => {
+      try { return new URL(url).origin; } catch { return ''; }
+    }, [url]);
     const injectedJS = useMemo(
-      () => injectedJavaScriptFor(journalConsole, isTV),
-      [journalConsole, isTV],
+      () => injectedJavaScriptFor(journalConsole, isTV, trustedSiteOrigin),
+      [journalConsole, isTV, trustedSiteOrigin],
     );
 
     const requestTvWebViewFocus = useCallback(() => {
@@ -268,12 +274,18 @@ const WebViewBrowser = forwardRef<WebViewBrowserRef, WebViewBrowserProps>(
       const pageUrl = event.nativeEvent.url;
       if (!isUsableHttpUrl(pageUrl)) return;
       try {
-        if (new URL(pageUrl).origin !== new URL(url).origin) return;
+        if (new URL(pageUrl).origin !== trustedSiteOrigin) {
+          // Android document-start injection is best-effort; repeat the narrow
+          // guard after a third-party landing page loads, without running the
+          // Movix userscript/bridge in that untrusted document.
+          webViewRef.current?.injectJavaScript(buildAdPageProtection(trustedSiteOrigin));
+          return;
+        }
       } catch { return; }
       // This also repairs a document-start attempt that ran before <html>
       // existed. The runtime refreshes its observer without duplicating hooks.
       webViewRef.current?.injectJavaScript(PARENTAL_RUNTIME_AFTER_LOAD);
-    }, [requestTvWebViewFocus, url]);
+    }, [requestTvWebViewFocus, trustedSiteOrigin]);
 
     useEffect(() => {
       if (!isTV) return;
