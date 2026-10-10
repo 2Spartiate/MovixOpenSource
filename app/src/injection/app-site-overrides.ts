@@ -31,58 +31,67 @@ export function buildAppSiteOverrides(): string {
     element.style.setProperty('pointer-events', 'none', 'important');
   };
 
-  const removeTelegramUi = () => {
-    document.querySelectorAll('header a[href*="t.me/"], header a[href*="telegram.me/"]').forEach((link) => {
-      if (!(link instanceof HTMLElement)) return;
-      const href = String(link.getAttribute('href') || '');
-      const label = normalise(
-        String(link.getAttribute('aria-label') || '') + ' ' +
-        String(link.getAttribute('title') || '') + ' ' +
-        String(link.textContent || '')
-      );
-      if (href.includes('movix_site') || label.includes('telegram')) {
-        hideManagedNode(link);
-      }
-    });
+  // The remote site may change the Telegram or Matrix promotion markup.
+  // Hide only provider-linked community promotion cards, never arbitrary text
+  // mentioning the Matrix film or user-generated community content.
+  const removeExternalCommunityUi = () => {
+    const communityLinks = document.querySelectorAll(
+      'a[href*="t.me/"], a[href*="telegram.me/"], ' +
+      'a[href*="matrix.to/"], a[href*="matrix.org/"], a[href*="element.io/"]'
+    );
+    const hasCommunityInvitation = (text) => (
+      text.includes('rejoignez') ||
+      text.includes('communaute') ||
+      text.includes('join our community') ||
+      text.includes('join the community') ||
+      text.includes('join us') ||
+      text.includes('community')
+    );
 
-    document.querySelectorAll('a[href*="t.me/movix_site"], a[href*="telegram.me/movix_site"]').forEach((link) => {
-      if (!(link instanceof HTMLElement) || link.closest('header')) return;
+    communityLinks.forEach((link) => {
+      if (!(link instanceof HTMLElement)) return;
+      if (link.closest('header')) {
+        hideManagedNode(link);
+        return;
+      }
+
+      // Work upward from the call-to-action and hide the smallest card with
+      // a matching invitation heading. React retains ownership of every node.
       let node = link.parentElement;
       for (let depth = 0; node && depth < 7; depth += 1, node = node.parentElement) {
         const text = normalise(node.textContent);
+        const headings = Array.from(node.querySelectorAll('h1, h2, h3, h4'));
         if (
           text.length > 0 &&
           text.length < 1200 &&
-          text.includes('telegram') &&
-          (
-            text.includes('rejoignez') ||
-            text.includes('communaute') ||
-            text.includes('join our community') ||
-            text.includes('join the community')
-          )
+          hasCommunityInvitation(text) &&
+          headings.some((heading) => hasCommunityInvitation(normalise(heading.textContent)))
         ) {
           hideManagedNode(node);
           return;
         }
       }
-      hideManagedNode(link);
+
+      // No recognisable card: at least remove the external promotional link.
+      // Avoid hiding the entire page when remote markup diverges.
+      const label = normalise(
+        String(link.getAttribute('aria-label') || '') + ' ' +
+        String(link.getAttribute('title') || '') + ' ' +
+        String(link.textContent || '')
+      );
+      if (hasCommunityInvitation(label) || label.includes('telegram') || label.includes('matrix')) {
+        hideManagedNode(link);
+      }
     });
 
-    document.querySelectorAll('h1, h2, h3, h4').forEach((heading) => {
-      const text = normalise(heading.textContent);
-      if (
-        !text.includes('rejoignez notre communaute') &&
-        !text.includes('rejoignez la communaute') &&
-        !text.includes('join our community')
-      ) return;
-
-      let node = heading.parentElement;
-      for (let depth = 0; node && depth < 6; depth += 1, node = node.parentElement) {
-        const candidateText = normalise(node.textContent);
-        if (candidateText.includes('telegram') && candidateText.length < 1200) {
-          hideManagedNode(node);
-          return;
-        }
+    document.querySelectorAll('header a, header button, header [role="link"]').forEach((element) => {
+      if (!(element instanceof HTMLElement)) return;
+      const label = normalise(
+        String(element.getAttribute('aria-label') || '') + ' ' +
+        String(element.getAttribute('title') || '')
+      );
+      if (label.includes('matrix') || label.includes('telegram')) {
+        hideManagedNode(element);
       }
     });
   };
@@ -991,7 +1000,7 @@ export function buildAppSiteOverrides(): string {
   const apply = () => {
     // Clean-baseline common policy: identical on handheld and TV.
     replaceHeaderLogo();
-    removeTelegramUi();
+    removeExternalCommunityUi();
     advancePlaybackGate();
 
     // Product behavior below is TV-only.
