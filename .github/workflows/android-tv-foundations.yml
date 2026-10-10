@@ -26,6 +26,7 @@ on:
       - agent/parental-controls-v1
       - agent/movix-upstream-sync-v1
       - agent/movix-player-ad-bravo-matrix-v1
+      - agent/movix-ad-page-keyword-guard-v1
     paths:
       - 'app/**'
       - 'src/**'
@@ -104,7 +105,8 @@ jobs:
             tests/tvUiCleanupContract.test.mjs \
             tests/upstreamDomCompatibility.test.mjs \
             tests/androidAppUpdatesDisabled.test.mjs \
-            tests/parentalNativeInjection.test.mjs
+            tests/parentalNativeInjection.test.mjs \
+            tests/adPageProtection.test.mjs
           npx tsc --noEmit
 
       - name: Validate frontend production build
