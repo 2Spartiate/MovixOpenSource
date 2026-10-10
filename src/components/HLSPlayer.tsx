@@ -5177,18 +5177,26 @@ const HLSPlayer = forwardRef<HLSPlayerRef, HLSPlayerProps>(({
   };
 
   useEffect(() => {
-    if (!isMovixTvRuntime() || !controls || !tvPlaybackCandidate) return;
-    if (src !== tvPlaybackCandidate.url) return;
+    if (!isMovixTvRuntime() || !controls || isWatchPartyGuest) return;
+
+    // Bravo playback must not depend on a successful manifest probe. The
+    // quality-ranking probe can fail even when the active HLS player eventually
+    // discovers its audio/text tracks. Keep the scanned Nexus policy intact.
+    const activeBravo = purstreamSources.some(source => source.url === src);
+    const probedCurrentSource = tvPlaybackCandidate?.url === src
+      ? tvPlaybackCandidate
+      : null;
+    if (!activeBravo && !probedCurrentSource) return;
 
     const applyKey = [
       tvPlaybackProfile,
       src,
-      audioTracks.length,
-      subtitles.length,
+      audioTracks.map(track => track.id + '/' + track.language + '/' + track.name).join(','),
+      subtitles.map(track => track.language + '/' + track.label).join(','),
     ].join(':');
     if (tvProfileAppliedKeyRef.current === applyKey) return;
 
-    if (tvPlaybackCandidate.provider === 'nexus') {
+    if (!activeBravo && probedCurrentSource?.provider === 'nexus') {
       // Nexus VOSTFR carries burned-in French captions: never stack a browser
       // subtitle track over them.
       handleSubtitleChange('off');
@@ -5197,7 +5205,8 @@ const HLSPlayer = forwardRef<HLSPlayerRef, HLSPlayerProps>(({
     }
 
     const hls = hlsRef.current;
-    if (!hls) return;
+    const video = videoRef.current;
+    if (!video) return;
 
     const audioText = (track: AudioTrack) => (
       (track.language || '') + ' ' + (track.name || '')
@@ -5212,15 +5221,23 @@ const HLSPlayer = forwardRef<HLSPlayerRef, HLSPlayerProps>(({
           languageMatchesOriginal(track.language, originalLanguage)
           || languageMatchesOriginal(track.name, originalLanguage)
         ))
-        || audioTracks.find(track => !isFrenchLanguage(audioText(track)));
+        // Original French content stays French; otherwise prefer any
+        // non-French audio (English, Japanese, Korean, ...), never VF by default.
+        || (isFrenchLanguage(originalLanguage)
+          ? audioTracks.find(track => isFrenchLanguage(audioText(track)))
+          : audioTracks.find(track => !isFrenchLanguage(audioText(track))));
     }
 
-    // A MULTI source may expose tracks a little after MANIFEST_PARSED. Wait
-    // rather than locking in a wrong default language.
-    if (!desiredAudio && audioTracks.length === 0) return;
+    // A MULTI source may expose tracks after MANIFEST_PARSED. Do not mark the
+    // policy as applied before at least one usable audio track arrives.
+    if (audioTracks.length === 0) return;
 
     if (desiredAudio) {
-      hls.audioTrack = desiredAudio.id;
+      if (hls) {
+        hls.audioTrack = desiredAudio.id;
+      } else if (!selectNativeAudioTrack(video, desiredAudio.id)) {
+        return;
+      }
       setCurrentAudioTrack(desiredAudio.id);
       hlsAudioPreferences.set(contentQualityKey, {
         language: desiredAudio.language,
@@ -5234,17 +5251,20 @@ const HLSPlayer = forwardRef<HLSPlayerRef, HLSPlayerProps>(({
       return;
     }
 
-    const video = videoRef.current;
-    if (!video) return;
     const liveTracks = Array.from(video.textTracks);
     const frenchSubtitleIndex = liveTracks.findIndex(track => (
       isFrenchLanguage((track.language || '') + ' ' + (track.label || ''))
     ));
 
     if (frenchSubtitleIndex < 0) {
-      // If the probe advertised French captions they may not have reached the
-      // media element yet; let the next SUBTITLE_TRACKS_UPDATED render retry.
-      if (tvPlaybackCandidate.subtitleLanguages.some(isFrenchLanguage)) return;
+      // The probe or the active HLS manifest may know about French subtitles
+      // before they appear in video.textTracks. Retry on track state updates.
+      if (
+        probedCurrentSource?.subtitleLanguages.some(isFrenchLanguage) ||
+        hls?.subtitleTracks.some(track => (
+          isFrenchLanguage((track.lang || '') + ' ' + (track.name || ''))
+        ))
+      ) return;
       tvProfileAppliedKeyRef.current = applyKey;
       return;
     }
@@ -5255,7 +5275,9 @@ const HLSPlayer = forwardRef<HLSPlayerRef, HLSPlayerProps>(({
     audioTracks,
     contentQualityKey,
     controls,
+    isWatchPartyGuest,
     originalLanguage,
+    purstreamSources,
     src,
     subtitles,
     tvPlaybackCandidate,
