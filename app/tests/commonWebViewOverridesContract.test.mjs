@@ -11,10 +11,12 @@ test('common runtime keeps the clean shared remote-DOM policy before site script
   assert.match(inject, /buildAppSiteOverrides/);
   assert.match(inject, /const blockedOpen = \(\) => null/);
   assert.match(inject, /Object\.defineProperty\(window, 'open'/);
+  assert.match(inject, /settings_ad_popup_adult/);
+  assert.match(inject, /\$\{adultAdOptOut\}/);
   assert.match(inject, /\$\{popupBlocker\}[\s\S]*\$\{tvBootstrap\}[\s\S]*\$\{appSiteOverrides\}[\s\S]*\$\{castShim\}/);
 });
 
-test('clean shared policy still owns branding, Telegram cleanup and playback-gate advance', async () => {
+test('clean shared policy owns branding, community cleanup and playback-gate advance', async () => {
   const overrides = await text('src/injection/app-site-overrides.ts');
 
   assert.match(overrides, /const replaceHeaderLogo = \(\) =>/);
@@ -22,9 +24,12 @@ test('clean shared policy still owns branding, Telegram cleanup and playback-gat
   assert.match(overrides, /background-image/);
   assert.match(overrides, /data-movix-app-brand-logo/);
   assert.doesNotMatch(overrides, /replaceChildren\(/);
-  assert.match(overrides, /const removeTelegramUi = \(\) =>/);
-  assert.match(overrides, /t\.me\/movix_site/);
-  assert.match(overrides, /rejoignez notre communaute/);
+  assert.match(overrides, /const removeExternalCommunityUi = \(\) =>/);
+  assert.match(overrides, /t\.me\//);
+  assert.match(overrides, /matrix\.to\//);
+  assert.match(overrides, /matrix\.org\//);
+  assert.match(overrides, /element\.io\//);
+  assert.match(overrides, /hideManagedNode\(node\)/);
   assert.match(overrides, /const advancePlaybackGate = \(\) =>/);
   assert.match(overrides, /data-ad-view-button/);
   assert.match(overrides, /une pub et c est parti/);
