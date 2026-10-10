@@ -25,6 +25,7 @@ on:
       - agent/google-tv-playback-ux-v22
       - agent/parental-controls-v1
       - agent/movix-upstream-sync-v1
+      - agent/movix-player-ad-bravo-matrix-v1
     paths:
       - 'app/**'
       - 'src/**'
