@@ -57,7 +57,12 @@ export function buildTvBootstrap(): string {
 
         .movix-tv [data-tv-carousel-arrow],
         .movix-tv [data-tv-favorite-overlay],
-        .movix-tv [data-tv-header-telegram] {
+        .movix-tv [data-tv-header-telegram],
+        .movix-tv header a[href*="matrix.to/"],
+        .movix-tv header a[href*="matrix.org/"],
+        .movix-tv header a[href*="element.io/"],
+        .movix-tv header [aria-label*="matrix" i],
+        .movix-tv header [title*="matrix" i] {
           display: none !important;
         }
 
