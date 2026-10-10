@@ -1,0 +1,23 @@
+name: One-time Movix upstream migration
+on:
+  push:
+    branches: [agent/movix-upstream-sync-v1]
+    paths:
+      - .github/workflows/movix-upstream-import-v1.yml
+      - .github/movix-upstream-import-v1.mjs
+permissions:
+  contents: write
+concurrency:
+  group: movix-upstream-import-v1
+  cancel-in-progress: false
+jobs:
+  import:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          fetch-depth: 0
+          filter: blob:none
+      - name: Merge pinned upstream and publish the validated migration branch
+        run: node .github/movix-upstream-import-v1.mjs
