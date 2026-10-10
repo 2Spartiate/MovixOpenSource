@@ -1,4 +1,5 @@
 import { buildAppSiteOverrides } from './app-site-overrides';
+import { buildAdPageProtection } from './ad-page-protection';
 import { buildParentalControlsRuntime } from './parental-injection';
 import { buildBridgeRuntime } from './bridge-runtime';
 import { buildCastShim } from './cast-shim';
@@ -23,9 +24,11 @@ export function buildInjectedJavaScript(
     journalConsoleEnabled?: boolean;
     mediaProxyScheme?: string | null;
     tvMode?: boolean;
+    trustedSiteOrigin?: string;
   } = {},
 ): string {
   const appSiteOverrides = buildAppSiteOverrides();
+  const adPageProtection = buildAdPageProtection(options.trustedSiteOrigin ?? '');
   const parentalControlsRuntime = buildParentalControlsRuntime();
   const castShim = buildCastShim();
   const pipShim = buildPictureInPictureShim(
@@ -84,6 +87,8 @@ export function buildInjectedJavaScript(
   // around that same WebView bootstrap; handheld never receives TV code.
   return `
 ${popupBlocker}
+
+${adPageProtection}
 
 ${adultAdOptOut}
 
