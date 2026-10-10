@@ -7,7 +7,7 @@ const text = path => readFile(new URL(path, root), 'utf8');
 
 test('TV remote owns transport, fullscreen and numeric keys without removing desktop shortcuts', async () => {
   const hls = await text('../src/components/HLSPlayer.tsx');
-  const start = hls.indexOf('const handleKeyPress = (e: KeyboardEvent) => {');
+  const start = hls.indexOf('handlePlayerKeyDownRef.current = (e: KeyboardEvent) => {');
   const end = hls.indexOf("document.addEventListener('keydown', handleKeyPress)", start);
   const handler = hls.slice(start, end);
 

@@ -8,6 +8,8 @@ import { getVipHeaders } from '../../utils/vipUtils';
 import { isMovixTvRuntime } from '../../utils/tvRuntime';
 import { isPlayerControlInteractionTarget } from '../../utils/playerControlInteraction';
 import { MAIN_API, PROXIES_EMBED_API } from '../../config/runtime';
+import { enterPlayerFullscreen, exitPlayerFullscreen, getFullscreenElement } from '../../utils/playerFullscreenPersistence';
+import { loadHlsModule } from '../../utils/loadHlsModule';
 import type HlsType from 'hls.js';
 import type * as ShakaType from 'shaka-player';
 
@@ -16,7 +18,7 @@ let ShakaLib: typeof ShakaType | null = null;
 
 const loadHls = async (): Promise<typeof HlsType> => {
   if (HlsLib) return HlsLib;
-  const mod = await import('hls.js');
+  const mod = await loadHlsModule();
   HlsLib = mod.default;
   return HlsLib;
 };
@@ -153,13 +155,14 @@ const FranceTVPlayer: React.FC = () => {
     }
   }, [isMuted]);
 
-  const toggleFullscreen = useCallback(() => {
+  const toggleFullscreen = useCallback(async () => {
     if (!containerRef.current) return;
-    if (document.fullscreenElement) {
-      document.exitFullscreen();
+    if (getFullscreenElement()) {
+      await exitPlayerFullscreen();
     } else {
-      containerRef.current.requestFullscreen();
+      await enterPlayerFullscreen({ container: containerRef.current });
     }
+    setIsFullscreen(!!getFullscreenElement());
   }, []);
 
   const safeAutoplay = useCallback(async () => {
@@ -176,11 +179,11 @@ const FranceTVPlayer: React.FC = () => {
 
   // ─── Player Initialization ─────────────────────────────────────────────
 
-  const initHlsPlayer = useCallback(async (manifestUrl: string) => {
-    if (!videoRef.current) return;
+  const initHlsPlayer = useCallback(async (manifestUrl: string, isCancelled: () => boolean) => {
+    if (!videoRef.current || isCancelled()) return;
 
     const Hls = await loadHls();
-    if (!videoRef.current) return;
+    if (!videoRef.current || isCancelled()) return;
 
     if (Hls.isSupported()) {
       const hls = new Hls({ debug: false, enableWorker: true });
@@ -811,9 +814,10 @@ const FranceTVPlayer: React.FC = () => {
   // ─── Fullscreen ─────────────────────────────────────────────────────────
 
   useEffect(() => {
-    const onFsChange = () => setIsFullscreen(!!document.fullscreenElement);
-    document.addEventListener('fullscreenchange', onFsChange);
-    return () => document.removeEventListener('fullscreenchange', onFsChange);
+    const onFsChange = () => setIsFullscreen(!!getFullscreenElement());
+    const events = ['fullscreenchange', 'webkitfullscreenchange', 'mozfullscreenchange', 'MSFullscreenChange'];
+    events.forEach(event => document.addEventListener(event, onFsChange));
+    return () => events.forEach(event => document.removeEventListener(event, onFsChange));
   }, []);
 
   // ─── Extract & Play ─────────────────────────────────────────────────────
@@ -859,7 +863,7 @@ const FranceTVPlayer: React.FC = () => {
         const keys = data.keys || [];
 
         if (manifestType === 'hls') {
-          initHlsPlayer(manifestUrl);
+          await initHlsPlayer(manifestUrl, () => cancelled);
         } else if (manifestType === 'dash') {
           await initShakaPlayer(manifestUrl, keys);
         } else {

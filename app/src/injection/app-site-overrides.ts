@@ -102,7 +102,8 @@ export function buildAppSiteOverrides(): string {
 
       const label = normalise(
         String(link.textContent || '') + ' ' +
-        String(link.getAttribute('aria-label') || '')
+        String(link.getAttribute('aria-label') || '') + ' ' +
+        String(link.querySelector('svg[aria-label]')?.getAttribute('aria-label') || '')
       );
 
       if (pathname !== '/' || (label !== 'movix' && !label.includes('movix'))) return;
@@ -124,7 +125,7 @@ export function buildAppSiteOverrides(): string {
       link.style.setProperty('font-size', '0');
       link.style.setProperty('color', 'transparent');
       Array.from(link.children).forEach((child) => {
-        if (child instanceof HTMLElement) {
+        if (child instanceof HTMLElement || child instanceof SVGElement) {
           child.style.setProperty('visibility', 'hidden', 'important');
         }
       });
@@ -459,11 +460,23 @@ export function buildAppSiteOverrides(): string {
       element.removeAttribute('data-tv-autofocus');
     });
 
-    const playLink = Array.from(root.querySelectorAll('a[href]')).find((link) => (
+    const links = Array.from(root.querySelectorAll('a[href]'));
+    const playLink = links.find((link) => (
       link instanceof HTMLAnchorElement &&
       Boolean(link.querySelector('svg.lucide-play, .lucide-play'))
+    )) || links.find((link) => (
+      link instanceof HTMLAnchorElement &&
+      Boolean(link.querySelector('svg.lucide-info, .lucide-info'))
     ));
     if (playLink instanceof HTMLElement) {
+      // The current upstream only renders the details CTA. Its destination
+      // matches the former Play CTA. Preserve React's nodes and Router handler
+      // while presenting that same link as the single TV Play entry point.
+      if (!playLink.querySelector('svg.lucide-play, .lucide-play')) {
+        const playLabel = String(document.documentElement.lang || 'fr').startsWith('en') ? 'Play' : 'Lire';
+        playLink.setAttribute('data-tv-hero-compat-label', playLabel);
+        playLink.setAttribute('aria-label', playLabel);
+      }
       if (playLink.getAttribute('data-tv-primary-focus') !== 'hero-play') {
         playLink.setAttribute('data-tv-primary-focus', 'hero-play');
       }
@@ -511,6 +524,10 @@ export function buildAppSiteOverrides(): string {
     const style = document.createElement('style');
     style.id = 'movix-tv-shortcut-badges';
     style.textContent = [
+      '[data-tv-hero-compat-label]{font-size:0!important;background:#dc2626!important;color:white!important;}',
+      '[data-tv-hero-compat-label]>*{display:none!important;}',
+      '[data-tv-hero-compat-label]::before{content:"▶";font-size:16px;}',
+      '[data-tv-hero-compat-label]::after{content:attr(data-tv-hero-compat-label);font-size:16px;}',
       '[data-tv-shortcut-badge]{position:relative!important;margin-left:18px!important;}',
       '[data-tv-shortcut-badge]::after{',
       'content:attr(data-tv-shortcut-badge);',

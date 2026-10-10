@@ -78,7 +78,10 @@ test('TV hero keeps handheld timing intact but advances animated slides every te
   assert.match(source, /const TV_AUTO_SLIDE_MS = 10000/);
   assert.match(source, /\(window as any\)\.MOVIX_TV === true/);
   assert.match(source, /autoSlideMs = isTvRuntime \? TV_AUTO_SLIDE_MS : AUTO_SLIDE_MS/);
-  assert.match(source, /scrollNext\(isTvRuntime \? false : !effectivePrefs\.transitions\)/);
+  assert.match(source, /isMorph = !isTvRuntime && sliderStyle === 'morph'/);
+  assert.match(source, /jumpSlides = isMorph \|\| \(!isTvRuntime && !effectivePrefs\.transitions\)/);
+  assert.match(source, /scrollNext\(jumpSlides\)/);
+  assert.match(source, /remaining = Math\.max\(autoSlideMs - elapsed, 50\)/);
   assert.match(source, /data-tv-hero-slider=\{isTvRuntime \? '' : undefined\}/);
   assert.match(source, /data-tv-hero-dot=\{isTvRuntime \? '' : undefined\}/);
 });

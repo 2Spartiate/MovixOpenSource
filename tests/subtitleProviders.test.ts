@@ -23,7 +23,7 @@ import {
   normalizeLangCode,
   opensubtitlesLegacyProvider,
 } from '../src/services/subtitles/opensubtitlesLegacy.ts';
-import { searchAll, SUBTITLE_PROVIDERS } from '../src/services/subtitles/index.ts';
+import { searchAll } from '../src/services/subtitles/index.ts';
 
 function track(over: Partial<SubtitleTrack> & { id: string }): SubtitleTrack {
   return {
@@ -129,11 +129,11 @@ const SHEGU_FIXTURE = JSON.parse(readFileSync(
 test('buildSheguUrl encodes movie and tv queries', () => {
   assert.equal(
     buildSheguUrl({ type: 'movie', tmdbId: '550' }),
-    'https://subtitles.shegu.st/subtitles?type=movie&tmdb=550',
+    'https://subs.wing.st/subtitles?type=movie&tmdb=550',
   );
   assert.equal(
     buildSheguUrl({ type: 'tv', tmdbId: '125988', season: 1, episode: 1 }),
-    'https://subtitles.shegu.st/subtitles?type=tv&tmdb=125988&season=1&episode=1',
+    'https://subs.wing.st/subtitles?type=tv&tmdb=125988&season=1&episode=1',
   );
 });
 
@@ -362,10 +362,6 @@ test('opensubtitlesLegacyProvider.search returns [] without an imdb id', async (
   } finally {
     globalThis.fetch = originalFetch;
   }
-});
-
-test('SUBTITLE_PROVIDERS registers shegu and opensubtitles', () => {
-  assert.deepEqual(SUBTITLE_PROVIDERS.map(p => p.id), ['shegu', 'opensubtitles']);
 });
 
 test('searchAll keeps a healthy provider when another one throws', async () => {

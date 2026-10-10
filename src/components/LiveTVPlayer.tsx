@@ -3,6 +3,8 @@ import type HlsType from 'hls.js';
 import type * as DashjsType from 'dashjs';
 import type MpegtsType from 'mpegts.js';
 import { enterPlayerFullscreen, exitPlayerFullscreen, getFullscreenElement } from '@/utils/playerFullscreenPersistence';
+import { loadHlsModule } from '@/utils/loadHlsModule';
+import { copyText } from '@/utils/clipboard';
 
 let HlsLib: typeof HlsType | null = null;
 let DashjsLib: typeof DashjsType | null = null;
@@ -10,7 +12,7 @@ let MpegtsLib: typeof MpegtsType | null = null;
 
 const loadHls = async (): Promise<typeof HlsType> => {
   if (HlsLib) return HlsLib;
-  const mod = await import('hls.js');
+  const mod = await loadHlsModule();
   HlsLib = mod.default;
   return HlsLib;
 };
@@ -40,6 +42,7 @@ import {
 } from '../utils/vavooChannelGroups';
 import { isBareIpStreamUrl } from '../utils/streamHost';
 import { isLowLatencyEnabled } from '../utils/lowLatencyPref';
+import { readLocalStorage, writeLocalStorage } from '../utils/browserStorage';
 import { createFctvPlaylistLoader } from '@/utils/fctvPlaylistLoader';
 import { prepareNativeHlsStartup } from '@/utils/nativeHlsStartup';
 import { resolveStreamedNative } from '@/services/streamedService';
@@ -444,10 +447,11 @@ const LiveTVPlayer: React.FC<LiveTVPlayerProps> = ({
 
     const [isLoading, setIsLoading] = useState(true);
     const [error, setError] = useState<string | null>(null);
+    const [playerLoadError, setPlayerLoadError] = useState<Error | null>(null);
     const [isPlaying, setIsPlaying] = useState(false);
     const [isUserPaused, setIsUserPaused] = useState(false);
     const [volume, setVolume] = useState(() => {
-        const savedVolume = localStorage.getItem('playerVolume');
+        const savedVolume = readLocalStorage('playerVolume');
         return savedVolume ? parseFloat(savedVolume) : 1;
     });
     const [isFullscreen, setIsFullscreen] = useState(false);
@@ -459,6 +463,7 @@ const LiveTVPlayer: React.FC<LiveTVPlayerProps> = ({
 
     // Cast states
     const [isCasting, setIsCasting] = useState(false);
+    const [airPlaySupported] = useState(isAirPlaySupported);
     const [airplayState, setAirplayState] = useState<AirPlayState>({
         isAvailable: false,
         isConnected: false,
@@ -1246,7 +1251,7 @@ const LiveTVPlayer: React.FC<LiveTVPlayerProps> = ({
         console.log('Player selection:', { isMpegTs, isDash, finalUrl });
 
         // Lazy-load only the player lib actually needed for this stream type.
-        (async () => {
+        void (async () => {
         if (isMpegTs) {
             const mpegts = await loadMpegts();
             if (cancelled) return;
@@ -1663,7 +1668,11 @@ const LiveTVPlayer: React.FC<LiveTVPlayerProps> = ({
                 video.src = finalUrl;
             }
         }
-        })();
+        })().catch((loadError: unknown) => {
+            if (!cancelled) {
+                setPlayerLoadError(loadError instanceof Error ? loadError : new Error(String(loadError)));
+            }
+        });
 
         return () => {
             cancelled = true;
@@ -1839,7 +1848,9 @@ const LiveTVPlayer: React.FC<LiveTVPlayerProps> = ({
         if (videoRef.current) {
             videoRef.current.volume = volume;
         }
-        localStorage.setItem('playerVolume', volume.toString());
+        // Préférence facultative : un stockage plein ne doit pas faire tomber
+        // le lecteur (GlitchTip DG, QuotaExceededError sous Firefox).
+        writeLocalStorage('playerVolume', volume.toString());
     }, [volume]);
 
     // Controls visibility
@@ -2117,7 +2128,7 @@ const LiveTVPlayer: React.FC<LiveTVPlayerProps> = ({
                         const newVol = clampVolume(videoRef.current.volume + 0.1);
                         videoRef.current.volume = newVol;
                         setVolume(newVol);
-                        localStorage.setItem('playerVolume', newVol.toString());
+                        writeLocalStorage('playerVolume', newVol.toString());
                     }
                     handleMouseMove();
                     break;
@@ -2127,7 +2138,7 @@ const LiveTVPlayer: React.FC<LiveTVPlayerProps> = ({
                         const newVol = clampVolume(videoRef.current.volume - 0.1);
                         videoRef.current.volume = newVol;
                         setVolume(newVol);
-                        localStorage.setItem('playerVolume', newVol.toString());
+                        writeLocalStorage('playerVolume', newVol.toString());
                     }
                     handleMouseMove();
                     break;
@@ -2249,6 +2260,8 @@ const LiveTVPlayer: React.FC<LiveTVPlayerProps> = ({
         !isUserPaused &&
         !isLoading &&
         !error;
+
+    if (playerLoadError) throw playerLoadError;
 
     return (
         <motion.div
@@ -2488,10 +2501,12 @@ const LiveTVPlayer: React.FC<LiveTVPlayerProps> = ({
                                     window.location.href = `vlc://${url}`;
 
                                     // Also copy to clipboard as fallback
-                                    navigator.clipboard.writeText(url).then(() => {
-                                        toast.success(t('liveTV.linkCopiedVlc'));
-                                    }).catch(() => {
-                                        prompt(t('liveTV.copyLinkForVlc'), url);
+                                    void copyText(url).then((copied) => {
+                                        if (copied) {
+                                            toast.success(t('liveTV.linkCopiedVlc'));
+                                        } else {
+                                            prompt(t('liveTV.copyLinkForVlc'), url);
+                                        }
                                     });
                                 }}
                                 className="px-4 py-2 bg-orange-600 hover:bg-orange-700 rounded-lg transition-colors flex items-center gap-2"
@@ -2685,7 +2700,7 @@ const LiveTVPlayer: React.FC<LiveTVPlayerProps> = ({
                             </motion.div>
 
                             {/* AirPlay button */}
-                            {airplayState.isAvailable && (
+                            {(airPlaySupported || airplayState.isAvailable) && (
                                 <motion.div
                                     animate={{ color: airplayState.isConnected ? '#dc2626' : '#ffffff' }}
                                     whileHover={{ scale: 1.1 }}

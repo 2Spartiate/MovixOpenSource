@@ -30,7 +30,7 @@ test('final PNG brand stays a phone Home link but TV makes it inert in the live 
 test('header retains stable TV markers for Telegram and primary search focus', async () => {
   const header = await text('../src/components/Header.tsx');
 
-  assert.match(header, /href="https:\/\/t\.me\/movix_site"[\s\S]{0,180}data-tv-ignore-focus[\s\S]{0,180}data-tv-header-telegram/);
+  assert.match(header, /href="https:\/\/t\.me\/ix_annonces"[\s\S]{0,180}data-tv-ignore-focus[\s\S]{0,180}data-tv-header-telegram/);
   assert.match(header, /ref=\{searchInputRef\}[\s\S]{0,120}data-tv-primary-focus="search"[\s\S]{0,120}type="text"/);
 });
 

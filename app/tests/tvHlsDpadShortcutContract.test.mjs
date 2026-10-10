@@ -7,7 +7,7 @@ const text = path => readFile(new URL(path, root), 'utf8');
 
 test('HLS yields TV Arrow keys when an interactive control owns focus', async () => {
   const hls = await text('../src/components/HLSPlayer.tsx');
-  const start = hls.indexOf('const handleKeyPress = (e: KeyboardEvent) => {');
+  const start = hls.indexOf('handlePlayerKeyDownRef.current = (e: KeyboardEvent) => {');
   const end = hls.indexOf("document.addEventListener('keydown', handleKeyPress)", start);
   const handler = hls.slice(start, end);
 
@@ -19,10 +19,10 @@ test('HLS yields TV Arrow keys when an interactive control owns focus', async ()
 
 test('range inputs keep native arrows before the HLS shortcut switch', async () => {
   const hls = await text('../src/components/HLSPlayer.tsx');
-  const handlerStart = hls.indexOf('const handleKeyPress = (e: KeyboardEvent) => {');
+  const handlerStart = hls.indexOf('handlePlayerKeyDownRef.current = (e: KeyboardEvent) => {');
   const handlerEnd = hls.indexOf("document.addEventListener('keydown', handleKeyPress)", handlerStart);
   const handler = hls.slice(handlerStart, handlerEnd);
-  const inputGuard = handler.indexOf('e.target instanceof HTMLInputElement');
+  const inputGuard = handler.indexOf("keyboardTarget.closest('input, textarea, select, [contenteditable=\"true\"]')");
   const arrowSwitch = handler.indexOf("case 'ArrowLeft':");
 
   assert.ok(handlerStart >= 0);

@@ -44,8 +44,11 @@ test('HLS focus entering controls cancels auto-hide and leaving rearms it', asyn
 test('HLS auto-hide callbacks refuse to hide a focused control', async () => {
   const hls = await text('../src/components/HLSPlayer.tsx');
 
-  const guardedTimeouts = hls.match(/setTimeout\(\(\) => \{[\s\S]{0,420}?playerControlsContainFocus\(\)[\s\S]{0,320}?setShowControls\(false\)/g) || [];
-  assert.ok(guardedTimeouts.length >= 4, `expected guarded auto-hide timers, got ${guardedTimeouts.length}`);
+  const scheduleStart = hls.indexOf('const scheduleControlsHide = useCallback');
+  const scheduleEnd = hls.indexOf('const keepControlsVisibleAfterInteraction', scheduleStart);
+  const schedule = hls.slice(scheduleStart, scheduleEnd);
+  assert.ok(scheduleStart >= 0 && scheduleEnd > scheduleStart);
+  assert.match(schedule, /if \(playerControlsContainFocus\(\)\) return;[\s\S]*setShowControls\(false\)/);
   assert.match(hls, /onMouseLeave=\{\(\) => \{[\s\S]{0,180}!playerControlsContainFocus\(\)/);
 });
 

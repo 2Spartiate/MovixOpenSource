@@ -11,11 +11,12 @@ import {
 } from 'lucide-react';
 import TutoLayout, { TutoSection } from '../../components/TutoLayout';
 import TutoLink from '../../components/TutoLink';
+import { copyText } from '../../utils/clipboard';
 
 /** Seule URL à retenir : identique pour tous les clients IA. */
 const MCP_URL = 'https://mcp.movix.online/mcp';
 const MCP_SPEC_URL = 'https://modelcontextprotocol.io';
-const MOVIX_OPEN_SOURCE_GITHUB_URL = 'https://github.com/movixcorp/MovixOpenSource';
+const MOVIX_OPEN_SOURCE_GITHUB_URL = 'https://github.com/movixstream/MovixOpenSource';
 
 const EXTERNAL_LINK_CLASS =
   'font-medium text-indigo-400 hover:text-indigo-300 underline underline-offset-2 decoration-indigo-500/40 hover:decoration-indigo-400';
@@ -100,14 +101,13 @@ const McpPage: React.FC = () => {
   }, [t]);
 
   const copy = async (value: string) => {
-    try {
-      await navigator.clipboard.writeText(value);
+    if (await copyText(value)) {
       setCopied(value);
       window.setTimeout(
         () => setCopied((current) => (current === value ? null : current)),
         2000
       );
-    } catch {
+    } else {
       // Clipboard indisponible (contexte non sécurisé) — l'utilisateur
       // peut toujours sélectionner le texte à la main.
     }

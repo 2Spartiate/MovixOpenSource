@@ -119,7 +119,7 @@ Le téléchargement contient `Movix-unsigned.ipa` et `Movix-unsigned.ipa.sha256`
 Sur un tag `ios-v*`, le job de publication commite en plus l'archive dans le dépôt sous `app/movix-ios-unsigner.ipa`, à côté de `app/movix-android.apk`. Elle y est donc téléchargeable en direct, sans passer par `gh` :
 
 ```bash
-curl -LO https://raw.githubusercontent.com/movixcorp/MovixOpenSource/main/app/movix-ios-unsigner.ipa
+curl -LO https://raw.githubusercontent.com/movixstream/MovixOpenSource/main/app/movix-ios-unsigner.ipa
 ```
 
 C'est le même fichier que celui attaché à la release, vérifié par son empreinte SHA-256 avant d'être indexé.
@@ -129,13 +129,13 @@ C'est le même fichier que celui attaché à la release, vérifié par son empre
 Le job de publication régénère aussi la source AltStore/SideStore (`app/movix-ios-source.json`, même format pour les deux stores) dans le même commit que l'IPA — version, taille et URL restent donc toujours cohérentes. URL de la source :
 
 ```
-https://raw.githubusercontent.com/movixcorp/MovixOpenSource/main/app/movix-ios-source.json
+https://raw.githubusercontent.com/movixstream/MovixOpenSource/main/app/movix-ios-source.json
 ```
 
 Dans SideStore ou AltStore : **Sources → + → coller cette URL**. Movix apparaît dans le store, s'installe et se met à jour comme n'importe quelle app : le store signe l'IPA avec l'identifiant Apple de l'utilisateur au moment de l'installation (compte gratuit : 3 apps maximum, re-signature automatique tous les 7 jours). Liens à mettre sur une page web pour ajouter la source en un tap :
 
-- `sidestore://source?url=https://raw.githubusercontent.com/movixcorp/MovixOpenSource/main/app/movix-ios-source.json`
-- `altstore://source?url=https://raw.githubusercontent.com/movixcorp/MovixOpenSource/main/app/movix-ios-source.json`
+- `sidestore://source?url=https://raw.githubusercontent.com/movixstream/MovixOpenSource/main/app/movix-ios-source.json`
+- `altstore://source?url=https://raw.githubusercontent.com/movixstream/MovixOpenSource/main/app/movix-ios-source.json`
 
 L'identifiant de la source (`com.movix.source`) et celui de l'app (`com.movix.app`) ne doivent jamais changer : les stores s'en servent comme clés primaires.
 
@@ -144,7 +144,7 @@ L'identifiant de la source (`com.movix.source`) et celui de l'app (`com.movix.ap
 Scarlet a son propre format ; le même job génère `app/movix-scarlet-source.json`, qui pointe vers la même IPA :
 
 ```
-https://raw.githubusercontent.com/movixcorp/MovixOpenSource/main/app/movix-scarlet-source.json
+https://raw.githubusercontent.com/movixstream/MovixOpenSource/main/app/movix-scarlet-source.json
 ```
 
 Différence importante : Scarlet signe avec un **certificat d'entreprise partagé**, pas avec le compte Apple de l'utilisateur. Rien à installer sur un ordinateur, aucune limite de 3 apps, aucune re-signature hebdomadaire — mais quand Apple révoque ce certificat, toutes les apps installées via Scarlet cessent de s'ouvrir d'un coup, jusqu'à ce que Scarlet en obtienne un nouveau. SideStore/AltStore reste donc la voie recommandée.
@@ -153,9 +153,11 @@ Différence importante : Scarlet signe avec un **certificat d'entreprise partag�
 
 ### Android
 - Utilise `VpnService` pour créer un VPN local
-- Seules les requêtes DNS sont redirigées vers 1.1.1.1
+- Seul un serveur DNS virtuel (`10.215.173.2`) est routé dans le tunnel : le reste du trafic n'y passe pas
+- Les requêtes DNS partent chiffrées en DNS-over-HTTPS vers `https://1.1.1.1/dns-query` (puis `1.0.0.1`) ; l'UDP port 53 en clair ne sert qu'en dernier recours, si le HTTPS échoue (pause DoH de 30 s)
 - Aucune donnée ne transite par un serveur tiers
 - L'utilisateur doit approuver la connexion VPN
+- Au démarrage, l'app attend que le tunnel soit monté (6 s max) avant de charger Movix : le changement de réseau coupait sinon les premières requêtes
 
 ### iOS
 - Utilise `NEDNSSettingsManager` (iOS 14+)
@@ -177,5 +179,5 @@ Puis rebuild l'app.
 
 - Le `DnsPackage.kt` doit être enregistré dans `MainApplication.kt` (ajouté au `getPackages()`)
 - Pour iOS, le bridging header doit pointer vers `Movix-Bridging-Header.h`
-- L'app exclut son propre trafic du VPN DNS pour éviter les boucles
+- L'app reste dans le VPN DNS (sinon le WebView contournerait le DNS) ; ses propres sockets vers Cloudflare sont protégées par `protect()` pour éviter les boucles
 - Le mode audio en arrière-plan est activé pour la lecture vidéo continue

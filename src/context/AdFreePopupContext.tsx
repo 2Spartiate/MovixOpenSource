@@ -1,6 +1,7 @@
 import React, { createContext, useContext, useState, useCallback, useEffect, useMemo, useRef } from 'react';
 import { useLocation } from 'react-router-dom';
 import { checkVipStatus, isUserVip } from '../utils/vipUtils';
+import { readLocalStorage } from '../utils/browserStorage';
 
 
 interface AdFreePopupContextType {
@@ -21,7 +22,7 @@ const AdFreePopupContext = createContext<AdFreePopupContextType | undefined>(und
 
 export const AdFreePopupProvider: React.FC<{ children: React.ReactNode }> = ({ children }) => {
   const [showAdFreePopup, setShowAdFreePopup] = useState(false);
-  const [adType, setAdType] = useState<'ad1' | 'ad2'>('ad2');
+  const [adType] = useState<'ad1' | 'ad2'>('ad2');
   const [playerToShow, setPlayerToShow] = useState<string | null>(null);
   const [shouldLoadIframe, setShouldLoadIframe] = useState(true);
   const [isSpecialPlayer, setIsSpecialPlayer] = useState(false);
@@ -53,7 +54,7 @@ export const AdFreePopupProvider: React.FC<{ children: React.ReactNode }> = ({ c
     // provider. On relit donc l'Ã©tat, puis on rejoint sa requÃªte en cours afin
     // de ne jamais rester bloquÃ© avec la valeur initiale aprÃ¨s une connexion.
     syncVipStatus();
-    if (localStorage.getItem('access_code')) {
+    if (readLocalStorage('access_code')) {
       void checkVipStatus().then((vip) => {
         if (mounted) setIsVip(vip);
       });
@@ -123,7 +124,13 @@ export const AdFreePopupProvider: React.FC<{ children: React.ReactNode }> = ({ c
 
   const resetVipStatus = useCallback(() => {
     // Don't reset if localStorage has permanent VIP status
-    if (localStorage.getItem('is_vip') !== 'true') {
+    let persistentVip: string | null;
+    try {
+      persistentVip = localStorage.getItem('is_vip');
+    } catch {
+      return;
+    }
+    if (persistentVip !== 'true') {
       setIsVip(false);
       console.log('[AdFreePopupContext] VIP status reset.');
     }

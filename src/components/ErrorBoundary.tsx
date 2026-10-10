@@ -1,6 +1,7 @@
 import React from 'react';
-import { isChunkLoadError, reloadForChunkFailure } from '../routing/lazyWithRetry';
+import { isChunkLoadError, isChunkResponseError, reloadForChunkFailure } from '../routing/lazyWithRetry';
 import { captureCrash, isRecoverableError } from '../utils/errorTracking';
+import { MovixWordmark } from './brand/MovixWordmark';
 
 interface ErrorBoundaryState {
   hasError: boolean;
@@ -29,7 +30,7 @@ type PerformanceWithMemory = Performance & {
   memory?: { usedJSHeapSize: number; jsHeapSizeLimit: number };
 };
 
-function getDeviceInfo() {
+function readDeviceInfo() {
   const ua = navigator.userAgent;
   const jsHeap = (performance as PerformanceWithMemory).memory;
 
@@ -76,6 +77,20 @@ function getDeviceInfo() {
   };
 }
 
+function getDeviceInfo() {
+  try {
+    return readDeviceInfo();
+  } catch {
+    // Firefox peut invalider screen/navigator lors d'un changement de document.
+    // Le panneau d'erreur doit rester affichable sans ces détails facultatifs.
+    return {
+      browser: 'Inconnu', os: 'Inconnu', device: 'Inconnu', screen: 'N/A',
+      viewport: 'N/A', language: 'N/A', url: '', userAgent: '', online: false,
+      timestamp: new Date().toISOString(), memory: 'N/A',
+    };
+  }
+}
+
 class ErrorBoundary extends React.Component<React.PropsWithChildren, ErrorBoundaryState> {
   constructor(props: React.PropsWithChildren) {
     super(props);
@@ -93,7 +108,9 @@ class ErrorBoundary extends React.Component<React.PropsWithChildren, ErrorBounda
     if (isRecoverableError(error, true)) {
       // Not a code bug — recover quietly with a guarded reload (the budget in
       // reloadForChunkFailure caps attempts so this can never loop).
-      const reloadScheduled = reloadForChunkFailure();
+      // Un chunk abîmé détecté au rendu vide d'abord le cache d'assets, sinon
+      // le rechargement resservirait la même copie.
+      const reloadScheduled = reloadForChunkFailure({ purgeAssetCache: isChunkResponseError(error) });
       this.setState({ recoverable: true, reloadScheduled });
       return;
     }
@@ -128,7 +145,7 @@ class ErrorBoundary extends React.Component<React.PropsWithChildren, ErrorBounda
       return (
         <div style={{ minHeight: '100vh', backgroundColor: '#000', color: '#f3f4f6', fontFamily: 'ui-sans-serif, system-ui, sans-serif', padding: 24, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
           <div style={{ maxWidth: 420, width: '100%', textAlign: 'center' }}>
-            <div style={{ fontSize: 32, fontWeight: 900, color: '#dc2626', letterSpacing: '0.1em', marginBottom: 24 }}>MOVIX</div>
+            <MovixWordmark style={{ display: 'block', height: 44, width: 'auto', margin: '0 auto 24px', color: '#f4f4f0' }} />
             {reloadScheduled && (
               <div style={{ width: 40, height: 40, margin: '0 auto 24px', border: '3px solid rgba(255,255,255,0.1)', borderTopColor: '#dc2626', borderRadius: '50%', animation: 'movix-eb-spin 0.8s linear infinite' }} />
             )}

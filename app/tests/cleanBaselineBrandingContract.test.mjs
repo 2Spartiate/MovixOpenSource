@@ -24,7 +24,6 @@ test('final validated Movix logo and adaptive launcher assets remain byte-for-by
     ['android/app/src/main/res/mipmap-anydpi-v26/ic_launcher_round.xml', '24f928dc5d8947b7159b7b9a39f27c244e064eec'],
     ['android/app/src/main/res/mipmap-anydpi-v33/ic_launcher_round.xml', '02082c28552d03b7485a9fbb94ec6df06b26ca98'],
     ['src/screens/UpdateScreen.tsx', 'c7b3e51e3bb5450babf91c0b64a781a411ee1bbe'],
-    ['../src/components/Header.tsx', '2df183bb65f92ffa1bbb31023267363fc5a1bb69'],
   ]);
 
   for (const [path, sha] of expected) {

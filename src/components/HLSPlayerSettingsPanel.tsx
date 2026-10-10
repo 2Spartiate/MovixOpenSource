@@ -276,7 +276,7 @@ const HLSPlayerSettingsPanel = (props: HLSPlayerSettingsPanelProps) => {
       return;
     }
 
-    const menu = settingsMenuRef.current;
+    const menu = settingsMenuRef.current as HTMLDivElement | null;
     if (!menu) return;
     const focusables = Array.from(menu.querySelectorAll<HTMLElement>(
       'button:not([disabled]), a[href], input:not([disabled]), select:not([disabled]), [tabindex]:not([tabindex="-1"])'

@@ -16,9 +16,12 @@ import { FloatingReactionsContainer, REACTION_EMOJIS, extractReactionEmojis } fr
 import { useWrappedTracker } from '../hooks/useWrappedTracker';
 import { WATCHPARTY_API } from '../config/runtime';
 import WatchPartySyncInfoModal from '../components/WatchPartySyncInfoModal';
-import { CLASSIC_HOST_INTERVAL_MS, LocalPlayerSnapshot, SYNC_PRO_HOST_INTERVAL_MS, WatchPartySyncWorkerOutput } from '../utils/watchpartySync';
+import { CLASSIC_HOST_INTERVAL_MS, LocalPlayerSnapshot, SYNC_PRO_HOST_INTERVAL_MS, WatchPartySyncWorkerInput, WatchPartySyncWorkerOutput } from '../utils/watchpartySync';
+import { enterPlayerFullscreen, exitPlayerFullscreen, getFullscreenElement } from '../utils/playerFullscreenPersistence';
+import { copyText } from '../utils/clipboard';
 
 const MAIN_API = WATCHPARTY_API;
+const SYNC_WORKER_STARTUP_TIMEOUT_MS = 5000;
 const getHostPositionUpdateInterval = (mode: SyncMode) =>
   mode === 'pro' ? SYNC_PRO_HOST_INTERVAL_MS : CLASSIC_HOST_INTERVAL_MS;
 
@@ -302,6 +305,9 @@ const WatchPartyRoom: React.FC = () => {
   const lastKnownMainMediaIdentity = useRef<string | null>(null); // Ref to track main media identity
   const isSyncingRef = useRef(false); // Guard contre les boucles de feedback play/pause
   const syncWorkerRef = useRef<Worker | null>(null);
+  const syncWorkerCleanupRef = useRef<(() => void) | null>(null);
+  const syncWorkerUnavailableRef = useRef(false);
+  const syncWorkerStartupTimerRef = useRef<number | null>(null);
   const syncModeRef = useRef<SyncMode>('classic');
   const masterPlaybackStateRef = useRef<PlaybackState | null>(null);
   const syncProbeSequenceRef = useRef(0);
@@ -462,17 +468,72 @@ const WatchPartyRoom: React.FC = () => {
     syncProbeTimersRef.current = [];
   }, []);
 
+  const clearSyncWorkerStartupTimer = useCallback(() => {
+    if (syncWorkerStartupTimerRef.current === null) return;
+    window.clearTimeout(syncWorkerStartupTimerRef.current);
+    syncWorkerStartupTimerRef.current = null;
+  }, []);
+
+  const fallBackToClassicSync = useCallback((reason: unknown) => {
+    if (!syncWorkerUnavailableRef.current) {
+      console.warn('[WatchPartyRoom] Sync Pro worker unavailable, falling back to classic sync.', reason);
+    }
+    syncWorkerUnavailableRef.current = true;
+    syncWorkerCleanupRef.current?.();
+    syncWorkerCleanupRef.current = null;
+    syncWorkerRef.current = null;
+    clearSyncWorkerStartupTimer();
+    clearSyncProbeTimers();
+    if (localSyncIntervalRef.current) {
+      clearInterval(localSyncIntervalRef.current);
+      localSyncIntervalRef.current = null;
+    }
+    syncModeRef.current = 'classic';
+    setSyncMode('classic');
+    setSyncStatus('classic');
+    isSyncingRef.current = false;
+    playerRef.current?.setPlaybackRate(1);
+  }, [clearSyncProbeTimers, clearSyncWorkerStartupTimer]);
+
+  const armSyncWorkerStartupTimer = useCallback(() => {
+    clearSyncWorkerStartupTimer();
+    syncWorkerStartupTimerRef.current = window.setTimeout(() => {
+      fallBackToClassicSync(new Error('Sync Pro worker did not acknowledge startup'));
+    }, SYNC_WORKER_STARTUP_TIMEOUT_MS);
+  }, [clearSyncWorkerStartupTimer, fallBackToClassicSync]);
+
+  const postSyncWorkerMessage = useCallback((message: WatchPartySyncWorkerInput): boolean => {
+    const syncWorker = syncWorkerRef.current;
+    if (!syncWorker || syncWorkerUnavailableRef.current) {
+      if (syncModeRef.current === 'pro') {
+        fallBackToClassicSync(new Error('Sync Pro worker is not available'));
+      }
+      return false;
+    }
+
+    try {
+      syncWorker.postMessage(message);
+      if ((message.type === 'init' || message.type === 'set-mode') && message.mode === 'pro') {
+        armSyncWorkerStartupTimer();
+      }
+      return true;
+    } catch (workerError) {
+      fallBackToClassicSync(workerError);
+      return false;
+    }
+  }, [armSyncWorkerStartupTimer, fallBackToClassicSync]);
+
   const commitLocalMasterPlaybackState = useCallback((nextState: PlaybackState) => {
     setMasterPlaybackState(nextState);
     masterPlaybackStateRef.current = nextState;
 
     if (syncModeRef.current === 'pro') {
-      syncWorkerRef.current?.postMessage({
+      postSyncWorkerMessage({
         type: 'master-state',
         state: nextState
       });
     }
-  }, []);
+  }, [postSyncWorkerMessage]);
 
   const startSyncCalibration = useCallback(() => {
     clearSyncProbeTimers();
@@ -509,19 +570,55 @@ const WatchPartyRoom: React.FC = () => {
       playbackRate: playerRef.current.getPlaybackRate()
     };
 
-    syncWorkerRef.current.postMessage({
+    postSyncWorkerMessage({
       type: 'local-state',
       state: snapshot
     });
-  }, [canControlPlayback]);
+  }, [canControlPlayback, postSyncWorkerMessage]);
 
   useEffect(() => {
-    const syncWorker = new Worker(new URL('../workers/watchpartySync.worker.ts', import.meta.url), { type: 'module' });
+    if (syncWorkerUnavailableRef.current || typeof Worker === 'undefined') {
+      fallBackToClassicSync(new Error('Web Workers are unavailable'));
+      return;
+    }
+
+    let syncWorker: Worker;
+    try {
+      syncWorker = new Worker(new URL('../workers/watchpartySync.worker.ts', import.meta.url), { type: 'module' });
+    } catch (workerError) {
+      fallBackToClassicSync(workerError);
+      return;
+    }
+
     syncWorkerRef.current = syncWorker;
-    syncWorker.onmessage = (event: MessageEvent<WatchPartySyncWorkerOutput>) => {
-      handleSyncWorkerMessage(event.data);
+    const handleMessage = (event: MessageEvent<WatchPartySyncWorkerOutput>) => {
+      try {
+        if (event.data?.type === 'status') clearSyncWorkerStartupTimer();
+        handleSyncWorkerMessage(event.data);
+      } catch (workerError) {
+        handleWorkerFailure(workerError);
+      }
     };
-    syncWorker.postMessage({
+    const cleanupWorker = () => {
+      syncWorker.removeEventListener('message', handleMessage);
+      syncWorker.removeEventListener('error', handleWorkerFailure);
+      syncWorker.removeEventListener('messageerror', handleWorkerFailure);
+      clearSyncWorkerStartupTimer();
+      syncWorker.terminate();
+      if (syncWorkerRef.current === syncWorker) syncWorkerRef.current = null;
+      if (syncWorkerCleanupRef.current === cleanupWorker) syncWorkerCleanupRef.current = null;
+    };
+    const handleWorkerFailure = (workerEvent: unknown) => {
+      cleanupWorker();
+      fallBackToClassicSync(workerEvent);
+    };
+
+    syncWorker.addEventListener('message', handleMessage);
+    syncWorker.addEventListener('error', handleWorkerFailure);
+    syncWorker.addEventListener('messageerror', handleWorkerFailure);
+    syncWorkerCleanupRef.current = cleanupWorker;
+
+    postSyncWorkerMessage({
       type: 'init',
       mode: syncModeRef.current,
       state: masterPlaybackStateRef.current
@@ -529,14 +626,17 @@ const WatchPartyRoom: React.FC = () => {
 
     return () => {
       clearSyncProbeTimers();
-      syncWorker.terminate();
-      syncWorkerRef.current = null;
+      cleanupWorker();
     };
-  }, [clearSyncProbeTimers, handleSyncWorkerMessage]);
+  }, [clearSyncProbeTimers, clearSyncWorkerStartupTimer, fallBackToClassicSync, handleSyncWorkerMessage, postSyncWorkerMessage]);
 
   useEffect(() => {
     syncModeRef.current = syncMode;
-    syncWorkerRef.current?.postMessage({ type: 'set-mode', mode: syncMode });
+    if (syncMode === 'pro' && !postSyncWorkerMessage({ type: 'set-mode', mode: syncMode })) return;
+    if (syncMode === 'classic' && syncWorkerRef.current) {
+      clearSyncWorkerStartupTimer();
+      postSyncWorkerMessage({ type: 'set-mode', mode: syncMode });
+    }
 
     if (syncMode === 'classic') {
       setSyncStatus('classic');
@@ -544,10 +644,12 @@ const WatchPartyRoom: React.FC = () => {
       return;
     }
 
-    if (canControlPlayback) {
-      setSyncStatus('perfect');
-      playerRef.current?.setPlaybackRate(1);
-    }
+  }, [clearSyncWorkerStartupTimer, postSyncWorkerMessage, syncMode]);
+
+  useEffect(() => {
+    if (syncMode !== 'pro' || !canControlPlayback) return;
+    setSyncStatus('perfect');
+    playerRef.current?.setPlaybackRate(1);
   }, [canControlPlayback, syncMode]);
 
   useEffect(() => {
@@ -566,7 +668,12 @@ const WatchPartyRoom: React.FC = () => {
       localSyncIntervalRef.current = null;
     }
 
-    if (syncMode !== 'pro' || socketState !== SocketState.CONNECTED || canControlPlayback) {
+    if (
+      syncMode !== 'pro'
+      || syncWorkerUnavailableRef.current
+      || socketState !== SocketState.CONNECTED
+      || canControlPlayback
+    ) {
       return;
     }
 
@@ -653,7 +760,11 @@ const WatchPartyRoom: React.FC = () => {
       const fetchedRoomInfo = roomDetailsResponse.data.room as RoomInfo;
       setRoomInfo(fetchedRoomInfo);
       setChatEnabled(fetchedRoomInfo.chatEnabled ?? true);
-      setSyncMode(fetchedRoomInfo.syncMode || 'classic');
+      setSyncMode(
+        fetchedRoomInfo.syncMode === 'pro' && syncWorkerUnavailableRef.current
+          ? 'classic'
+          : fetchedRoomInfo.syncMode || 'classic'
+      );
       setControlMode(fetchedRoomInfo.controlMode || 'host-only');
       setCoHosts(fetchedRoomInfo.coHosts || []);
       // Initializing currentMediaSrc is now handled by the dedicated useEffect above
@@ -732,7 +843,11 @@ const WatchPartyRoom: React.FC = () => {
         if (!mounted) return;
         setRoomInfo(updatedRoomInfo);
         setChatEnabled(updatedRoomInfo.chatEnabled ?? true);
-        setSyncMode(updatedRoomInfo.syncMode || 'classic');
+        setSyncMode(
+          updatedRoomInfo.syncMode === 'pro' && syncWorkerUnavailableRef.current
+            ? 'classic'
+            : updatedRoomInfo.syncMode || 'classic'
+        );
       });
 
       socket.on('room:chatToggled', ({ enabled }: { enabled: boolean }) => {
@@ -779,14 +894,16 @@ const WatchPartyRoom: React.FC = () => {
         });
         console.log('[WatchPartyRoom] localPlayerVisualState has been set.'); // New log
 
-        if (syncModeRef.current === 'pro') {
-          syncWorkerRef.current?.postMessage({
-            type: 'master-state',
-            state: newState
-          });
+        if (syncModeRef.current === 'pro' && postSyncWorkerMessage({
+          type: 'master-state',
+          state: newState
+        })) {
           return;
         }
 
+        // Le serveur envoie toujours cet état complet avant l'ordre planifié.
+        // Si le worker vient d'échouer, appliquer immédiatement le même état
+        // garantit le repli classique sans attendre le prochain heartbeat.
         if (playerRef.current) {
           const F_THRESHOLD = 1.5; // Sync threshold in seconds
 
@@ -825,7 +942,7 @@ const WatchPartyRoom: React.FC = () => {
       socket.on('playback:schedule', (event: ScheduledPlaybackEvent) => {
         if (!mounted || syncModeRef.current !== 'pro') return;
 
-        syncWorkerRef.current?.postMessage({
+        postSyncWorkerMessage({
           type: 'schedule',
           event
         });
@@ -833,13 +950,13 @@ const WatchPartyRoom: React.FC = () => {
 
       socket.on('sync:modeChanged', ({ mode }: { mode: SyncMode }) => {
         if (!mounted) return;
-        setSyncMode(mode);
+        setSyncMode(mode === 'pro' && syncWorkerUnavailableRef.current ? 'classic' : mode);
       });
 
       socket.on('sync:probeResult', (probeResult: SyncProbeResult) => {
         if (!mounted || syncModeRef.current !== 'pro') return;
 
-        syncWorkerRef.current?.postMessage({
+        postSyncWorkerMessage({
           type: 'probe-result',
           result: {
             ...probeResult,
@@ -909,7 +1026,7 @@ const WatchPartyRoom: React.FC = () => {
       initialFetchDoneRef.current = true; // Mark fetch as done even if erroring to allow error display
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [roomId, locationState.nickname, locationState.token, navigate]); // Removed userId and isCurrentUserHost to avoid re-triggering connection on their change
+  }, [roomId, locationState.nickname, locationState.token, navigate, postSyncWorkerMessage]); // Removed userId and isCurrentUserHost to avoid re-triggering connection on their change
 
   useEffect(() => {
     connectSocket(); // Initial connection attempt
@@ -1114,7 +1231,8 @@ const WatchPartyRoom: React.FC = () => {
   const handleCopyInviteLink = () => {
     if (!roomInfo?.code) return;
     const shareLink = getShareLink(roomInfo.code);
-    navigator.clipboard.writeText(shareLink).then(() => {
+    void copyText(shareLink).then((copied) => {
+      if (!copied) return;
       setLinkCopied(true);
       setTimeout(() => setLinkCopied(false), 3000);
     });
@@ -1126,26 +1244,21 @@ const WatchPartyRoom: React.FC = () => {
   };
 
   // Fullscreen functionality
-  const togglePageFullscreen = () => {
-    if (!document.fullscreenElement) {
-      document.documentElement.requestFullscreen().then(() => {
-        setIsPageFullscreen(true);
-      }).catch(err => {
-        console.error('Erreur lors de l\'activation du plein écran:', err);
-      });
-    } else {
-      document.exitFullscreen().then(() => {
-        setIsPageFullscreen(false);
-      }).catch(err => {
-        console.error('Erreur lors de la sortie du plein écran:', err);
-      });
+  const togglePageFullscreen = async () => {
+    if (!getFullscreenElement()) {
+      await enterPlayerFullscreen({ container: document.documentElement });
+      setIsPageFullscreen(!!getFullscreenElement());
+      return;
     }
+
+    await exitPlayerFullscreen();
+    setIsPageFullscreen(!!getFullscreenElement());
   };
 
   // Listen for fullscreen changes
   useEffect(() => {
     const handleFullscreenChange = () => {
-      setIsPageFullscreen(!!document.fullscreenElement);
+      setIsPageFullscreen(!!getFullscreenElement());
     };
 
     document.addEventListener('fullscreenchange', handleFullscreenChange);
@@ -1527,7 +1640,7 @@ const WatchPartyRoom: React.FC = () => {
   }
 
   return (
-    <div className="flex flex-col h-[100dvh] bg-black text-white overflow-hidden">
+    <div className="flex flex-col h-dynamic-screen bg-black text-white overflow-hidden">
       <div
         hidden
         data-premid-party-context=""
@@ -1623,7 +1736,7 @@ const WatchPartyRoom: React.FC = () => {
       <div className="flex flex-1 h-0 overflow-hidden relative">
         {/* Player container - always ensure it has minimum height on mobile */}
         <div
-          className={`flex-1 relative transition-all duration-300 ease-in-out min-h-[40dvh] sm:min-h-0 ${showChatPanel ? 'mb-[40dvh] md:mb-0' : ''}`}
+          className={`flex-1 relative transition-all duration-300 ease-in-out min-h-dynamic-40 sm:min-h-0 ${showChatPanel ? 'mb-dynamic-40 md:mb-0' : ''}`}
           style={{ marginRight: showChatPanel && typeof window !== 'undefined' && window.innerWidth >= 768 ? chatWidth : undefined }}
         >
           <div className="absolute inset-0 p-1 sm:p-2 lg:p-4">
@@ -1709,7 +1822,7 @@ const WatchPartyRoom: React.FC = () => {
               animate={{ x: 0, opacity: 1 }}
               exit={{ x: 350, opacity: 0 }}
               transition={{ type: 'spring', stiffness: 300, damping: 30 }}
-              className="z-10 bg-black/90 backdrop-blur-md flex flex-col shadow-lg fixed bottom-0 left-0 right-0 w-full h-[40dvh] max-h-[40dvh] md:absolute md:top-0 md:right-0 md:bottom-0 md:left-auto md:h-full md:max-h-none md:border-l md:border-white/10 md:w-auto"
+              className="z-10 bg-black/90 backdrop-blur-md flex flex-col shadow-lg fixed bottom-0 left-0 right-0 w-full h-dynamic-40 max-h-dynamic-40 md:absolute md:top-0 md:right-0 md:bottom-0 md:left-auto md:h-full md:max-h-none md:border-l md:border-white/10 md:w-auto"
               style={{ width: typeof window !== 'undefined' && window.innerWidth >= 768 ? chatWidth : undefined }}
             >
               {/* Resize handle (desktop only) */}
@@ -1936,7 +2049,7 @@ const WatchPartyRoom: React.FC = () => {
                       : 'bg-white/5 text-white/20 cursor-not-allowed'
                       }`}
                   >
-                    <Send size={18} />
+                    <Send className={(newMessage.trim() && socketState === SocketState.CONNECTED ? "" : "text-white opacity-20")} size={18} />
                   </button>
                 </form>
                 <EmojiAutocomplete textareaRef={chatInputRef} value={newMessage} onChange={setNewMessage} maxLength={500} />
@@ -1961,8 +2074,8 @@ const WatchPartyRoom: React.FC = () => {
               >
                 <div className="flex items-center justify-between mb-5">
                   <h3 className="text-lg font-semibold">{t('watchParty.participants')} ({participants.length}/{roomInfo.maxParticipants})</h3>
-                  <button onClick={() => setShowParticipantsPanel(false)} className="p-1.5 hover:bg-white/10 rounded-full text-white/50 hover:text-white">
-                    <X size={20} />
+                  <button onClick={() => setShowParticipantsPanel(false)} className="p-1.5 hover:bg-white/10 rounded-full text-white/50 hover:text-white group/icon">
+                    <X className="text-white opacity-50 group-hover/icon:opacity-100" size={20} />
                   </button>
                 </div>
                 <div className="mb-6">
@@ -2238,9 +2351,9 @@ const WatchPartyRoom: React.FC = () => {
                     </div>
                     <button
                       onClick={() => setShowSyncInfoModal(true)}
-                      className="inline-flex items-center gap-2 rounded-lg bg-white/5 px-3 py-2 text-xs text-white/70 transition-colors hover:bg-white/10 hover:text-white"
+                      className="inline-flex items-center gap-2 rounded-lg bg-white/5 px-3 py-2 text-xs text-white/70 transition-colors hover:bg-white/10 hover:text-white group/icon"
                     >
-                      <Info size={14} />
+                      <Info className="text-white opacity-70 group-hover/icon:opacity-100 transition-[color,opacity]" size={14} />
                       {t('watchParty.helpLabel')}
                     </button>
                   </div>

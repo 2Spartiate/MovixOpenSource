@@ -119,6 +119,10 @@ function isUsableHttpUrl(value: unknown): value is string {
   );
 }
 
+const MIRROR_DOWN_STATUSES = new Set([
+  500, 502, 504, 520, 521, 522, 523, 524, 525, 526, 530,
+]);
+
 const WebViewBrowser = forwardRef<WebViewBrowserRef, WebViewBrowserProps>(
   ({ url, isTV, onNavigationStateChange, onError, onPictureInPictureModeChange, onTvRouteChange }, ref) => {
     const webViewRef = useRef<WebView>(null);
@@ -218,6 +222,10 @@ const WebViewBrowser = forwardRef<WebViewBrowserRef, WebViewBrowserProps>(
 
     const onHttpError = useCallback(
       (event: any) => {
+        // Seul un serveur en panne justifie de passer au miroir suivant. Un 403
+        // ou un 503 est souvent le défi Cloudflare servi aux IP de VPN : la page
+        // doit s'afficher pour que le défi se résolve.
+        if (!MIRROR_DOWN_STATUSES.has(event.nativeEvent.statusCode)) return;
         onError?.(
           `HTTP ${event.nativeEvent.statusCode}: ${event.nativeEvent.url}`,
         );

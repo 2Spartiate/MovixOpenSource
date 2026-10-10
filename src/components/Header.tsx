@@ -19,6 +19,7 @@ import { SquareBackground } from './ui/square-background';
 import { APRIL_FOOLS_ADMIN_PATH, isAprilFoolsAdminEnabled } from '../utils/aprilFools';
 import { getOverlayPortalRoot } from '../utils/overlayPortal';
 import { useAgeRestrictedContent } from '../hooks/useAgeRestrictedContent';
+import { readLocalStorage, readSessionStorage } from '../utils/browserStorage';
 
 // Couleurs pour les cards du mega menu
 const cardColors: Record<string, { bg: string; text: string; border: string }> = {
@@ -54,17 +55,17 @@ const Header: React.FC = () => {
   const [isExploreOpen, setIsExploreOpen] = useState(false);
   const [isMobileSearchOpen, setIsMobileSearchOpen] = useState(false);
   const [isSnowfallActive, setIsSnowfallActive] = useState(() => {
-    return sessionStorage.getItem('snowfall_active') === 'true';
+    return readSessionStorage('snowfall_active') === 'true';
   });
   const [showAutocomplete, setShowAutocomplete] = useState(false);
 
   useEffect(() => {
-    sessionStorage.setItem('snowfall_active', String(isSnowfallActive));
+    try { sessionStorage.setItem('snowfall_active', String(isSnowfallActive)); } catch { /* Préférence facultative. */ }
   }, [isSnowfallActive]);
 
   useEffect(() => {
     const handleSnowfallToggle = () => {
-      setIsSnowfallActive(sessionStorage.getItem('snowfall_active') === 'true');
+      setIsSnowfallActive(readSessionStorage('snowfall_active') === 'true');
     };
     window.addEventListener('snowfall_toggled', handleSnowfallToggle);
     return () => window.removeEventListener('snowfall_toggled', handleSnowfallToggle);
@@ -143,7 +144,7 @@ const Header: React.FC = () => {
         ...(isVip ? [{ name: t('nav.debrid'), path: '/debrid', icon: <Unlock size={20} />, color: 'yellow' as const, desc: t('nav.debridDesc') }] : []),
         { name: t('nav.settings'), path: '/settings', icon: <Settings size={20} />, color: 'gray', desc: t('nav.settingsDesc') },
         { name: t('nav.helpHub'), path: '/help', icon: <HelpCircle size={20} />, color: 'indigo', desc: t('nav.helpHubDesc') },
-        { name: t('nav.github'), path: 'https://github.com/movixcorp/MovixOpenSource', icon: <Github size={20} />, color: 'gray', desc: t('nav.githubDesc'), external: true },
+        { name: t('nav.github'), path: 'https://github.com/movixstream/MovixOpenSource', icon: <Github size={20} />, color: 'gray', desc: t('nav.githubDesc'), external: true },
         { name: t('footer.ourUrls'), path: 'https://movix.online', icon: <ExternalLink size={20} />, color: 'gray', desc: t('nav.officialLinksDesc'), external: true },
       ]
     },
@@ -154,20 +155,24 @@ const Header: React.FC = () => {
     let mounted = true;
 
     const checkAuth = () => {
-      const auth = localStorage.getItem('auth');
-      const discordAuth = localStorage.getItem('discord_auth');
-      const googleAuth = localStorage.getItem('google_auth');
-      const bip39Auth = localStorage.getItem('bip39_auth');
-      const isVipUser = isUserVip();
-      const isAuth = discordAuth === 'true' || googleAuth === 'true' || bip39Auth === 'true' || !!auth;
-      setIsAuthenticated(isAuth);
-      setIsVip(isVipUser);
+      try {
+        const auth = localStorage.getItem('auth');
+        const discordAuth = localStorage.getItem('discord_auth');
+        const googleAuth = localStorage.getItem('google_auth');
+        const bip39Auth = localStorage.getItem('bip39_auth');
+        const isVipUser = isUserVip();
+        const isAuth = discordAuth === 'true' || googleAuth === 'true' || bip39Auth === 'true' || !!auth;
+        setIsAuthenticated(isAuth);
+        setIsVip(isVipUser);
+      } catch {
+        // Conserver l'affichage courant si le stockage devient inaccessible.
+      }
     };
     checkAuth();
     window.addEventListener('storage', checkAuth);
     window.addEventListener('vipStatusChanged', checkAuth);
 
-    if (localStorage.getItem('access_code')) {
+    if (readLocalStorage('access_code')) {
       void checkVipStatus().then(() => {
         if (mounted) checkAuth();
       });
@@ -468,7 +473,7 @@ const Header: React.FC = () => {
               </Link>
 
               <a
-                href="https://t.me/movix_site"
+                href="https://t.me/ix_annonces"
                 data-tv-ignore-focus
                 data-tv-header-telegram
                 target="_blank"

@@ -48,7 +48,7 @@ const PAYMENT_IMAGES = {
   ltc: 'https://upload.wikimedia.org/wikipedia/commons/f/f8/LTC-400.png'
 } as const;
 
-const SUPPORT_TELEGRAM_URL = import.meta.env.VITE_SUPPORT_TELEGRAM_URL || 'https://t.me/movix_site';
+const SUPPORT_TELEGRAM_URL = import.meta.env.VITE_SUPPORT_TELEGRAM_URL || 'https://t.me/ix_annonces';
 const isValidEmail = (value: string) => /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(value.trim());
 const VipDonatePage: React.FC = () => {
   const navigate = useNavigate();
@@ -192,8 +192,8 @@ const VipDonatePage: React.FC = () => {
       className="min-h-screen bg-black text-white"
     >
       <div className="container mx-auto px-4 py-8 sm:px-6 sm:py-12 relative z-10">
-        <Link to="/vip" className="inline-flex items-center text-white/50 hover:text-white transition-colors mb-8">
-          <ArrowLeft className="w-5 h-5 mr-2" />
+        <Link to="/vip" className="inline-flex items-center text-white/50 hover:text-white transition-colors mb-8 group/icon">
+          <ArrowLeft className="w-5 h-5 mr-2 text-white opacity-50 group-hover/icon:opacity-100 transition-[color,opacity]" />
           {t('vipDonations.page.backVip')}
         </Link>
 

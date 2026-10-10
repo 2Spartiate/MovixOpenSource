@@ -45,6 +45,7 @@ from dotenv import load_dotenv
 from uqload_utils import (
     decode_packed_script_from_html,
     extract_uqload_media_url,
+    extract_uqload_subtitles,
     get_uqload_site_origin,
     normalize_uqload_embed_url,
     parse_allowed_uqload_url,
@@ -1226,25 +1227,53 @@ class _CurlResponseAdapter:
         return self.content._body
 
 
+# Services dont le CDN filtre l'empreinte TLS : le client Python (aiohttp,
+# requests) y prend 403 sur le master, les variantes et les segments, quels
+# que soient les en-têtes, alors que curl et curl_cffi passent. Constaté
+# sur vidzy (u*.vidzy.cc) le 2026-10-07.
+CURL_CFFI_SERVICES = frozenset({'cinep', 'vidzy'})
+
+
+def _socks5_proxy_url_for_session(session_key: str) -> Optional[str]:
+    """URL SOCKS5 derrière une session `proxy_N`, None pour les autres."""
+    match = re.fullmatch(r'proxy_(\d+)', session_key or '')
+    if not match:
+        return None
+    index = int(match.group(1))
+    return _build_socks5_proxy_url(PROXIES[index]) if index < len(PROXIES) else None
+
+
 class _CurlCffiUpstream:
     """Async context manager: curl_cffi request with JA3 impersonation.
-    Retries once through a random SOCKS5 proxy if the direct attempt is a 403."""
-    __slots__ = ('_session', '_url', '_headers', '_timeout_s', '_service_name')
+    The first attempt goes through `proxy_url` when given (direct otherwise);
+    a 403 is retried once through another random SOCKS5 proxy."""
+    __slots__ = ('_session', '_url', '_headers', '_timeout_s', '_service_name', '_proxy_url')
 
-    def __init__(self, session, url: str, headers: Dict, timeout_s: float, service_name: str):
+    def __init__(self, session, url: str, headers: Dict, timeout_s: float, service_name: str,
+                 proxy_url: Optional[str] = None):
         self._session = session
         self._url = url
         self._headers = headers
         self._timeout_s = timeout_s
         self._service_name = service_name
+        self._proxy_url = proxy_url
 
     async def __aenter__(self):
+        first_proxies = (
+            {'http': self._proxy_url, 'https': self._proxy_url}
+            if self._proxy_url else None
+        )
         resp = await self._session.get(
             self._url, headers=self._headers, timeout=self._timeout_s,
             impersonate='chrome', allow_redirects=False,
+            proxies=first_proxies,
         )
         if resp.status_code == 403 and PROXIES:
-            proxy_url = _build_socks5_proxy_url(random.choice(PROXIES))
+            candidates = [
+                url for url in (_build_socks5_proxy_url(proxy) for proxy in PROXIES)
+                if url and url != self._proxy_url
+            ]
+            proxy_url = random.choice(candidates) if candidates else None
             if proxy_url:
                 logger.warning(f'[{self._service_name.upper()}-PROXY] 403 direct â€” retrying via {_redact_proxy_url(proxy_url)}')
                 try:
@@ -4203,14 +4232,63 @@ class ProxyServer:
                 elif numeric_literal.match(body):
                     seed += sign * int(body, 0)
                 elif identifier.match(body):
-                    # The only non-numeric term these players use is the
-                    # hostname checksum computed just above the loop.
-                    if host_sum is None:
-                        host_sum = hostname_char_sum(mask)
-                    seed += sign * host_sum
+                    resolved = resolve_identifier(body)
+                    if resolved is None:
+                        if host_sum is None:
+                            host_sum = hostname_char_sum(mask)
+                        resolved = host_sum
+                    seed += sign * resolved
                 else:
                     return None
             return seed, step
+
+        css_px_per_unit = {
+            'px': 1.0, 'in': 96.0, 'cm': 96 / 2.54, 'mm': 96 / 25.4,
+            'pt': 96 / 72, 'pc': 16.0, 'q': 96 / 101.6,
+        }
+
+        def css_length_to_px(value: str) -> Optional[int]:
+            """Convertit `1in` ou `calc(1in + 43px)` en pixels CSS."""
+            total = 0.0
+            found = False
+            for sign, number, unit in re.findall(
+                r'([-+]?)\s*(\d+(?:\.\d+)?)\s*(px|in|cm|mm|pt|pc|q)\b',
+                value,
+                re.IGNORECASE,
+            ):
+                total += (-1 if sign == '-' else 1) * float(number) * css_px_per_unit[unit.lower()]
+                found = True
+            return round(total) if found else None
+
+        def resolve_identifier(name: str) -> Optional[int]:
+            """Valeur d'une variable de la clé autre que la somme du hostname.
+
+            Le lecteur ajoute la largeur mesurée d'un div caché
+            (`width:calc(1in + 43px)` → offsetWidth = 139 px CSS) : on relit
+            la valeur dans la page pour suivre une rotation. Renvoie None pour
+            la somme du hostname, que l'appelant calcule.
+            """
+            token = re.escape(name)
+            measured = re.search(
+                rf'\b{token}\s*=\s*[A-Za-z_$][\w$]*\.(?:offset|client)(Width|Height)\b',
+                script,
+            )
+            if measured:
+                axis = 'width' if measured.group(1) == 'Width' else 'height'
+                css = re.search(
+                    rf'(?:^|[;"\'\s]){axis}\s*:\s*([^;"\']+)',
+                    script[max(0, measured.start() - 600):measured.start()],
+                    re.IGNORECASE,
+                )
+                if css:
+                    pixels = css_length_to_px(css.group(1))
+                    if pixels is not None:
+                        return pixels
+                return 0
+            literal = re.search(rf'\b{token}\s*=\s*(0[xX][0-9a-fA-F]+|\d+)\s*[;,]', script)
+            if literal and not re.search(rf'\b{token}\s*=\s*\(?\s*{token}\s*\+', script):
+                return int(literal.group(1), 0)
+            return None
 
         for match in rolling_xor_pattern.finditer(script):
             try:
@@ -4670,6 +4748,11 @@ class ProxyServer:
     
     async def _extract_uqload_media_url(self, embed_url: str) -> str:
         """Extract an HLS or MP4 URL from a UQLOAD embed without executing it."""
+        media_url, _subtitles = await self._extract_uqload_media(embed_url)
+        return media_url
+
+    async def _extract_uqload_media(self, embed_url: str) -> Tuple[str, list]:
+        """URL média et sous-titres d'un embed UQLOAD, sans exécuter la page."""
         validated = self._validate_uqload_url(embed_url)
         site_origin = get_uqload_site_origin(validated)
         urls = [validated, validated.replace('/embed-', '/')]
@@ -4682,6 +4765,7 @@ class ProxyServer:
         }
         
         html = None
+        page_url = validated
         for url in urls:
             try:
                 # UQLOAD generic fetch -> normal session
@@ -4689,21 +4773,24 @@ class ProxyServer:
                                            timeout=ClientTimeout(total=5)) as resp:
                     if resp.status == 200:
                         html = await resp.text()
+                        page_url = url
                         break
             except (aiohttp.ClientError, asyncio.TimeoutError):
                 continue
-        
+
         if not html:
             raise ValueError('No content from UQLOAD')
-        
+
         if 'File was deleted' in html:
             raise ValueError('Video deleted')
-        
+
         media_url = extract_uqload_media_url(html)
         if not media_url:
             raise ValueError('Uqload media URL not found')
-        
-        return media_url
+
+        # Les fichiers VTT d'Uqload sont servis avec `Access-Control-Allow-Origin: *` :
+        # le lecteur peut les charger en direct, sans passer par le proxy.
+        return media_url, extract_uqload_subtitles(html, page_url)
     
     async def uqload_extract_handler(self, request: Request) -> Response:
         """UQLOAD extraction"""
@@ -4725,15 +4812,17 @@ class ProxyServer:
                 return resp
             
             validated = self._validate_uqload_url(url)
-            media_url = await self._extract_uqload_media_url(validated)
-            
+            media_url, subtitles = await self._extract_uqload_media(validated)
+
             if not media_url:
                 return web.json_response({'error': 'Extraction failed'}, status=404)
-            
+
             result = {
                 'url': _signed_service_url('/uqload-proxy', media_url),
                 'source': 'uqload'
             }
+            if subtitles:
+                result['subtitles'] = subtitles
             
             self.uqload_cache.set(cache_key, result)
             resp = web.json_response(result)
@@ -5602,9 +5691,16 @@ class ProxyServer:
                         'X-Segment-Cache': 'HIT',
                     })
 
-            if service_name == 'cinep' and self.curl_session is not None:
+            if service_name in CURL_CFFI_SERVICES and self.curl_session is not None:
                 timeout_s = timeout.total or timeout.sock_read or 30
-                upstream_cm = _CurlCffiUpstream(self.curl_session, target_url, headers, timeout_s, service_name)
+                upstream_cm = _CurlCffiUpstream(
+                    self.curl_session,
+                    target_url,
+                    headers,
+                    timeout_s,
+                    service_name,
+                    proxy_url=_socks5_proxy_url_for_session(actual_session_key),
+                )
             else:
                 upstream_cm = session.get(
                     target_url,

@@ -1,6 +1,7 @@
 import React, { useState, useEffect, useCallback, useRef } from 'react';
 import { createPortal } from 'react-dom';
 import { motion, AnimatePresence } from 'framer-motion';
+import type Lenis from 'lenis';
 import { useLocation, useNavigate } from 'react-router-dom';
 import { PrefetchLink as Link } from '@/routing/PrefetchLink';
 import {
@@ -30,6 +31,7 @@ import {
 } from '../utils/extractionPrefs';
 import { isExtensionAvailable, fetchFromExtension } from '../utils/extensionProxy';
 import { isUserVip } from '../utils/authUtils';
+import { copyText } from '../utils/clipboard';
 import { unsubscribeFromPush } from '../services/pushNotificationService';
 import { clearStoredAuthSession, getResolvedAccountContext, setPendingAuthLink } from '../utils/accountAuth';
 import {
@@ -66,6 +68,9 @@ import {
   subscribeToAdultAdsChanges,
 } from '../utils/adAdultMode';
 import { PerformanceSettings } from '@/components/Settings/PerformanceSettings';
+import { HeroSliderSettings } from '@/components/Settings/HeroSliderSettings';
+import { MediaColorSettings } from '@/components/Settings/MediaColorSettings';
+import { SettingsToggle } from '@/components/Settings/SettingsToggle';
 import { BgColorPickerPanel } from '../components/Settings/BgColorPickerPanel';
 import { useLightMode } from '../context/LightModeContext';
 import { SettingsSearchBar } from '../components/Settings/SettingsSearchBar';
@@ -658,37 +663,6 @@ const SettingsPage: React.FC = () => {
     return SECTIONS.filter(s => !['sessions', 'accounts', 'privacy', 'data'].includes(s.id));
   }, [isAuthenticated]);
 
-  // ─── Désactive Lenis sur la page Settings ───────────────────────────────
-  //
-  // Raison : la page Settings est lourde (90+ cards motion.div, 9 sections,
-  // backdrops, gradients). Lenis force 60 frames de rendu par wheel-flick
-  // synchronisés sur le main thread. Sur hardware sans accélération GPU,
-  // chaque frame dépasse 16ms → stutter pendant le scroll.
-  //
-  // En mode natif, le browser bat les frames (compositor thread indépendant
-  // du main thread). Scrolling reste "fluide" même si paints sont lents —
-  // c'est exactement l'effet que l'user observe en draggant la scrollbar.
-  //
-  // À la sortie de SettingsPage on restore Lenis (les autres pages en
-  // bénéficient).
-  useEffect(() => {
-    type LenisInstance = { destroy: () => void; stop: () => void; start: () => void };
-    type WindowWithLenis = typeof window & { lenis?: LenisInstance };
-    const w = window as WindowWithLenis;
-    const prevLenis = w.lenis;
-    if (prevLenis) {
-      // Destroy supprime le wheel listener → native scroll prend la main.
-      prevLenis.destroy();
-      delete w.lenis;
-    }
-    return () => {
-      // Re-init par le composant SmoothScroll qui écoute l'event.
-      if (prevLenis && localStorage.getItem('settings_smooth_scroll') !== 'false') {
-        window.dispatchEvent(new CustomEvent('settings_smooth_scroll_changed'));
-      }
-    };
-  }, []);
-
   // ─── Check auth ──────────────────────────────────────────────────────────
 
   useEffect(() => {
@@ -1248,7 +1222,7 @@ const SettingsPage: React.FC = () => {
 
   const copyPremiumKey = () => {
     const accessCode = localStorage.getItem('access_code');
-    if (accessCode) navigator.clipboard.writeText(accessCode);
+    if (accessCode) void copyText(accessCode);
   };
 
   const getProviderLabel = (provider: LinkProvider) => {
@@ -1470,7 +1444,7 @@ const SettingsPage: React.FC = () => {
       null,
       2
     );
-    navigator.clipboard.writeText(payload);
+    void copyText(payload);
   };
 
   const handleCloseImportPopup = () => {
@@ -1546,21 +1520,7 @@ const SettingsPage: React.FC = () => {
 
   // ─── Sidebar scroll-to handler ───────────────────────────────────────────
 
-  /**
-   * Scroll vers une section Settings depuis la sidebar.
-   *
-   * **Saut instantané par design** (changement 2026-04-24) :
-   * Les animations programmatiques Lenis forcent une synchronisation entre
-   * le RAF d'animation et le rendu main-thread — sur hardware faible ou
-   * sans accélération GPU, chaque frame coûteuse du rendu décale la
-   * frame suivante de l'animation → jank perçu, même avec
-   * `content-visibility:auto` sur les sections.
-   *
-   * Le user a cliqué l'item sidebar → il VEUT cette section, il n'a pas
-   * demandé une animation. On téléporte directement via Lenis `immediate`
-   * (ou fallback native `behavior:auto`). Le scroll wheel garde son smooth
-   * Lenis via l'intensité configurée dans Apparence.
-   */
+  // Utilise le moteur global pour interrompre proprement l'inertie en cours.
   const scrollToSection = useCallback((sectionId: string) => {
     const el = document.getElementById(sectionId);
     if (!el) return;
@@ -1569,9 +1529,7 @@ const SettingsPage: React.FC = () => {
     const topOffset = isMobile ? 112 : 96;
     const targetTop = Math.max(0, window.scrollY + el.getBoundingClientRect().top - topOffset);
 
-    // Lenis est désactivé sur la page Settings (cf. useEffect plus haut)
-    // donc on utilise le smooth scroll natif du browser — léger, compositor
-    // thread, GPU-accéléré nativement, pas de RAF synchro main-thread.
+    const lenis = (window as Window & { lenis?: Lenis }).lenis;
     const smoothEnabled = localStorage.getItem('settings_smooth_scroll') !== 'false';
     const reducedMotion = !effectivePrefs.transitions;
     const willSmoothScroll = smoothEnabled && !reducedMotion;
@@ -1583,14 +1541,16 @@ const SettingsPage: React.FC = () => {
     setActiveSection(sectionId);
     programmaticScrollLockRef.current = true;
 
-    window.scrollTo({
-      top: targetTop,
-      behavior: willSmoothScroll ? 'smooth' : 'auto',
-    });
+    if (lenis) {
+      lenis.scrollTo(targetTop, { immediate: !willSmoothScroll, duration: 0.6 });
+    } else {
+      window.scrollTo({
+        top: targetTop,
+        behavior: willSmoothScroll ? 'smooth' : 'auto',
+      });
+    }
 
-    // Délock après le temps d'un smooth scroll (browser fait 500-700ms
-    // typiquement pour un trajet Apparence → Données). Plus court pour un
-    // scroll instantané.
+    // Laisse finir le défilement (600ms avec Lenis), puis réactive la sidebar.
     const unlockDelay = willSmoothScroll ? 900 : 50;
     // Si un précédent unlock est en cours, on l'annule pour redémarrer le délai.
     if (scrollLockTimerRef.current) clearTimeout(scrollLockTimerRef.current);
@@ -1609,10 +1569,17 @@ const SettingsPage: React.FC = () => {
 
   const navigateToSearchTarget = (sectionId: string, target: HTMLElement) => {
     const highlightClasses = ['rounded-lg', 'ring-2', 'ring-red-500/70', 'ring-offset-4', 'ring-offset-[#0a0a0f]'];
-    const reducedMotion = !effectivePrefs.transitions;
+    const reducedMotion = !effectivePrefs.transitions || localStorage.getItem('settings_smooth_scroll') === 'false';
+    const lenis = (window as Window & { lenis?: Lenis }).lenis;
     setActiveSection(sectionId);
     programmaticScrollLockRef.current = true;
-    target.scrollIntoView({ behavior: reducedMotion ? 'auto' : 'smooth', block: 'center' });
+    if (lenis) {
+      const rect = target.getBoundingClientRect();
+      const targetTop = window.scrollY + rect.top - (window.innerHeight - rect.height) / 2;
+      lenis.scrollTo(targetTop, { immediate: reducedMotion, duration: 0.6 });
+    } else {
+      target.scrollIntoView({ behavior: reducedMotion ? 'auto' : 'smooth', block: 'center' });
+    }
     target.tabIndex = -1;
     target.focus({ preventScroll: true });
     target.classList.add(...highlightClasses);
@@ -1624,19 +1591,9 @@ const SettingsPage: React.FC = () => {
 
   // ─── Render helpers ──────────────────────────────────────────────────────
 
-  const renderToggle = (value: boolean, onToggle: () => void, color: string = 'red') => {
-    const bgActive = color === 'blue' ? 'bg-blue-500' : color === 'purple' ? 'bg-purple-500' : color === 'green' ? 'bg-green-500' : color === 'indigo' ? 'bg-indigo-500' : 'bg-red-600';
-    return (
-      <button
-        onClick={onToggle}
-        className={`relative ml-4 w-14 h-8 rounded-full transition-colors duration-300 flex-shrink-0 ${value ? bgActive : 'bg-gray-600'}`}
-      >
-        <span
-          className={`absolute top-1 left-1 w-6 h-6 bg-white rounded-full shadow-md transform transition-transform duration-300 ${value ? 'translate-x-6' : 'translate-x-0'}`}
-        />
-      </button>
-    );
-  };
+  const renderToggle = (value: boolean, onToggle: () => void, color: string = 'red') => (
+    <SettingsToggle checked={value} onToggle={onToggle} color={color} />
+  );
 
   const getDeviceIcon = (deviceType: SessionDeviceType) => {
     if (deviceType === 'mobile') return <Smartphone className="w-5 h-5" />;
@@ -1814,6 +1771,9 @@ const SettingsPage: React.FC = () => {
               </div>
 
               <div className="space-y-3">
+                <HeroSliderSettings />
+                <MediaColorSettings />
+
                 {/* Conserver la position entre les pages */}
                 <motion.div
                   initial={{ opacity: 0, y: 10 }}
@@ -3580,7 +3540,7 @@ const SettingsPage: React.FC = () => {
                       <span className="font-mono text-sm text-white break-all">{accountIdInfo?.id || ''}</span>
                       <button
                         className="flex items-center gap-1 text-xs px-2 py-1 rounded-md bg-gray-700 hover:bg-gray-600 text-white transition-colors"
-                        onClick={() => { if (accountIdInfo?.id) navigator.clipboard.writeText(accountIdInfo.id); }}
+                        onClick={() => { if (accountIdInfo?.id) void copyText(accountIdInfo.id); }}
                       >
                         <Copy className="w-3.5 h-3.5" />
                         {t('common.copy')}
@@ -3640,7 +3600,7 @@ const SettingsPage: React.FC = () => {
                       <div className="text-xs text-gray-400">{t('settings.localStorageJson')}</div>
                       <button
                         className="flex items-center gap-1 text-xs px-2 py-1 rounded-md bg-gray-700 hover:bg-gray-600 text-white transition-colors"
-                        onClick={() => { if (localStorageData) navigator.clipboard.writeText(localStorageData); }}
+                        onClick={() => { if (localStorageData) void copyText(localStorageData); }}
                       >
                         <Copy className="w-3.5 h-3.5" />
                         {t('settings.copyAll')}
