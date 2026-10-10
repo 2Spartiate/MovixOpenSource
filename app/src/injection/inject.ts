@@ -63,10 +63,29 @@ export function buildInjectedJavaScript(
 })();
 `;
 
+  // Android app safety policy: the upstream site's adult ad toggle defaults
+  // to enabled. Override its persisted preference at document start, before
+  // React mounts, and repair it if a later settings event turns it back on.
+  // Do not monkey-patch localStorage or remove third-party player iframes.
+  const adultAdOptOut = `
+(() => {
+  const enforceSafeAds = () => {
+    try { window.localStorage.setItem('settings_ad_popup_adult', 'false'); } catch {}
+  };
+  enforceSafeAds();
+  window.addEventListener('ad_popup_adult_changed', enforceSafeAds, true);
+  window.addEventListener('storage', (event) => {
+    if (event.key === 'settings_ad_popup_adult') enforceSafeAds();
+  }, true);
+})();
+`;
+
   // Keep the clean-baseline shared policy. TV adds only its marker/runtime
   // around that same WebView bootstrap; handheld never receives TV code.
   return `
 ${popupBlocker}
+
+${adultAdOptOut}
 
 ${tvBootstrap}
 
