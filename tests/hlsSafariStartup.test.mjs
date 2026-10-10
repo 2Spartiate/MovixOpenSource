@@ -80,6 +80,9 @@ function playerFixture({ hlsSupported = true, autoPlay = false } = {}) {
     kisskhSources: [], isMP4Source: () => false, contentTypeMp4Urls: new Set(),
     createHlsConfig: () => ({}), purstreamSources: [], console: silentConsole, window: {},
     qualitiesRef: { current: [] }, qualityPreferenceRef: { current: 'auto' },
+    getHlsAutoMaxHeight: sourceFunction('src/components/HLSPlayer.tsx', 'getHlsAutoMaxHeight', {
+      isMovixTvRuntime: () => false,
+    }),
     buildHlsQualityOptions: levels => levels, setQualities: noop,
     selectLevelForPreference: () => 0, formatDetectedStreamQuality: () => '1080p',
     rememberSourceQuality: noop, playbackSpeed: 1, lastKnownTimeRef: { current: 0 },

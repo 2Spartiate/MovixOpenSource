@@ -58,6 +58,11 @@ test('Cast envoie le master contenant la piste française séparée, pas la vari
   const selectBestStream = sourceFunction(cast, 'selectBestStream');
   const preferFrenchAudioVariant = sourceFunction(cast, 'preferFrenchAudioVariant', { fetch, console: silentConsole });
   const buildSource = sourceFunction(player, 'buildCurrentCastSource', {
+    isMP4Source: sourceFunction(player, 'isMP4Source', {
+      PROXIES_EMBED_API: 'https://proxy.test',
+      normalizeUqloadEmbedUrl: sourceFunction(player, 'normalizeUqloadEmbedUrl'),
+      console: silentConsole,
+    }),
     useCallback: fn => fn, src: masterUrl, parseM3u8Manifest, selectBestStream, preferFrenchAudioVariant,
     resolveCastContentType: () => 'application/vnd.apple.mpegurl', isSelectedKisskhMp4: false,
     title: 'Test', tvShow: undefined, poster: undefined,

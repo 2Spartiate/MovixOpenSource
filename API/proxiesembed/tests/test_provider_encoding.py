@@ -19,6 +19,7 @@ PROXY_ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(PROXY_ROOT))
 from uqload_utils import (
     extract_uqload_media_url,
+    extract_uqload_subtitles,
     get_uqload_site_origin,
     normalize_uqload_embed_url,
     parse_allowed_uqload_url,
@@ -31,7 +32,7 @@ def load_proxy_headers():
     methods = {
         '_prepare_headers', 'fsvid_proxy_handler', 'vidzy_proxy_handler', 'uqload_proxy_handler',
         'fsvid_extract_handler', 'vidzy_extract_handler', '_is_fsvid_vidzy_embed_url',
-        '_extract_uqload_media_url', '_validate_uqload_url',
+        '_extract_uqload_media_url', '_extract_uqload_media', '_validate_uqload_url',
     }
     proxy_class.body = [
         node for node in proxy_class.body
@@ -56,6 +57,7 @@ def load_proxy_headers():
         'parse_allowed_uqload_url': parse_allowed_uqload_url,
         'normalize_uqload_embed_url': normalize_uqload_embed_url,
         'extract_uqload_media_url': extract_uqload_media_url,
+        'extract_uqload_subtitles': extract_uqload_subtitles,
         'asyncio': asyncio, 'aiohttp': aiohttp, 'ClientTimeout': ClientTimeout,
         'web': web, 'hashlib': hashlib,
         '_signed_service_url': lambda route, url: url,

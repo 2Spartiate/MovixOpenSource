@@ -8,6 +8,9 @@ export function sourceFunction(file, name, bindings = {}, includes = '') {
   const source = ts.createSourceFile(file, readFileSync(new URL(`../../${file}`, import.meta.url), 'utf8'), ts.ScriptTarget.Latest, true, ts.ScriptKind.TSX);
   let expression;
   const visit = node => {
+    if (ts.isFunctionDeclaration(node) && node.name?.getText(source) === name && node.getText(source).includes(includes)) {
+      expression = node.getText(source);
+    }
     if (ts.isVariableDeclaration(node) && node.name.getText(source) === name && node.initializer?.getText(source).includes(includes)) {
       expression = node.initializer.getText(source);
     }
