@@ -3,6 +3,8 @@ import AsyncStorage from '@react-native-async-storage/async-storage';
 import { AppState, type AppStateStatus, Platform } from 'react-native';
 
 import { UPDATE_CHECK } from '../config';
+import { areAppUpdatesEnabled } from '../config/appUpdates';
+import { clearObsoleteAppUpdate } from '../services/obsoleteAppUpdate';
 import {
   canInstallApks,
   installApk,
@@ -253,8 +255,14 @@ export function releasePageUrl(githubUrl: string): string | null {
   return `${parsed.origin}${repositoryPath}/releases/latest`;
 }
 
-export function useAppUpdate(githubUrl: string | null) {
+export function useAppUpdate(
+  githubUrl: string | null,
+  options: { enabled?: boolean } = {},
+) {
+  // A caller or a downloaded manifest cannot override the bundled Android policy.
+  const enabled = areAppUpdatesEnabled(Platform.OS) && options.enabled !== false;
   const [state, setState] = useState<UpdateState>(initialState);
+  const enabledRef = useRef(enabled);
   const cancelRef = useRef(false);
   const stateRef = useRef(state);
   const pendingRef = useRef<PendingDownload | null>(null);
@@ -264,6 +272,7 @@ export function useAppUpdate(githubUrl: string | null) {
   const pollGenerationRef = useRef(0);
 
   stateRef.current = state;
+  enabledRef.current = enabled;
 
   useEffect(() => {
     mountedRef.current = true;
@@ -274,6 +283,15 @@ export function useAppUpdate(githubUrl: string | null) {
     };
   }, []);
 
+  useEffect(() => {
+    if (enabled) return;
+    cancelRef.current = true;
+    pollGenerationRef.current += 1;
+    pendingRef.current = null;
+    setState({ ...initialState });
+    if (Platform.OS === 'android') void clearObsoleteAppUpdate();
+  }, [enabled]);
+
   // --- On mount: reconcile local / pending DL / fresh manifest -----------
   // Cases handled:
   //   A. User sideloaded a newer build → pending.targetBuildNumber <= localCode → clear pending.
@@ -282,6 +300,7 @@ export function useAppUpdate(githubUrl: string | null) {
   //   D. Manifest unreachable but pending exists → use pending alone (syntheticManifest).
   //   E. No pending, no update → idle.
   useEffect(() => {
+    if (!enabled) return;
     let cancelled = false;
 
     if (Platform.OS === 'ios') {
@@ -454,10 +473,10 @@ export function useAppUpdate(githubUrl: string | null) {
       cancelRef.current = true;
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [githubUrl]);
+  }, [githubUrl, enabled]);
 
   useEffect(() => {
-    if (Platform.OS !== 'android') return;
+    if (!enabled || Platform.OS !== 'android') return;
 
     const subscription = AppState.addEventListener('change', nextState => {
       const previousState = appStateRef.current;
@@ -470,15 +489,17 @@ export function useAppUpdate(githubUrl: string | null) {
     return () => subscription.remove();
     // The handler reads current data through refs, so this subscription stays stable.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
+  }, [enabled]);
 
   // --- Actions ---------------------------------------------------------
 
   const dismiss = useCallback(() => {
+    if (!enabledRef.current) return;
     setState(s => (s.manifest?.mandatory ? s : { ...initialState }));
   }, []);
 
   const accept = useCallback(async () => {
+    if (!enabledRef.current) return;
     if (!state.manifest) return;
     const manifest = state.manifest;
 
@@ -508,6 +529,7 @@ export function useAppUpdate(githubUrl: string | null) {
   }, [state.manifest]);
 
   const cancel = useCallback(async () => {
+    if (!enabledRef.current) return;
     if (Platform.OS === 'ios') {
       setState({ ...initialState });
       return;
@@ -529,6 +551,7 @@ export function useAppUpdate(githubUrl: string | null) {
   }, [state.downloadId]);
 
   const openSettings = useCallback(async () => {
+    if (!enabledRef.current) return;
     if (Platform.OS !== 'android') return;
     try {
       await openInstallSettings();
@@ -538,6 +561,7 @@ export function useAppUpdate(githubUrl: string | null) {
   }, []);
 
   const retry = useCallback(() => {
+    if (!enabledRef.current) return;
     const current = stateRef.current;
     const pending = pendingRef.current;
     if (
@@ -561,6 +585,7 @@ export function useAppUpdate(githubUrl: string | null) {
   // --- Internal helpers -------------------------------------------------
 
   async function beginDownload(manifest: Manifest) {
+    if (!enabledRef.current) return;
     // Fresh download — release any cancel lock from a previous session.
     cancelRef.current = false;
     pollGenerationRef.current += 1;
@@ -607,6 +632,7 @@ export function useAppUpdate(githubUrl: string | null) {
   }
 
   function resumeProgressLoop(pending: PendingDownload) {
+    if (!enabledRef.current) return;
     const generation = ++pollGenerationRef.current;
     pollUntilDone(
       pending.downloadId,
@@ -617,6 +643,7 @@ export function useAppUpdate(githubUrl: string | null) {
         );
       },
       () =>
+        enabledRef.current &&
         mountedRef.current &&
         !cancelRef.current &&
         generation === pollGenerationRef.current,
@@ -648,6 +675,7 @@ export function useAppUpdate(githubUrl: string | null) {
   }
 
   async function verifyAndInstall(pending: PendingDownload) {
+    if (!enabledRef.current) return;
     pendingRef.current = pending;
     setState(s => ({ ...s, stage: 'verifying' }));
     try {
@@ -668,6 +696,7 @@ export function useAppUpdate(githubUrl: string | null) {
       return;
     }
 
+    if (!enabledRef.current || cancelRef.current || !mountedRef.current) return;
     setState(s => ({ ...s, stage: 'installing' }));
     try {
       await installApk(pending.apkFilePath);
@@ -680,6 +709,7 @@ export function useAppUpdate(githubUrl: string | null) {
   }
 
   async function handleForegroundResume() {
+    if (!enabledRef.current) return;
     if (foregroundBusyRef.current || !mountedRef.current) return;
 
     const current = stateRef.current;
@@ -740,7 +770,7 @@ export function useAppUpdate(githubUrl: string | null) {
   }
 
   return {
-    state,
+    state: enabled ? state : initialState,
     dismiss,
     accept,
     cancel,

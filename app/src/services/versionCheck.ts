@@ -1,4 +1,6 @@
 import { UPDATE_CHECK } from '../config';
+import { Platform } from 'react-native';
+import { areAppUpdatesEnabled } from '../config/appUpdates';
 import { getLocalVersionCode } from './apkInstaller';
 
 export type ReleaseNotes = {
@@ -68,6 +70,7 @@ function isValidManifest(obj: unknown): obj is Manifest {
 export async function fetchLatestVersion(
   githubUrl: string,
 ): Promise<VersionCheckResult> {
+  if (!areAppUpdatesEnabled(Platform.OS)) return { kind: 'no-check' };
   let manifest: Manifest;
   try {
     const manifestUrl = `${githubUrl}${UPDATE_CHECK.GITHUB_VERSION_RAW_PATH}?_=${Date.now()}`;

@@ -13,6 +13,7 @@ import BrowserScreen from './screens/BrowserScreen';
 import UpdateScreen from './screens/UpdateScreen';
 import UpdateDialog from './components/UpdateDialog';
 import { useAppUpdate } from './hooks/useAppUpdate';
+import { areAppUpdatesEnabled } from './config/appUpdates';
 import { AddressProvider, useAddress } from './context/AddressContext';
 import { loadNetworkJournalPreference } from './services/networkJournal';
 
@@ -184,8 +185,10 @@ export default function App() {
 
 function AppShell({ dnsSettled }: { dnsSettled: boolean }) {
   const { config } = useAddress();
+  const updatesEnabled = areAppUpdatesEnabled(Platform.OS);
   const { state, accept, dismiss, cancel, openSettings, retry } = useAppUpdate(
     config?.githubUrl ?? null,
+    { enabled: updatesEnabled },
   );
 
   // No i18n in the mobile app today — FR is the primary language. The JSON
@@ -193,6 +196,7 @@ function AppShell({ dnsSettled }: { dnsSettled: boolean }) {
   const locale: 'fr' | 'en' = 'fr';
 
   const showScreen =
+    updatesEnabled &&
     state.manifest &&
     (state.stage === 'downloading' ||
       state.stage === 'verifying' ||
@@ -218,7 +222,7 @@ function AppShell({ dnsSettled }: { dnsSettled: boolean }) {
   return (
     <>
       <BrowserScreen />
-      {dnsSettled && state.stage === 'offered' && state.manifest && (
+      {updatesEnabled && dnsSettled && state.stage === 'offered' && state.manifest && (
         <UpdateDialog
           manifest={state.manifest}
           locale={locale}

@@ -35,6 +35,12 @@ class UpdateModule(private val reactContext: ReactApplicationContext) :
 
     override fun getName(): String = "UpdateModule"
 
+    private fun rejectDisabledUpdate(promise: Promise): Boolean {
+        if (BuildConfig.APK_UPDATES_ENABLED) return false
+        promise.reject("APK_UPDATES_DISABLED", "APK updates are disabled in this Android variant")
+        return true
+    }
+
     // --- Version info (from BuildConfig) ---------------------------------
 
     @ReactMethod
@@ -51,6 +57,10 @@ class UpdateModule(private val reactContext: ReactApplicationContext) :
 
     @ReactMethod
     fun canInstallApks(promise: Promise) {
+        if (!BuildConfig.APK_UPDATES_ENABLED) {
+            promise.resolve(false)
+            return
+        }
         try {
             // API 26+ gates APK installation behind a per-source user toggle.
             // On API 24-25, a declared REQUEST_INSTALL_PACKAGES permission is enough.
@@ -66,6 +76,7 @@ class UpdateModule(private val reactContext: ReactApplicationContext) :
 
     @ReactMethod
     fun openInstallSettings(promise: Promise) {
+        if (rejectDisabledUpdate(promise)) return
         try {
             // ACTION_MANAGE_UNKNOWN_APP_SOURCES was introduced in API 26. Before that,
             // there is no per-app setting to open: either REQUEST_INSTALL_PACKAGES is
@@ -89,6 +100,7 @@ class UpdateModule(private val reactContext: ReactApplicationContext) :
 
     @ReactMethod
     fun enqueueDownload(url: String, fileName: String, title: String, promise: Promise) {
+        if (rejectDisabledUpdate(promise)) return
         try {
             // Defense in depth: reject non-https URLs at the native boundary even though
             // the JS manifest validator also enforces this. A compromised/malformed
@@ -225,6 +237,7 @@ class UpdateModule(private val reactContext: ReactApplicationContext) :
 
     @ReactMethod
     fun installApk(filePath: String, promise: Promise) {
+        if (rejectDisabledUpdate(promise)) return
         try {
             val updateDir = reactContext
                 .getExternalFilesDir(Environment.DIRECTORY_DOWNLOADS)

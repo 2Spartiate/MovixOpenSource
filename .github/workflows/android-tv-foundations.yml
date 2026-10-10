@@ -24,6 +24,7 @@ on:
       - agent/google-tv-playback-ux-v21
       - agent/google-tv-playback-ux-v22
       - agent/parental-controls-v1
+      - agent/movix-upstream-sync-v1
     paths:
       - 'app/**'
       - 'src/**'
@@ -100,6 +101,8 @@ jobs:
             tests/tvCarouselContract.test.mjs \
             tests/tvFocusRestoration.test.mjs \
             tests/tvUiCleanupContract.test.mjs \
+            tests/upstreamDomCompatibility.test.mjs \
+            tests/androidAppUpdatesDisabled.test.mjs \
             tests/parentalNativeInjection.test.mjs
           npx tsc --noEmit
 
@@ -121,6 +124,7 @@ jobs:
           chmod +x gradlew
           ./gradlew \
             :app:processReleaseMainManifest \
+            :app:testReleaseUnitTest \
             :app:assembleRelease \
             -Dorg.gradle.jvmargs="-Xmx4096m -XX:MaxMetaspaceSize=1024m" \
             --stacktrace
@@ -140,6 +144,10 @@ jobs:
           grep -q 'android:banner="@drawable/tv_banner"' "$MERGED"
           grep -q 'android.support.v4.content.FileProvider\|androidx.core.content.FileProvider' "$MERGED"
           grep -q 'com.movix.app.cast.CastOptionsProvider' "$MERGED"
+          if grep -q 'android.permission.REQUEST_INSTALL_PACKAGES' "$MERGED"; then
+            echo 'The custom Android APK must not request installer permission' >&2
+            exit 1
+          fi
 
       - name: Assert standalone JS bundle is packaged
         working-directory: app/android

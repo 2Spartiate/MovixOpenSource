@@ -1,4 +1,5 @@
 import { NativeModules, Platform } from 'react-native';
+import { areAppUpdatesEnabled } from '../config/appUpdates';
 
 type DownloadStatus =
   | 'pending'
@@ -51,6 +52,7 @@ export async function enqueueDownload(
   title: string,
 ): Promise<EnqueueResult> {
   if (Platform.OS !== 'android') throw unsupportedPlatform('enqueueDownload');
+  if (!areAppUpdatesEnabled(Platform.OS)) throw new Error('APK_UPDATES_DISABLED');
   return ensureModule().enqueueDownload(url, fileName, title);
 }
 
@@ -83,6 +85,7 @@ export async function pollUntilDone(
   intervalMs = 500,
 ): Promise<DownloadProgress> {
   if (Platform.OS !== 'android') throw unsupportedPlatform('pollUntilDone');
+  if (!areAppUpdatesEnabled(Platform.OS)) throw new Error('APK_UPDATES_DISABLED');
   while (shouldContinue()) {
     const progress = await queryDownload(downloadId);
     onTick(progress);

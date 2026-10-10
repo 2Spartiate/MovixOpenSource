@@ -1,4 +1,5 @@
 import { NativeModules, Platform } from 'react-native';
+import { areAppUpdatesEnabled } from '../config/appUpdates';
 
 import appMetadata from '../../app.json';
 
@@ -52,6 +53,7 @@ export async function getLocalVersionName(): Promise<string> {
 
 export async function canInstallApks(): Promise<boolean> {
   if (Platform.OS !== 'android') return false;
+  if (!areAppUpdatesEnabled(Platform.OS)) return false;
   try {
     return await ensureModule().canInstallApks();
   } catch (err) {
@@ -61,6 +63,9 @@ export async function canInstallApks(): Promise<boolean> {
 }
 
 export async function openInstallSettings(): Promise<void> {
+  if (Platform.OS === 'android' && !areAppUpdatesEnabled(Platform.OS)) {
+    throw new Error('APK_UPDATES_DISABLED');
+  }
   if (Platform.OS !== 'android') {
     throw unsupportedPlatform('openInstallSettings');
   }
@@ -69,5 +74,6 @@ export async function openInstallSettings(): Promise<void> {
 
 export async function installApk(filePath: string): Promise<void> {
   if (Platform.OS !== 'android') throw unsupportedPlatform('installApk');
+  if (!areAppUpdatesEnabled(Platform.OS)) throw new Error('APK_UPDATES_DISABLED');
   return ensureModule().installApk(filePath);
 }

@@ -25,6 +25,8 @@ android {
 
         buildConfigField "int", "VERSION_CODE_INT", "${versionCode}"
         buildConfigField "String", "VERSION_NAME_STR", "\"${versionName}\""
+        // Custom Android/Google TV variant: never self-update from official APKs.
+        buildConfigField "boolean", "APK_UPDATES_ENABLED", "false"
     }
 
     buildFeatures {

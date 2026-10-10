@@ -8,7 +8,8 @@
 - Upstream figé : `movixstream/MovixOpenSource/main`, `0e7cd866fa5bbb248c2e24c1d5d69e7f06e38ce5`.
 - Ancêtre commun : `ff56b3c57511c84cedc89956ba05dedba7630f1d`.
 - Main du fork reste à cet ancêtre. Aucun push vers main, aucune PR.
-- 32 commits upstream ; fusion Git à trois voies avec conservation du parent upstream original. Le nouvel upstream est un dépôt indépendant, pas un membre du réseau de forks historique : l'import des objets Git est effectué par un workflow ponctuel limité à la branche de migration, puis ce workflow s'efface.
+- 32 commits upstream ; fusion Git à trois voies avec conservation du parent upstream original. Le nouvel upstream est un dépôt indépendant, pas un membre du réseau de forks historique : les objets Git sont importés par un workflow ponctuel limité à la branche de migration. Le push Actions ne pouvant pas modifier les workflows officiels, la connexion GitHub autorisée publie le même arbre vérifié et le vrai parent upstream. Les deux fichiers de bootstrap sont supprimés de l'arbre final.
+- Commit de fusion : `ac2227d15aca7235b10b30780bd85715a050c9e5`, second parent `0e7cd866fa5bbb248c2e24c1d5d69e7f06e38ce5`, arbre `88bfb7e39620a8bebab750c0cff99c05084e85bf`.
 
 ## Nouveautés officielles
 
@@ -50,3 +51,19 @@ Les fichiers frontend du dépôt ne sont pas le contenu distribué dans l'APK : 
 - Le frontend upstream possède déjà des diagnostics TypeScript globaux (273 observés avec le lockfile actuel et `--ignoreDeprecations 5.0`). Le build Vite ne remplace pas ce contrôle. Les erreurs d'intégration détectées pendant la fusion sont corrigées ; le contrôle global n'est pas annoncé vert.
 - Validation native Android et politique anti-mise à jour : checkpoint suivant.
 - Aucun appareil TV matériel utilisé ; pas de lecture réelle ou de tunnel VPN matériel revendiqué.
+
+## Désactivation des mises à jour APK
+
+- Politique embarquée et gelée dans `app/src/config/appUpdates.ts` : Android désactivé, iOS conserve son comportement. Aucune configuration distante ni préférence utilisateur ne peut activer cette politique Android.
+- `AppShell` appelle toujours le hook React, en lui passant explicitement la politique. L'affichage des deux interfaces de mise à jour est également protégé, même en présence d'un état React obsolète.
+- Le hook ne vérifie aucune version Android, ne s'abonne pas à la reprise pour les mises à jour et ne reprend aucune vérification, aucun téléchargement ni aucune installation. Ses actions sont inertes.
+- Les services refusent aussi la récupération d'un manifeste APK, le lancement d'un téléchargement, le polling, l'ouverture des paramètres d'installation et l'installation directe. La lecture du numéro de version pour les paramètres reste disponible.
+- Protection native indépendante : `BuildConfig.APK_UPDATES_ENABLED=false`. Le module Android refuse téléchargement, paramètres et installation avant tout effet système ; la permission d'installation est supprimée du manifeste fusionné.
+- Seule la clé `update:pendingDownload` est nettoyée. Si elle contient un identifiant de téléchargement valide, celui-ci est annulé via DownloadManager ; aucun téléchargement n'est interrogé ou installé. Les autres préférences, PIN, historique et cache d'adresses ne sont pas modifiés.
+- La découverte des adresses, les appels réseau du site, les mises à jour de son contenu dans la WebView et le DNS restent indépendants de cette politique.
+
+### Défaillances couvertes par les tests de non-réactivation
+
+Les E2E sur un appareil absent de cet environnement ne couvrent pas un état hérité du DownloadManager ni un appel direct au bridge natif. Les tests isolés exécutent les modules compilés, leurs effets et les appels natifs pour couvrir : démarrage mobile/TV, résolution différée de la configuration, reprise, appel avec `enabled:true`, actions conservées, manifeste obligatoire, téléchargement en cours/terminé, JSON corrompu, identifiant invalide, annulation échouée et nouveau démarrage. Ils vérifient également la conservation des données sans rapport avec l'updater et le masquage de l'interface malgré un hook renvoyant un état périmé.
+
+Commande reproductible : `cd app && npm ci && npm run prebuild && node --test tests/androidAppUpdatesDisabled.test.mjs tests/upstreamDomCompatibility.test.mjs tests/iosPlatformParity.test.mjs && npx tsc --noEmit`. Résultat local : 14 tests réussis et TypeScript réussi. Deux tests Robolectric complètent la protection native ; ils sont exécutés par `:app:testReleaseUnitTest` dans le workflow Android de cette branche.
