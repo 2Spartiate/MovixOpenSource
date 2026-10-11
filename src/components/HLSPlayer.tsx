@@ -14,7 +14,8 @@ import {
   NEXT_CONTENT_PREFS_CHANGE_EVENT,
   getNextContentPrefs,
   hasStoredNextContentPrefs,
-  isThresholdReached,
+  resolveUpNextTrigger,
+  bestCreditsStart,
   setNextContentPrefs,
   type NextContentPrefs,
 } from '../utils/nextContentPrefs';
@@ -1036,11 +1037,11 @@ interface HLSPlayerProps {
   fullscreenTarget?: 'player' | 'page';
 
   // Threshold configuration for when to show next episode/movie popup
-  // Examples:
+  // Examples (explicit overrides only):
   //   - 95 (simple number = percentage mode)
   //   - { mode: 'percentage', value: 90 }
   //   - { mode: 'timeBeforeEnd', value: 120 } (120 seconds = 2 minutes before end)
-  nextContentThreshold?: NextContentThreshold; // Default: 95 (percentage)
+  nextContentThreshold?: NextContentThreshold; // Legacy explicit caller override only
   onShowSources?: () => void; // Callback to show sources menu
   autoFallbackGuard?: HlsAutoFallbackGuard;
 
@@ -1268,7 +1269,7 @@ const HLSPlayer = forwardRef<HLSPlayerRef, HLSPlayerProps>(({
   currentEpisodeInfo,
   onEpisodeSelect,
   fullscreenTarget = 'player',
-  nextContentThreshold = 95, // Default to 95%
+  nextContentThreshold, // No implicit 95%: use modern 60s/30s defaults
   // WatchPartyRoom integration props
   onPlayerPlay,
   onPlayerPause,
@@ -7878,6 +7879,7 @@ const HLSPlayer = forwardRef<HLSPlayerRef, HLSPlayerProps>(({
   // seulement tant que l'utilisateur n'a rien réglé lui-même : ses préférences
   // sont synchronisées entre appareils, elles ne doivent pas être écrasées par
   // le défaut d'une page.
+  const hadSavedUpNextPrefsAtMount = useRef(hasStoredNextContentPrefs());
   const [nextPrefs, setNextPrefs] = useState<NextContentPrefs>(() => {
     const stored = getNextContentPrefs();
     if (hasStoredNextContentPrefs()) return stored;
@@ -8045,6 +8047,8 @@ const HLSPlayer = forwardRef<HLSPlayerRef, HLSPlayerProps>(({
    * dépendre de l'ordre des déclarations.
    */
   const outroTriggerRef = useRef<{ start: number | null; loading: boolean }>({ start: null, loading: false });
+  const upNextTriggerLoggedRef = useRef(false);
+  useEffect(() => { upNextTriggerLoggedRef.current = false; }, [src]);
 
   /**
    * Faut-il proposer la suite maintenant ?
@@ -8055,17 +8059,17 @@ const HLSPlayer = forwardRef<HLSPlayerRef, HLSPlayerProps>(({
    * reste celui que l'utilisateur a choisi.
    */
   const shouldShowNextContent = (currentTime: number, duration: number): boolean => {
-    if (!duration || duration === 0) return false;
-
-    if (nextPrefs.trigger === 'segment') {
-      const { start, loading } = outroTriggerRef.current;
-      if (start !== null) return currentTime >= start;
-      // Tant que les bases répondent, on ne déclenche pas le repli : sinon le
-      // seuil passerait devant un générique qui arrive une seconde plus tard.
-      if (loading) return false;
+    const { start, loading } = outroTriggerRef.current;
+    const reason = resolveUpNextTrigger(
+      nextPrefs, currentTime, duration, start, loading,
+      hadSavedUpNextPrefsAtMount.current,
+    );
+    if (reason && !upNextTriggerLoggedRef.current) {
+      upNextTriggerLoggedRef.current = true;
+      console.info('[Movix UpNext]', { reason, currentTime, duration, creditsStart: start,
+        remaining: duration - currentTime, preferenceMode: nextPrefs.trigger });
     }
-
-    return isThresholdReached(nextPrefs, currentTime, duration);
+    return reason !== null;
   };
 
   const handleTimeUpdate = (e: any) => {
@@ -8218,21 +8222,19 @@ const HLSPlayer = forwardRef<HLSPlayerRef, HLSPlayerProps>(({
   /**
    * Alimente le déclencheur « au générique » de la proposition « À suivre ».
    *
-   * On prend la borne de départ la plus tôt entre `outro` et `credits` : les
-   * deux désignent la même chose selon les bases, et la plus précoce est celle
-   * où l'épisode est réellement fini.
+   * Préférer le segment credits quand il existe (sinon outro), puis retenir
+   * le meilleur consensus. Le garde-fou de 60s/30s est appliqué plus haut
+   * par resolveUpNextTrigger : une base trop précoce ne masque plus les scènes.
    *
    * Note : `mediaSegments` est déjà filtré par les réglages de saut. Couper le
    * type « générique » là-bas prive donc aussi ce déclencheur — le panneau de
    * réglages le signale plutôt que de laisser la bascule sans effet visible.
    */
   useEffect(() => {
-    let earliest: number | null = null;
-    for (const segment of mediaSegments) {
-      if (segment.type !== 'outro' && segment.type !== 'credits') continue;
-      if (earliest === null || segment.start < earliest) earliest = segment.start;
-    }
-    outroTriggerRef.current = { start: earliest, loading: segmentsLoading };
+    outroTriggerRef.current = {
+      start: bestCreditsStart(mediaSegments),
+      loading: segmentsLoading,
+    };
   }, [mediaSegments, segmentsLoading]);
 
   // Les réglages de saut sont écrits directement dans localStorage : l'écriture
