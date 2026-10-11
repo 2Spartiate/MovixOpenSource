@@ -71,6 +71,8 @@ export function buildTvUpNextRuntime(): string {
       && !explicitlyAllowsEarlier(limit);
     const veil = getVeil(panel);
 
+    panel.setAttribute('data-tv-focus-group', 'up-next');
+
     // The older remote version uses a 38% column with a 62% veil.
     // Keep the content available and simply correct its geometry.
     panel.style.setProperty('width', 'min(28%, 360px)', 'important');
@@ -106,6 +108,35 @@ export function buildTvUpNextRuntime(): string {
       }
     }
   };
+
+  // The remote HLS player's default arrow shortcuts seek and change volume.
+  // Own the TV D-pad only while focus is inside the UpNext overlay.
+  window.addEventListener('keydown', (event) => {
+    const root = playerRoot();
+    const panel = getPanel(root);
+    if (!panel || panel.style.getPropertyValue('display') === 'none') return;
+    const active = document.activeElement;
+    if (!active || !panel.contains(active)) return;
+    const key = String(event.key || '');
+    if (key !== 'ArrowUp' && key !== 'ArrowDown'
+        && key !== 'ArrowLeft' && key !== 'ArrowRight') return;
+    const buttons = Array.from(panel.querySelectorAll('button'))
+      .filter((button) => !button.disabled);
+    // Heading close/reveal controls precede the two primary actions.
+    const actions = buttons.slice(-2);
+    if (actions.length !== 2) return;
+    const direction = key === 'ArrowUp' || key === 'ArrowLeft' ? -1 : 1;
+    const index = actions.indexOf(active);
+    const next = index < 0
+      ? actions[actions.length - 1]
+      : actions[Math.max(0, Math.min(actions.length - 1, index + direction))];
+    event.preventDefault();
+    event.stopPropagation();
+    if (event.stopImmediatePropagation) event.stopImmediatePropagation();
+    if (next && typeof next.focus === 'function') {
+      try { next.focus({ preventScroll: true }); } catch { next.focus(); }
+    }
+  }, true);
 
   // No MutationObserver storm during HLS playback: a light interval suffices.
   window.setInterval(tick, 700);
