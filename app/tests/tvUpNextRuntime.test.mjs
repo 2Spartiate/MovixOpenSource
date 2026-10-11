@@ -16,6 +16,7 @@ async function buildScript() {
 
 function simulate(script, { remaining = 190, duration = 3780, storedPrefs = null } = {}) {
   let tick = () => {};
+  let keydown = () => {};
   let focusCount = 0;
   class Element {
     constructor(classes = []) {
@@ -40,9 +41,14 @@ function simulate(script, { remaining = 190, duration = 3780, storedPrefs = null
   veil.setAttribute('aria-hidden', 'true');
   const panel = new Element(['inset-y-0', 'right-0', 'w-[38%]']);
   panel.parentElement = { children: [veil, panel] };
-  panel.buttons = [{ focus() { focusCount += 1; } }, { focus() { focusCount += 1; } }];
+  panel.buttons = [
+    { focus() { focusCount += 1; document.activeElement = this; } },
+    { focus() { focusCount += 1; document.activeElement = this; } },
+  ];
+  panel.contains = target => panel.buttons.includes(target);
   const document = {
     readyState: 'complete',
+    activeElement: null,
     querySelector: selector => selector === '[data-hls-player-root]' ? root : null,
   };
   const window = {
@@ -50,9 +56,14 @@ function simulate(script, { remaining = 190, duration = 3780, storedPrefs = null
     localStorage: { getItem: key => key === 'playerNextContent' && storedPrefs
       ? JSON.stringify(storedPrefs) : null },
     setInterval(fn) { tick = fn; },
+    addEventListener(name, fn) { if (name === 'keydown') keydown = fn; },
   };
   vm.runInNewContext(script, { window, document, HTMLElement: Element, Number, Array, JSON });
-  return { panel, veil, video, run: () => tick(), get focusCount() { return focusCount; } };
+  return {
+    panel, veil, video, document, run: () => tick(),
+    press(key) { let blocked = false; keydown({ key, preventDefault() { blocked = true; }, stopPropagation() {}, stopImmediatePropagation() {} }); return blocked; },
+    get focusCount() { return focusCount; },
+  };
 }
 
 test('TV runtime is only constructed when enabled in the WebView builder', async () => {
@@ -94,4 +105,14 @@ test('explicit user-configured early threshold is preserved in TV APK', async ()
   const state = simulate(script, { storedPrefs: { trigger: 'threshold', thresholdMode: 'percentage', percentage: 95 } });
   assert.equal(state.panel.style.getPropertyValue('display'), '');
   assert.equal(state.focusCount, 1);
+});
+
+test('D-pad navigates between primary and Later, never reaching video shortcuts', async () => {
+  const script = await buildScript();
+  const state = simulate(script, { remaining: 50 });
+  assert.equal(state.document.activeElement, state.panel.buttons[1]);
+  assert.equal(state.press('ArrowUp'), true);
+  assert.equal(state.document.activeElement, state.panel.buttons[0]);
+  assert.equal(state.press('ArrowDown'), true);
+  assert.equal(state.document.activeElement, state.panel.buttons[1]);
 });
