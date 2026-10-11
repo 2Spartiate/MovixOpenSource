@@ -66,9 +66,9 @@ export const DEFAULT_NEXT_CONTENT_PREFS: NextContentPrefs = {
   // Le générique par défaut : c'est le moment juste, et le repli sur le seuil
   // rend le choix sans risque même quand aucune base ne connaît le contenu.
   trigger: 'segment',
-  thresholdMode: 'percentage',
-  // 99 % : sans générique relevé, mieux vaut proposer la suite au tout dernier
-  // moment que couper une fin de scène cinq minutes trop tôt.
+  // Un temps fixe évite qu'une vidéo de 63 minutes déclenche à 95 % (3:09
+  // avant la fin), alors que le générique démarre vers la dernière minute.
+  thresholdMode: 'timeBeforeEnd',
   percentage: 99,
   timeBeforeEnd: 60,
   display: 'panel',
@@ -198,4 +198,85 @@ export function isThresholdReached(
     return (currentTime / duration) * 100 >= prefs.percentage;
   }
   return duration - currentTime <= prefs.timeBeforeEnd;
+}
+
+//
+// Default recommendation window: TV dramas use 60s, short episodes 30s.
+// These are fallbacks/guardrails, not a claim that all credits last one minute.
+export const SHORT_EPISODE_LIMIT_SECONDS = 35 * 60;
+export const LONG_EPISODE_UPNEXT_SECONDS = 60;
+export const SHORT_EPISODE_UPNEXT_SECONDS = 30;
+
+export function defaultUpNextWindowSeconds(duration: number): number {
+  return duration < SHORT_EPISODE_LIMIT_SECONDS
+    ? SHORT_EPISODE_UPNEXT_SECONDS
+    : LONG_EPISODE_UPNEXT_SECONDS;
+}
+
+export type UpNextTriggerReason = 'credits' | 'fallback' | 'configured-threshold' | null;
+
+/**
+ * Pure decision for the "Up next" panel. Episode progress is authoritative;
+ * external credits timestamps can never open the panel earlier than the
+ * default credits window. Explicitly selected threshold-mode preferences are
+ * unchanged. A saved segment fallback also keeps its chosen threshold.
+ */
+export function resolveUpNextTrigger(
+  prefs: NextContentPrefs,
+  currentTime: number,
+  duration: number,
+  creditsStart: number | null,
+  segmentsLoading: boolean,
+  savedPreferences: boolean,
+): UpNextTriggerReason {
+  if (!Number.isFinite(duration) || duration <= 0
+      || !Number.isFinite(currentTime) || currentTime < 0) return null;
+
+  if (prefs.trigger === 'threshold') {
+    return isThresholdReached(prefs, currentTime, duration) ? 'configured-threshold' : null;
+  }
+
+  const windowSeconds = defaultUpNextWindowSeconds(duration);
+  if (creditsStart !== null
+      && Number.isFinite(creditsStart)
+      && creditsStart >= 0
+      && creditsStart <= duration) {
+    const safeStart = Math.max(creditsStart, duration - windowSeconds);
+    return currentTime >= safeStart ? 'credits' : null;
+  }
+
+  // Avoid racing a segment request with an early fallback.
+  if (segmentsLoading) return null;
+
+  // Persisted user thresholds are preserved, including legacy migrations.
+  if (savedPreferences) {
+    return isThresholdReached(prefs, currentTime, duration) ? 'fallback' : null;
+  }
+  return duration - currentTime <= windowSeconds ? 'fallback' : null;
+}
+
+/** Prefer explicit credits over an outro marker (which may cover last scenes). */
+export function bestCreditsStart(
+  segments: ReadonlyArray<{
+    type: string;
+    start: number;
+    confidence?: number;
+    agreement?: number;
+    sourceCount?: number;
+  }>,
+): number | null {
+  for (const kind of ['credits', 'outro']) {
+    const candidates = segments.filter(segment =>
+      segment.type === kind && Number.isFinite(segment.start) && segment.start >= 0,
+    );
+    if (candidates.length === 0) continue;
+    candidates.sort((a, b) =>
+      (b.agreement ?? 0) - (a.agreement ?? 0)
+      || (b.sourceCount ?? 0) - (a.sourceCount ?? 0)
+      || (b.confidence ?? 0) - (a.confidence ?? 0)
+      || b.start - a.start,
+    );
+    return candidates[0].start;
+  }
+  return null;
 }
