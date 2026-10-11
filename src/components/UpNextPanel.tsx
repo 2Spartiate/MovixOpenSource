@@ -167,8 +167,31 @@ const UpNextPanel: React.FC<UpNextPanelProps> = ({
   const { effectivePrefs } = useLightMode();
   const animated = effectivePrefs.transitions;
   const shape = useViewportShape();
+  const laterButtonRef = useRef<HTMLButtonElement>(null);
+  const previouslyFocusedRef = useRef<HTMLElement | null>(null);
 
   const form = resolveUpNextShape(display, Boolean(spoiler?.hideAll), shape);
+  // TV: default Enter to the safe 'Later' action; restore previous focus when
+  // the overlay closes, rather than stranding navigation behind an overlay.
+  useEffect(() => {
+    if (!visible || (window as Window & { MOVIX_TV?: boolean }).MOVIX_TV !== true) return;
+    previouslyFocusedRef.current = document.activeElement instanceof HTMLElement
+      ? document.activeElement : null;
+    const focusDismiss = () => {
+      try { laterButtonRef.current?.focus({ preventScroll: true }); }
+      catch { laterButtonRef.current?.focus(); }
+    };
+    const frame = window.requestAnimationFrame(focusDismiss);
+    const timer = window.setTimeout(focusDismiss, 100);
+    return () => {
+      window.cancelAnimationFrame(frame);
+      window.clearTimeout(timer);
+      const previous = previouslyFocusedRef.current;
+      if (previous?.isConnected) {
+        try { previous.focus({ preventScroll: true }); } catch { previous.focus(); }
+      }
+    };
+  }, [visible, form, title]);
   const logoSrc = upscaleLogo(logoUrl);
 
   // Révélation ponctuelle de l'image masquée : l'anti-spoil reste actif pour
@@ -310,6 +333,7 @@ const UpNextPanel: React.FC<UpNextPanelProps> = ({
 
   const primaryButton = (
     <button
+      data-tv-focus="up-next-primary"
       type="button"
       onClick={handlePrimary}
       className="flex items-center justify-center gap-2 rounded bg-white px-4 py-2 text-sm font-medium text-black transition-colors hover:bg-gray-200"
@@ -328,6 +352,8 @@ const UpNextPanel: React.FC<UpNextPanelProps> = ({
 
   const secondaryButton = (
     <button
+      ref={laterButtonRef}
+      data-tv-focus="up-next-later"
       type="button"
       onClick={handleSecondary}
       className="rounded bg-gray-600/50 px-4 py-2 text-sm font-medium text-white transition-colors hover:bg-gray-600"
@@ -390,7 +416,7 @@ const UpNextPanel: React.FC<UpNextPanelProps> = ({
               exit={{ opacity: 0 }}
               transition={{ duration: animated ? 0.25 : 0, ease: 'easeOut' }}
               style={{ transform: 'translateZ(0)', willChange: 'opacity' }}
-              className="pointer-events-none absolute inset-y-0 right-0 z-[55] w-[62%] bg-gradient-to-l from-black via-black/90 to-transparent"
+              className="pointer-events-none absolute inset-y-0 right-0 z-[55] w-[45%] bg-gradient-to-l from-black via-black/85 to-transparent"
             />
           )}
         </AnimatePresence>
@@ -406,6 +432,7 @@ const UpNextPanel: React.FC<UpNextPanelProps> = ({
               transition={{ duration: animated ? 0.25 : 0, ease: 'easeOut' }}
               onMouseDown={stop}
               onClick={stop}
+              data-tv-focus-group="up-next"
               // Pleine hauteur, et au-dessus de tout le reste du lecteur : la
               // barre de contrôles est en `z-40`, la barre du haut (retour,
               // épisode précédent / suivant, liste des épisodes) en `z-50`.
@@ -416,7 +443,7 @@ const UpNextPanel: React.FC<UpNextPanelProps> = ({
               // fond du panneau, et ne sautent pas quand la barre de contrôles
               // va et vient. Ils la recouvrent au besoin — c'est le sens du
               // `z-[60]`, la proposition prime tant qu'elle est ouverte.
-              className="absolute inset-y-0 right-0 z-[60] flex w-[38%] min-w-[290px] max-w-[440px] flex-col gap-2 px-4 pb-4 pt-4 [@media(max-height:560px)]:pt-2"
+              className="absolute inset-y-0 right-0 z-[60] flex w-[28%] min-w-[270px] max-w-[360px] flex-col gap-2 px-4 pb-4 pt-4 [@media(max-height:560px)]:pt-2"
             >
               {heading}
               {/* Zone défilante : l'image en 16:9 pleine largeur est plus haute
@@ -478,6 +505,7 @@ const UpNextPanel: React.FC<UpNextPanelProps> = ({
               transition={{ duration: animated ? 0.25 : 0, ease: 'easeOut' }}
               onMouseDown={stop}
               onClick={stop}
+              data-tv-focus-group="up-next"
               drag="y"
               dragControls={dragControls}
               dragListener={false}
@@ -547,6 +575,7 @@ const UpNextPanel: React.FC<UpNextPanelProps> = ({
           transition={{ duration: animated ? 0.18 : 0, ease: 'easeOut' }}
           onMouseDown={stop}
           onClick={stop}
+          data-tv-focus-group="up-next"
           className={`absolute ${cardPosition} ${cardHeight} z-[60] overflow-hidden rounded-lg bg-black/80`}
         >
           <div className="flex h-full">
