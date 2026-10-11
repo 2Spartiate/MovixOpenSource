@@ -7897,12 +7897,16 @@ const HLSPlayer = forwardRef<HLSPlayerRef, HLSPlayerProps>(({
   // Le panneau de réglages écrit directement dans localStorage : on se recale
   // sur l'événement plutôt que de faire redescendre un setter par props.
   useEffect(() => {
-    const handleChange = () => setNextPrefs(getNextContentPrefs());
+    const handleChange = () => {
+      hadSavedUpNextPrefsAtMount.current = true;
+      setNextPrefs(getNextContentPrefs());
+    };
     window.addEventListener(NEXT_CONTENT_PREFS_CHANGE_EVENT, handleChange);
     return () => window.removeEventListener(NEXT_CONTENT_PREFS_CHANGE_EVENT, handleChange);
   }, []);
 
   const updateNextPrefs = useCallback((patch: Partial<NextContentPrefs>) => {
+    hadSavedUpNextPrefsAtMount.current = true;
     setNextPrefs(setNextContentPrefs(patch));
   }, []);
 
@@ -9025,6 +9029,12 @@ const HLSPlayer = forwardRef<HLSPlayerRef, HLSPlayerProps>(({
 
       if (!e.ctrlKey && !e.altKey && !e.metaKey) {
         if (key === 'Escape' || key === 'BrowserBack' || key === 'GoBack') {
+          // A TV prompt must close before exiting player chrome/fullscreen.
+          if (nextEpisodePromptVisible) {
+            e.preventDefault();
+            handleIgnore();
+            return;
+          }
           if (showControls || showSettings || showCastMenu || showInternalEpisodesMenu
             || showStreamInfo || showShortcutsHelp) {
             e.preventDefault();
