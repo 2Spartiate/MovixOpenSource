@@ -12,6 +12,7 @@ import { buildTvBootstrap } from './tv-bootstrap';
 import { buildTvDomDiscoveryRuntime } from './tv-focus-dom';
 import { buildTvDpadRuntime } from './tv-dpad-runtime';
 import { buildTvPlaybackRuntime } from './tv-playback-runtime';
+import { buildTvUpNextRuntime } from './tv-upnext-runtime';
 import { findNextFocusTarget } from './tv-spatial-engine';
 import { USERSCRIPT_SOURCE } from './userscript-source';
 
@@ -37,6 +38,7 @@ export function buildInjectedJavaScript(
   const playbackAwakeShim = buildPlaybackAwakeShim();
   const tvBootstrap = options.tvMode ? buildTvBootstrap() : '';
   const tvPlaybackRuntime = options.tvMode ? buildTvPlaybackRuntime() : '';
+  const tvUpNextRuntime = options.tvMode ? buildTvUpNextRuntime() : '';
   const tvDpadRuntime = options.tvMode
     ? buildTvDpadRuntime(
         `(${findNextFocusTarget.toString()})`,
@@ -107,6 +109,8 @@ ${playbackAwakeShim}
 ${bridge}
 
 ${tvPlaybackRuntime}
+
+${tvUpNextRuntime}
 
 ${tvDpadRuntime}
 
