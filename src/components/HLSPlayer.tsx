@@ -9026,6 +9026,29 @@ const HLSPlayer = forwardRef<HLSPlayerRef, HLSPlayerProps>(({
         ? keyboardTarget.closest<HTMLButtonElement>('button')
         : null;
       const isChromeControl = showControls && focusedControl?.closest('[data-player-chrome]');
+      // While the UpNext dialog has DOM focus, D-pad arrows belong to its
+      // actions, not to the player's +/-10s seek and volume shortcuts.
+      const focusedUpNext = nextEpisodePromptVisible && keyboardTarget instanceof HTMLElement
+        ? keyboardTarget.closest('[data-tv-focus-group="up-next"]')
+        : null;
+      if (focusedUpNext && isArrow) {
+        e.preventDefault();
+        e.stopPropagation();
+        const actions = Array.from(
+          focusedUpNext.querySelectorAll<HTMLButtonElement>(
+            'button[data-tv-focus="up-next-primary"], button[data-tv-focus="up-next-later"]',
+          ),
+        ).filter(button => !button.disabled);
+        const currentIndex = actions.indexOf(document.activeElement as HTMLButtonElement);
+        const direction = key === 'ArrowUp' || key === 'ArrowLeft' ? -1 : 1;
+        const targetIndex = currentIndex < 0
+          ? actions.length - 1
+          : Math.min(actions.length - 1, Math.max(0, currentIndex + direction));
+        try { actions[targetIndex]?.focus({ preventScroll: true }); }
+        catch { actions[targetIndex]?.focus(); }
+        return;
+      }
+
 
       if (!e.ctrlKey && !e.altKey && !e.metaKey) {
         if (key === 'Escape' || key === 'BrowserBack' || key === 'GoBack') {
