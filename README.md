@@ -1,3 +1,5 @@
+> 🧭 **Branche de référence Movix Google TV : [agent/movix-active-tv-upnext-v1](https://github.com/2Spartiate/MovixOpenSource/tree/agent/movix-active-tv-upnext-v1)** — branche personnalisée active. Voir [ACTIVE_BRANCH.md](./ACTIVE_BRANCH.md). La branche `main` reste intacte.
+
 <p align="center">
   <picture>
     <source media="(prefers-color-scheme: dark)" srcset="./brand/movix-inverse.svg" />
