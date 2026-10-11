@@ -27,6 +27,7 @@ on:
       - agent/movix-upstream-sync-v1
       - agent/movix-player-ad-bravo-matrix-v1
       - agent/movix-ad-page-keyword-guard-v1
+      - agent/movix-active-tv-upnext-v1
     paths:
       - 'app/**'
       - 'src/**'
@@ -106,7 +107,9 @@ jobs:
             tests/upstreamDomCompatibility.test.mjs \
             tests/androidAppUpdatesDisabled.test.mjs \
             tests/parentalNativeInjection.test.mjs \
-            tests/adPageProtection.test.mjs
+            tests/adPageProtection.test.mjs \
+            tests/nextContentTiming.test.mjs \
+            tests/tvUpNextRuntime.test.mjs
           npx tsc --noEmit
 
       - name: Validate frontend production build
