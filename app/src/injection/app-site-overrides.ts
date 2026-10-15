@@ -845,21 +845,22 @@ export function buildAppSiteOverrides(): string {
     const homeRails = Array.from(home.querySelectorAll('.home-section, [data-home-section]'));
     homeRails.forEach((rail) => {
       if (!(rail instanceof HTMLElement)) return;
-      const headings = Array.from(rail.querySelectorAll('h1, h2, h3, [role="heading"]'))
-        .filter((heading) => !heading.closest('[data-tv-card]'));
-      if (!headings.some((heading) => {
-        const title = normalise(heading.textContent);
-        return title.includes('halloween') || title.includes('🎃');
-      })) return;
+      // Only the section's leading heading qualifies. A film titled
+      // "Halloween" inside an unrelated carousel must remain visible.
+      const headings = Array.from(rail.querySelectorAll('h1, h2, [role="heading"]'))
+        .filter((heading) => !heading.closest('a[href], [data-tv-card]'));
+      const heading = headings[0];
+      const title = normalise(heading?.textContent);
+      if (!title.includes('halloween') && !title.includes('🎃')) return;
       hideManagedNode(rail);
       rail.setAttribute('data-tv-seasonal-hidden', 'halloween');
     });
 
     // The remote site may ship a standalone seasonal section without
     // .home-section. Only hide a section whose *heading* names the campaign.
-    home.querySelectorAll('h1, h2, h3, [role="heading"]').forEach((heading) => {
+    home.querySelectorAll('h1, h2, [role="heading"]').forEach((heading) => {
       if (!(heading instanceof HTMLElement)) return;
-      if (heading.closest('[data-tv-card], [data-tv-seasonal-hidden]')) return;
+      if (heading.closest('a[href], [data-tv-card], [data-tv-seasonal-hidden]')) return;
       const title = normalise(heading.textContent);
       if (!title.includes('halloween') && !title.includes('🎃')) return;
       const section = heading.closest('section, [data-home-section], .home-section');
