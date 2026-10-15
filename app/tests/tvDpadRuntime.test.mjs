@@ -182,7 +182,7 @@ test('automatic startup focus waits briefly for Hero Play and never auto-scrolls
 test('Embla fallback clicks the live hidden arrow only when focused card reaches the viewport edge', () => {
   const runtime = buildTvDpadRuntime('(function () { return null; })', '/* dom discovery */');
   assert.match(runtime, /button\[data-tv-carousel-arrow\]/);
-  assert.match(runtime, /requestAnimationFrame\(\(\) => requestAnimationFrame\(\(\) => nudgeIfNeeded\(\)\)\)/);
+  assert.match(runtime, /requestAnimationFrame\(\(\) => requestAnimationFrame\(nudgeIfNeeded\)\)/);
   assert.match(runtime, /direction === 'right' \? arrows\[arrows\.length - 1\] : arrows\[0\]/);
   assert.match(runtime, /arrow\.click\(\)/);
 });
