@@ -48,7 +48,7 @@ test('live TV injection discovers header shortcuts even when remote frontend lac
   assert.match(overrides, /const markTvHeaderShortcutTargets = \(\) =>/);
   assert.match(overrides, /input\[type="search"\], input\[type="text"\]/);
   assert.match(overrides, /\[data-explore-trigger\]/);
-  assert.match(overrides, /button\\[data-tv-primary-focus="account"\\]/);
+  assert.ok(overrides.includes('button[data-tv-primary-focus="account"]'));
   assert.match(overrides, /'connexion', 'se connecter', 'login'/);
   assert.match(overrides, /\[class\*="cursor-pointer"\]/);
   assert.match(overrides, /data-tv-header-shortcut', 'account'/);
