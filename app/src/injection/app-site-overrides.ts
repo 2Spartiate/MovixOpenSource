@@ -679,7 +679,6 @@ export function buildAppSiteOverrides(): string {
       'button[data-tv-primary-focus="account"]',
       'button[data-tv-header-shortcut="account"]',
       '[role="button"][data-tv-primary-focus="account"]',
-      'button[aria-haspopup="menu"]',
       'button[aria-label*="compte" i]',
       'button[aria-label*="profil" i]',
       'button[aria-label*="profile" i]',
@@ -703,6 +702,15 @@ export function buildAppSiteOverrides(): string {
           return ['connexion', 'se connecter', 'login', 'log in', 'mon compte',
             'my account', 'profil', 'profile'].some((term) => label.includes(term));
         });
+    }
+    if (!(account instanceof HTMLElement)) {
+      // Generic menu roles come only after explicit Connexion/account labels.
+      account = Array.from(header.querySelectorAll('button[aria-haspopup="menu"]'))
+        .filter(usable).filter((element) => {
+          const label = normalise(String(element.textContent || '') + ' ' +
+            String(element.getAttribute('aria-label') || ''));
+          return !label.includes('halloween') && !label.includes('🎃');
+        }).pop() || null;
     }
     if (!(account instanceof HTMLElement)) {
       const avatar = Array.from(header.querySelectorAll('img')).find((image) => {
