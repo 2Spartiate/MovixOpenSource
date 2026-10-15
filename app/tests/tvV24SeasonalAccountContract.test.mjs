@@ -25,7 +25,7 @@ test('Halloween cleanup is TV-only and hides scoped Home rails, never the accoun
   assert.match(src, /window\.location\.pathname !== '\/'\) return/);
   assert.match(src, /home\.querySelectorAll\('\.home-section, \[data-home-section\]'\)/);
   assert.match(src, /title\.includes\('halloween'\)/);
-  assert.match(src, /heading\.closest\('\[data-tv-card\]/);
+  assert.ok(src.includes("heading.closest('a[href], [data-tv-card]')"));
   assert.match(src, /data-tv-seasonal-hidden/);
   assert.match(src, /node\.closest\('\[data-tv-header-shortcut="account"\]'\)/);
   assert.match(src, /suppressTvHalloween\(\)/);
