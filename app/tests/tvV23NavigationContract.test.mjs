@@ -30,8 +30,8 @@ test('platform Embla navigation skips artificial hidden overflow wrappers', asyn
   const src = await source('src/injection/tv-dpad-runtime.ts');
   assert.match(src, /row\.querySelectorAll\('\[data-tv-card\]'\)/);
   assert.match(src, /\/\^\(auto\|scroll\|overlay\)\$\//);
-  assert.match(src, /nudgeIfNeeded\(attempt \+ 1\)/);
-  assert.match(src, /attempt >= 12/);
+  assert.match(src, /requestAnimationFrame\(\(\) => requestAnimationFrame\(nudgeIfNeeded\)\)/);
+  assert.doesNotMatch(src, /nudgeIfNeeded\(attempt \+ 1\)/);
 });
 
 test('TV detail primary Play takes full width, and only the adjacent Download is hidden', async () => {
