@@ -356,9 +356,9 @@ ${domDiscoveryRuntime}
     // (only visually hidden on TV), so this reaches the live carousel API.
     const pageX = window.scrollX;
     const pageY = window.scrollY;
-    const nudgeIfNeeded = (attempt = 0) => {
+    const nudgeIfNeeded = () => {
       if (!(element instanceof HTMLElement) || !element.isConnected) return;
-      if (document.activeElement !== element || attempt >= 12) return;
+      if (document.activeElement !== element) return;
       const rect = element.getBoundingClientRect();
       const rowRect = row.getBoundingClientRect();
       const left = Math.max(0, rowRect.left);
@@ -376,9 +376,8 @@ ${domDiscoveryRuntime}
         ) || (direction === 'right' ? arrows[arrows.length - 1] : arrows[0]);
         if (arrow instanceof HTMLButtonElement && !arrow.disabled) {
           try { arrow.click(); } catch {}
-          // Multiple cards can be beyond the clipped viewport. Advance only
-          // while the same card remains focused and obscured; cap retries.
-          requestAnimationFrame(() => nudgeIfNeeded(attempt + 1));
+          // A single arrow nudge is sufficient as a fallback. Repeated
+          // clicks can skip past the focused card while Embla is animating.
         }
       }
 
@@ -390,7 +389,7 @@ ${domDiscoveryRuntime}
       }
     };
 
-    requestAnimationFrame(() => requestAnimationFrame(() => nudgeIfNeeded()));
+    requestAnimationFrame(() => requestAnimationFrame(nudgeIfNeeded));
     return true;
   };
 
