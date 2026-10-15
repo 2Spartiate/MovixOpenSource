@@ -696,17 +696,54 @@ ${domDiscoveryRuntime}
     }
 
     if (kind === 'account') {
+      // Refresh semantic markers synchronously: a seasonal header rerender
+      // can replace the profile avatar between two key presses.
+      const policy = window.__MOVIX_TV_HEADER_POLICY;
+      const refreshed = typeof policy?.targets === 'function' ? policy.targets() : null;
+      if (refreshed?.account instanceof HTMLElement &&
+          refreshed.account.isConnected) return refreshed.account;
+
+      // A semantic role or Connexion label is reliable even if the remote
+      // website replaces the profile image with a Halloween pumpkin.
+      const visible = (element) => {
+        if (!(element instanceof HTMLElement) || !element.isConnected) return false;
+        const rect = element.getBoundingClientRect();
+        return rect.width > 0 && rect.height > 0 &&
+          window.getComputedStyle(element).display !== 'none';
+      };
+      const semantic = Array.from(header.querySelectorAll(
+        'button[data-tv-primary-focus="account"], ' +
+        '[role="button"][data-tv-primary-focus="account"], ' +
+        'button[aria-label*="compte" i], button[aria-label*="profil" i], ' +
+        'button[aria-label*="profile" i], button[aria-label*="account" i]'
+      )).find(visible);
+      if (semantic instanceof HTMLElement) return semantic;
+
+      const byLabel = Array.from(header.querySelectorAll('button, [role="button"], a[href]'))
+        .find((element) => {
+          if (!visible(element) || element.hasAttribute('data-explore-trigger')) return false;
+          const label = (
+            String(element.getAttribute('aria-label') || '') + ' ' +
+            String(element.textContent || '')
+          ).toLowerCase();
+          return ['connexion', 'se connecter', 'login', 'log in', 'mon compte',
+            'my account', 'profil', 'profile'].some((term) => label.includes(term));
+        });
+      if (byLabel instanceof HTMLElement) return byLabel;
+
+      const menu = Array.from(header.querySelectorAll('button[aria-haspopup="menu"]'))
+        .filter(visible).filter((element) => {
+          const text = String(element.textContent || '').toLowerCase();
+          return !text.includes('halloween') && !text.includes('🎃');
+        }).pop();
+      if (menu instanceof HTMLElement) return menu;
+
       const avatar = Array.from(header.querySelectorAll('img')).find((image) => {
-        if (!(image instanceof HTMLImageElement)) return false;
         const label = String(image.alt || '').toLowerCase();
-        return label.includes('profil') || label.includes('profile') || label.includes('account');
+        return ['profil', 'profile', 'account'].some((term) => label.includes(term));
       });
-      if (avatar instanceof HTMLElement) {
-        const owner = avatar.closest(
-          'button, [role="button"], [class*="cursor-pointer"]'
-        );
-        if (owner instanceof HTMLElement) return owner;
-      }
+      const owner = avatar?.closest('button, [role="button"], [class*="cursor-pointer"]');
+      if (owner instanceof HTMLElement) return owner;
     }
 
     return null;
