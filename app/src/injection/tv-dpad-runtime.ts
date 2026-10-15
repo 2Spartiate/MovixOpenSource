@@ -223,11 +223,15 @@ ${domDiscoveryRuntime}
 
   const getRowCards = (row) => {
     if (!(row instanceof HTMLElement)) return [];
-    return api.getTVFocusableElements().filter((element) =>
-      element instanceof HTMLElement &&
-      element.hasAttribute('data-tv-card') &&
-      element.closest('[data-tv-carousel-row]') === row
-    );
+    // Query the rail itself: Chromium can give offscreen Embla slides 0x0
+    // geometry, even though the next platform/card exists in the DOM.
+    // Their order remains the authoritative Left/Right sequence.
+    return Array.from(row.querySelectorAll('[data-tv-card]')).filter((element) => {
+      if (!(element instanceof HTMLElement) || !element.isConnected) return false;
+      if (element.closest('[data-tv-ignore-focus], [inert], [aria-hidden="true"]')) return false;
+      const style = window.getComputedStyle(element);
+      return style.display !== 'none' && style.visibility !== 'hidden';
+    });
   };
 
   const getAdjacentCardInRow = (current, row, direction) => {
@@ -324,7 +328,10 @@ ${domDiscoveryRuntime}
     ) {
       const style = window.getComputedStyle(scroller);
       const canScroll = scroller.scrollWidth > scroller.clientWidth + 1;
-      if (canScroll && style.overflowX !== 'visible') {
+      // An overflow:hidden wrapper is not an actual native horizontal
+      // scroller for Embla, which positions its track with transforms.
+      // Assigning scrollLeft there masks the real carousel API.
+      if (canScroll && /^(auto|scroll|overlay)$/.test(style.overflowX)) {
         const rect = element.getBoundingClientRect();
         const bounds = scroller.getBoundingClientRect();
         const delta =
@@ -349,8 +356,9 @@ ${domDiscoveryRuntime}
     // (only visually hidden on TV), so this reaches the live carousel API.
     const pageX = window.scrollX;
     const pageY = window.scrollY;
-    const nudgeIfNeeded = () => {
+    const nudgeIfNeeded = (attempt = 0) => {
       if (!(element instanceof HTMLElement) || !element.isConnected) return;
+      if (document.activeElement !== element || attempt >= 12) return;
       const rect = element.getBoundingClientRect();
       const rowRect = row.getBoundingClientRect();
       const left = Math.max(0, rowRect.left);
@@ -363,12 +371,18 @@ ${domDiscoveryRuntime}
       if (needsNudge) {
         const arrows = Array.from(row.querySelectorAll('button[data-tv-carousel-arrow]'))
           .filter((button) => button instanceof HTMLButtonElement);
-        const arrow = direction === 'right' ? arrows[arrows.length - 1] : arrows[0];
-        if (arrow instanceof HTMLButtonElement) {
+        const arrow = arrows.find((button) =>
+          button.getAttribute('data-tv-carousel-arrow-direction') === direction
+        ) || (direction === 'right' ? arrows[arrows.length - 1] : arrows[0]);
+        if (arrow instanceof HTMLButtonElement && !arrow.disabled) {
           try { arrow.click(); } catch {}
+          // Multiple cards can be beyond the clipped viewport. Advance only
+          // while the same card remains focused and obscured; cap retries.
+          requestAnimationFrame(() => nudgeIfNeeded(attempt + 1));
         }
       }
 
+      // Horizontal carousel navigation must not drag the whole Home page.
       try {
         window.scrollTo({ left: pageX, top: pageY, behavior: 'auto' });
       } catch {
@@ -376,7 +390,7 @@ ${domDiscoveryRuntime}
       }
     };
 
-    requestAnimationFrame(() => requestAnimationFrame(nudgeIfNeeded));
+    requestAnimationFrame(() => requestAnimationFrame(() => nudgeIfNeeded()));
     return true;
   };
 
@@ -574,6 +588,84 @@ ${domDiscoveryRuntime}
 
     revealFocusedElement(next.element, direction);
     return document.activeElement === next.element;
+  };
+
+  // New seasonal sections sometimes contain no focusable links, or their
+  // content is lazy-mounted only after scrolling. Never dead-end the remote
+  // D-pad merely because the current spatial graph has no next candidate.
+  // This fallback only pans vertical content, never an open dialog/player/menu.
+  const scrollPastUnmappedContent = (direction) => {
+    if (direction !== 'up' && direction !== 'down') return false;
+    const active = document.activeElement;
+    if (active instanceof HTMLElement && active.closest(
+      '[data-tv-shortcut-scope], [data-hls-player-root], [data-tv-dpad-scope="native"]'
+    )) return false;
+
+    const openDialog = Array.from(document.querySelectorAll(
+      '[role="dialog"][aria-modal="true"]'
+    )).some((node) => node instanceof HTMLElement &&
+      node.getBoundingClientRect().height > 0 &&
+      window.getComputedStyle(node).visibility !== 'hidden');
+    if (openDialog) return false;
+
+    const sign = direction === 'down' ? 1 : -1;
+    const step = Math.max(180, Math.min(600, window.innerHeight * 0.72));
+    let scroller = active instanceof HTMLElement ? active.parentElement : null;
+    const scrollTargets = [];
+    while (scroller && scroller !== document.body && scroller !== document.documentElement) {
+      const style = window.getComputedStyle(scroller);
+      if (/^(auto|scroll|overlay)$/.test(style.overflowY) &&
+          scroller.scrollHeight > scroller.clientHeight + 4) {
+        scrollTargets.push(scroller);
+      }
+      scroller = scroller.parentElement;
+    }
+    const documentScroller = document.scrollingElement || document.documentElement;
+    if (documentScroller instanceof HTMLElement) scrollTargets.push(documentScroller);
+
+    const original = active instanceof HTMLElement ? active : null;
+    for (const target of scrollTargets) {
+      if (!(target instanceof HTMLElement)) continue;
+      const maxTop = Math.max(0, target.scrollHeight - target.clientHeight);
+      const oldTop = target.scrollTop;
+      const newTop = Math.max(0, Math.min(maxTop, oldTop + sign * step));
+      if (Math.abs(newTop - oldTop) < 3) continue;
+
+      if (target === documentScroller) {
+        try { window.scrollTo({ top: newTop, left: window.scrollX, behavior: 'auto' }); }
+        catch { window.scrollTo(window.scrollX, newTop); }
+      } else if (typeof target.scrollTo === 'function') {
+        target.scrollTo({ top: newTop, left: target.scrollLeft, behavior: 'auto' });
+      } else {
+        target.scrollTop = newTop;
+      }
+
+      // After a lazy React section is mounted, focus its first visible
+      // interactive target; otherwise a subsequent D-pad press continues
+      // down/up through a purely decorative section.
+      requestAnimationFrame(() => requestAnimationFrame(() => {
+        if (document.activeElement !== original || !original?.isConnected) return;
+        const originalRect = original.getBoundingClientRect();
+        const visible = api.getTVFocusableElements().filter((candidate) => {
+          if (candidate === original || isHeaderElement(candidate)) return false;
+          if (candidate.closest('[data-tv-shortcut-scope]')) return false;
+          const rect = candidate.getBoundingClientRect();
+          if (rect.bottom <= 72 || rect.top >= window.innerHeight - 20) return false;
+          return sign > 0
+            ? rect.top > originalRect.top + 12
+            : rect.bottom < originalRect.bottom - 12;
+        }).sort((first, second) => {
+          const a = first.getBoundingClientRect();
+          const b = second.getBoundingClientRect();
+          return sign > 0
+            ? a.top - b.top || Math.abs(a.left - originalRect.left) - Math.abs(b.left - originalRect.left)
+            : b.bottom - a.bottom || Math.abs(a.left - originalRect.left) - Math.abs(b.left - originalRect.left);
+        });
+        if (visible[0]) focusWithoutJank(visible[0]);
+      }));
+      return true;
+    }
+    return false;
   };
 
   const rememberCurrentContentFocus = () => {
@@ -1030,7 +1122,8 @@ ${domDiscoveryRuntime}
     // the current element is already at that edge. Otherwise Chromium falls
     // back to page scrolling, which feels like a web page instead of a TV app.
     // Player/native scopes are filtered by shouldSpatialNavigationHandle above.
-    api.moveFocus(direction);
+    const moved = api.moveFocus(direction);
+    if (!moved) scrollPastUnmappedContent(direction);
 
     consumeEvent(event);
     return true;
