@@ -28,6 +28,7 @@ on:
       - agent/movix-player-ad-bravo-matrix-v1
       - agent/movix-ad-page-keyword-guard-v1
       - agent/movix-active-tv-upnext-v1
+      - agent/movix-tv-v23-universal-navigation-play-cta
     paths:
       - 'app/**'
       - 'src/**'
@@ -102,6 +103,7 @@ jobs:
             tests/tvPlayerBackContract.test.mjs \
             tests/tvExternalPlayerLimitsContract.test.mjs \
             tests/tvCarouselContract.test.mjs \
+            tests/tvV23NavigationContract.test.mjs \
             tests/tvFocusRestoration.test.mjs \
             tests/tvUiCleanupContract.test.mjs \
             tests/upstreamDomCompatibility.test.mjs \
