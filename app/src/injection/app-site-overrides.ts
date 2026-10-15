@@ -304,6 +304,70 @@ export function buildAppSiteOverrides(): string {
     });
   };
 
+  // New streaming providers and seasonal Home rails may appear in the remote
+  // React tree without the TV-specific attributes shipped by our local site.
+  // Discover them by geometry/content, not by a fixed list of section titles.
+  const markDynamicHomeRails = () => {
+    if (window.MOVIX_TV !== true || window.location.pathname !== '/') return;
+
+    document.querySelectorAll('.home-section a[href]').forEach((link) => {
+      if (!(link instanceof HTMLAnchorElement)) return;
+      const path = linkPath(link);
+      if (!path || path === '/' || link.hasAttribute('data-tv-ignore-focus')) return;
+
+      const provider = /^\\/provider\\/[^/]+/.test(path);
+      const inRail = Boolean(link.closest(
+        '[data-tv-carousel-row], [class~="group/carousel"], .embla__slide, .embla-slide, .platform-slide'
+      ));
+      const hasArtwork = Boolean(
+        link.querySelector('img') ||
+        link.parentElement?.querySelector('img') ||
+        link.parentElement?.parentElement?.querySelector('img')
+      );
+      if (!provider && !(inRail && hasArtwork)) return;
+
+      const row = findCardRow(link) ||
+        link.closest('[class~="group/carousel"]') ||
+        (provider ? link.closest('.home-section') : null);
+      if (!(row instanceof HTMLElement)) return;
+
+      row.setAttribute('data-tv-carousel-row', '');
+      row.setAttribute('data-tv-focus-group', 'carousel-row');
+      link.setAttribute('data-tv-card', '');
+      link.setAttribute('data-tv-focus', '');
+      link.setAttribute('data-tv-focus-id', (provider ? 'provider:' : 'dynamic:') + path);
+      link.setAttribute('tabindex', '0');
+    });
+  };
+
+  // Hide only the main download CTA adjacent to Play on detail pages. The
+  // website's React nodes and event handlers stay mounted; the actual Play
+  // action remains the single, full-width focus target on Android TV.
+  const simplifyTvDetailActions = () => {
+    if (window.MOVIX_TV !== true) return;
+    if (!/^\\/(?:movie|tv)\\/[^/?#]+/.test(window.location.pathname)) return;
+
+    document.querySelectorAll('button').forEach((download) => {
+      if (!(download instanceof HTMLButtonElement)) return;
+      if (!download.querySelector('svg.lucide-download, .lucide-download')) return;
+      const row = download.parentElement;
+      if (!(row instanceof HTMLElement) || !row.classList.contains('flex-wrap')) return;
+      const play = Array.from(row.children).find((child) =>
+        child instanceof HTMLButtonElement &&
+        child.querySelector('svg.lucide-play, .lucide-play')
+      );
+      if (!(play instanceof HTMLButtonElement)) return;
+      hideManagedNode(download);
+      play.setAttribute('data-tv-detail-primary-play', '');
+      play.style.setProperty('background-color', '#16a34a', 'important');
+      play.style.setProperty('color', '#ffffff', 'important');
+      play.style.setProperty('flex', '1 1 100%', 'important');
+      play.style.setProperty('width', '100%', 'important');
+      play.style.setProperty('max-width', '100%', 'important');
+      play.style.setProperty('min-width', '100%', 'important');
+    });
+  };
+
   const removeFavoriteControls = () => {
     if (window.MOVIX_TV !== true) return;
 
@@ -1017,6 +1081,8 @@ export function buildAppSiteOverrides(): string {
     removeCarouselArrows();
     removeFavoriteControls();
     markPosterCards();
+    markDynamicHomeRails();
+    simplifyTvDetailActions();
     disableTvSmoothScroll();
     installTvHeroAutoplay();
   };
