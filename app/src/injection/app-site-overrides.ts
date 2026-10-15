@@ -666,23 +666,51 @@ export function buildAppSiteOverrides(): string {
       markTvShortcutBadge(explore, '3');
     }
 
-    let account = header.querySelector(
-      '[data-tv-header-shortcut="account"]'
-    );
+    // The remote header can replace the avatar with a seasonal pumpkin.
+    // Find the account trigger by its semantic button, not by the avatar img.
+    const usable = (element) => {
+      if (!(element instanceof HTMLElement) || !element.isConnected) return false;
+      if (element.closest('[data-movix-app-hidden], [aria-hidden="true"]')) return false;
+      const rect = element.getBoundingClientRect();
+      return rect.width > 0 && rect.height > 0 &&
+        window.getComputedStyle(element).display !== 'none';
+    };
+    const accountSelectors = [
+      'button[data-tv-primary-focus="account"]',
+      'button[data-tv-header-shortcut="account"]',
+      '[role="button"][data-tv-primary-focus="account"]',
+      'button[aria-haspopup="menu"]',
+      'button[aria-label*="compte" i]',
+      'button[aria-label*="profil" i]',
+      'button[aria-label*="profile" i]',
+      'button[aria-label*="account" i]',
+      'a[href="/login"]',
+    ];
+    let account = null;
+    for (const selector of accountSelectors) {
+      account = Array.from(header.querySelectorAll(selector)).find(usable);
+      if (account) break;
+    }
+    if (!(account instanceof HTMLElement)) {
+      account = Array.from(header.querySelectorAll('button, [role="button"], a[href]'))
+        .find((element) => {
+          if (!usable(element) || element.hasAttribute('data-explore-trigger')) return false;
+          const label = normalise(
+            String(element.getAttribute('aria-label') || '') + ' ' +
+            String(element.getAttribute('title') || '') + ' ' +
+            String(element.textContent || '')
+          );
+          return ['connexion', 'se connecter', 'login', 'log in', 'mon compte',
+            'my account', 'profil', 'profile'].some((term) => label.includes(term));
+        });
+    }
     if (!(account instanceof HTMLElement)) {
       const avatar = Array.from(header.querySelectorAll('img')).find((image) => {
         if (!(image instanceof HTMLImageElement)) return false;
-        const label = normalise(
-          String(image.alt || '') + ' ' +
-          String(image.getAttribute('title') || '')
-        );
-        return label.includes('profil') || label.includes('profile') || label.includes('account');
+        const label = normalise(String(image.alt || '') + ' ' + String(image.title || ''));
+        return ['profil', 'profile', 'account'].some((term) => label.includes(term));
       });
-      if (avatar instanceof HTMLElement) {
-        account = avatar.closest(
-          'button, [role="button"], [class*="cursor-pointer"]'
-        );
-      }
+      account = avatar?.closest('button, [role="button"], [class*="cursor-pointer"]') || null;
     }
     if (account instanceof HTMLElement) {
       account.setAttribute('data-tv-header-shortcut', 'account');
@@ -778,6 +806,60 @@ export function buildAppSiteOverrides(): string {
     api.lock = lockTvHeaderPointerNavigation;
     api.restoreInteractive = restoreTvHeaderInteractive;
     api.targets = markTvHeaderShortcutTargets;
+  };
+
+  // Seasonal campaigns belong to the live website, not to the TV remote's
+  // navigation graph. Hide a *specific* Halloween rail without detaching
+  // React-owned nodes or hiding the adjacent standard Home sections.
+  const suppressTvHalloween = () => {
+    if (window.MOVIX_TV !== true) return;
+
+    // A promotional pumpkin beside account must not become shortcut 2.
+    // Remove standalone seasonal ornaments, never their enclosing account
+    // button or the sign-in text.
+    document.querySelectorAll('header span, header a, header [aria-label]').forEach((node) => {
+      if (!(node instanceof HTMLElement) || node.closest('[data-tv-header-shortcut="account"]')) return;
+      if (node.querySelector('button, input, [data-tv-header-shortcut="account"]')) return;
+      const text = normalise(node.textContent);
+      const label = normalise(String(node.getAttribute('aria-label') || '') + ' ' +
+        String(node.getAttribute('title') || ''));
+      if (text === '🎃' || (text.length < 64 && (label.includes('halloween') ||
+        label.includes('citrouille')))) hideManagedNode(node);
+    });
+
+    if (window.location.pathname !== '/') return;
+
+    // The selector is intentionally local to Home, matching a rail title,
+    // never film cards titled "Halloween" nor an ancestor enclosing Home.
+    const home = document.querySelector('main');
+    if (!(home instanceof HTMLElement)) return;
+
+    const homeRails = Array.from(home.querySelectorAll('.home-section, [data-home-section]'));
+    homeRails.forEach((rail) => {
+      if (!(rail instanceof HTMLElement)) return;
+      const headings = Array.from(rail.querySelectorAll('h1, h2, h3, [role="heading"]'))
+        .filter((heading) => !heading.closest('[data-tv-card]'));
+      if (!headings.some((heading) => {
+        const title = normalise(heading.textContent);
+        return title.includes('halloween') || title.includes('🎃');
+      })) return;
+      hideManagedNode(rail);
+      rail.setAttribute('data-tv-seasonal-hidden', 'halloween');
+    });
+
+    // The remote site may ship a standalone seasonal section without
+    // .home-section. Only hide a section whose *heading* names the campaign.
+    home.querySelectorAll('h1, h2, h3, [role="heading"]').forEach((heading) => {
+      if (!(heading instanceof HTMLElement)) return;
+      if (heading.closest('[data-tv-card], [data-tv-seasonal-hidden]')) return;
+      const title = normalise(heading.textContent);
+      if (!title.includes('halloween') && !title.includes('🎃')) return;
+      const section = heading.closest('section, [data-home-section], .home-section');
+      if (!(section instanceof HTMLElement) || section === home ||
+          section.contains(document.querySelector('header'))) return;
+      hideManagedNode(section);
+      section.setAttribute('data-tv-seasonal-hidden', 'halloween');
+    });
   };
 
   const ensureTvHomeLayout = () => {
@@ -1073,7 +1155,8 @@ export function buildAppSiteOverrides(): string {
     installTvShortcutBadgeStyle();
     exposeTvHeaderPointerPolicy();
     lockTvHeaderPointerNavigation();
-    ensureTvHomeLayout();
+    // Do not reorder Home by positional indices: dynamic Halloween rails shift them.
+    suppressTvHalloween();
     installTvUserClickGuards();
     applyTvDetailExternalLinkPolicy();
     hideTvPlayerExternalOpen();
