@@ -29,6 +29,7 @@ on:
       - agent/movix-ad-page-keyword-guard-v1
       - agent/movix-active-tv-upnext-v1
       - agent/movix-tv-v23-universal-navigation-play-cta
+      - agent/movix-tv-v24-halloween-account-repair
     paths:
       - 'app/**'
       - 'src/**'
@@ -104,6 +105,7 @@ jobs:
             tests/tvExternalPlayerLimitsContract.test.mjs \
             tests/tvCarouselContract.test.mjs \
             tests/tvV23NavigationContract.test.mjs \
+            tests/tvV24SeasonalAccountContract.test.mjs \
             tests/tvFocusRestoration.test.mjs \
             tests/tvUiCleanupContract.test.mjs \
             tests/upstreamDomCompatibility.test.mjs \
